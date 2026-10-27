@@ -183,7 +183,8 @@ export function toOBJ(objects) {
     const q = m.quads;
     for (let i = 0; i < q.length; i += 4) {
       const a = q[i] + base, b = q[i + 1] + base, c = q[i + 2] + base, d = q[i + 3] + base;
-      out.push(`f ${a}//${a} ${b}//${b} ${c}//${c} ${d}//${d}`);
+      // Los triángulos van como quads con el último vértice repetido.
+      out.push(c === d ? `f ${a}//${a} ${b}//${b} ${c}//${c}` : `f ${a}//${a} ${b}//${b} ${c}//${c} ${d}//${d}`);
     }
     base += p.length / 3;
   }
