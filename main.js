@@ -24,7 +24,7 @@ const SPECTATOR = params.has('ver');      // Mac: espejo para grabar
 const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las gafas
 
 const state = {
-  tool: 'add', radius: 0.06, strength: 0.6, sym: false, wire: false,
+  tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
   color: '#e04f4f', addColor: false,
 };
@@ -32,6 +32,12 @@ const state = {
 // Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
 // y el estado de la escena la última vez que se guardó.
 let obras = [], obraId = null, obraSig = '', obrasReady = false;
+
+// Tamaño del pincel en escala logarítmica: el deslizador da mucho recorrido a los tamaños pequeños.
+const R_MIN = 0.004, R_MAX = 0.15;
+const radiusToT = (r) => Math.log(r / R_MIN) / Math.log(R_MAX / R_MIN);
+const tToRadius = (t) => R_MIN * (R_MAX / R_MIN) ** Math.max(0, Math.min(1, t));
+const clampRadius = (r) => Math.max(R_MIN, Math.min(R_MAX, r));
 
 const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const rgbToHex = (c) => '#' + c.slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('');
@@ -352,6 +358,37 @@ let strokePrev = null;
 function beginStroke() {
   strokeRec = pushStroke(active);
   strokePrev = null;
+  lazy = null;
+}
+
+// Estabilizador ("cuerda"): el pincel va detrás de la mano/ratón a una distancia fija y solo
+// avanza cuando la cuerda se tensa → trazos rectos y sin temblor. 0 = desactivado.
+let lazy = null;
+const ropeGeo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+const rope = new THREE.Line(ropeGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthTest: false }));
+rope.renderOrder = 998;
+rope.frustumCulled = false;
+rope.visible = false;
+model.add(rope);
+function stabilize(p) {
+  const L = state.stab * 0.12;
+  if (!L || !lazy) {
+    lazy = [p[0], p[1], p[2]];
+    rope.visible = false;
+    return p;
+  }
+  const dx = p[0] - lazy[0], dy = p[1] - lazy[1], dz = p[2] - lazy[2];
+  const d = Math.hypot(dx, dy, dz);
+  if (d > L) {
+    const f = (d - L) / d;
+    lazy = [lazy[0] + dx * f, lazy[1] + dy * f, lazy[2] + dz * f];
+  }
+  const a = ropeGeo.attributes.position.array;
+  a.set(lazy, 0);
+  a.set([p[0], p[1], p[2]], 3);
+  ropeGeo.attributes.position.needsUpdate = true;
+  rope.visible = true;
+  return [lazy[0], lazy[1], lazy[2], p[3]];
 }
 
 // Una pincelada = el tramo desde el punto anterior hasta el actual (trazo continuo).
@@ -611,10 +648,11 @@ $('shareClose').onclick = () => $('share').classList.remove('show');
 
 // ---------- HUD escritorio ----------
 const sizeIn = $('size'), strIn = $('strength'), quadsIn = $('quads'), colorIn = $('color');
-sizeIn.value = state.radius;
+sizeIn.value = radiusToT(state.radius);
 strIn.value = state.strength;
 quadsIn.value = state.quads;
-sizeIn.oninput = () => { state.radius = +sizeIn.value; updateHud(); };
+sizeIn.oninput = () => { state.radius = tToRadius(+sizeIn.value); updateHud(); };
+$('stab').oninput = (e) => { state.stab = +e.target.value; updateHud(); };
 strIn.oninput = () => { state.strength = +strIn.value; updateHud(); };
 quadsIn.oninput = () => { state.quads = +quadsIn.value; updateHud(); };
 colorIn.oninput = () => setColor(colorIn.value);
@@ -698,7 +736,9 @@ function updateHud() {
   t.textContent = label(tool) + (state.invert ? ' (invertido)' : '');
   t.style.color = TOOL_COLORS[tool];
   $('info').textContent = infoText();
-  sizeIn.value = state.radius;
+  sizeIn.value = radiusToT(state.radius);
+  $('stab').value = state.stab;
+  $('stabVal').textContent = state.stab ? Math.round(state.stab * 100) + '%' : 'no';
   strIn.value = state.strength;
   quadsIn.value = state.quads;
   colorIn.value = state.color;
@@ -1032,8 +1072,8 @@ addEventListener('keydown', (e) => {
   } else if ((e.metaKey || e.ctrlKey) && k === 'z') {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
-  } else if (e.key === '[') { state.radius = Math.max(0.005, state.radius / 1.15); updateHud(); }
-  else if (e.key === ']') { state.radius = Math.min(0.3, state.radius * 1.15); updateHud(); }
+  } else if (e.key === '[') { state.radius = clampRadius(state.radius / 1.15); updateHud(); }
+  else if (e.key === ']') { state.radius = clampRadius(state.radius * 1.15); updateHud(); }
   else if (k >= '1' && k <= '8') choose(TOOL_KEYS[+k - 1]);
   else if (k === 'b') choose('shape:' + { sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape]);
   else if (k === 'g') choose('move');
@@ -1175,7 +1215,7 @@ function drawHud3D() {
 }
 
 // ---------- Panel de la mano izquierda (gafas) ----------
-const PW = 768, PH = 1310;
+const PW = 768, PH = 1388;
 let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
@@ -1196,7 +1236,7 @@ function buildPanel() {
   W.push({ type: 'label', x: PW - M, y: 44, text: infoText(), align: 'right', size: 22, weight: 500 });
   W.push({
     type: 'slider', x: M, y: 112, w: IW, h: 30, label: 'Tamaño',
-    get: () => (state.radius - 0.005) / 0.295, set: (t) => (state.radius = 0.005 + t * 0.295),
+    get: () => radiusToT(state.radius), set: (t) => (state.radius = tToRadius(t)),
     text: () => Math.round(state.radius * 1000) / 10 + '',
   });
   W.push({
@@ -1204,27 +1244,32 @@ function buildPanel() {
     get: () => (state.strength - 0.05) / 0.95, set: (t) => (state.strength = 0.05 + t * 0.95),
     text: () => Math.round(state.strength * 100) + '%',
   });
+  W.push({
+    type: 'slider', x: M, y: 268, w: IW, h: 30, label: 'Estabilizar (línea recta)',
+    get: () => state.stab, set: (t) => (state.stab = Math.round(t * 20) / 20),
+    text: () => (state.stab ? Math.round(state.stab * 100) + '%' : 'no'),
+  });
   const tools = TOOL_KEYS;
   const tw = (IW - (tools.length - 1) * 8) / tools.length;
   tools.forEach((t, i) => W.push({
-    type: 'button', x: M + i * (tw + 8), y: 240, w: tw, h: 64, size: 18,
+    type: 'button', x: M + i * (tw + 8), y: 318, w: tw, h: 64, size: 18,
     label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[t] || label(t),
     active: () => state.tool === t, onClick: () => choose(t),
   }));
   // Forma del pincel de Añadir / Quitar.
   const shw = (IW - 2 * 8) / 3;
   ['sphere', 'cube', 'pyramid'].forEach((sh, i) => W.push({
-    type: 'button', x: M + i * (shw + 8), y: 316, w: shw, h: 52, size: 22,
+    type: 'button', x: M + i * (shw + 8), y: 394, w: shw, h: 52, size: 22,
     label: `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`, active: () => state.shape === sh,
     onClick: () => choose('shape:' + sh),
   }));
-  W.push({ type: 'label', x: M, y: 405, text: 'COLOR', size: 22 });
+  W.push({ type: 'label', x: M, y: 483, text: 'COLOR', size: 22 });
   const sw = (IW - 7 * 8) / 8;
   PALETTE.forEach((hex, i) => W.push({
-    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 425 + Math.floor(i / 8) * (sw * 0.7 + 8), w: sw, h: sw * 0.7,
+    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 503 + Math.floor(i / 8) * (sw * 0.7 + 8), w: sw, h: sw * 0.7,
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
-  const yc = 425 + 2 * (sw * 0.7 + 8) + 4;
+  const yc = 503 + 2 * (sw * 0.7 + 8) + 4;
   W.push({ type: 'button', x: M, y: yc, w: IW / 2 - 4, h: 56, label: 'Añadir con color', size: 22,
     active: () => state.addColor, onClick: () => { state.addColor = !state.addColor; updateHud(); } });
   W.push({ type: 'button', x: M + IW / 2 + 4, y: yc, w: IW / 2 - 4, h: 56, label: 'Color → base capa', size: 22,
@@ -1239,7 +1284,7 @@ function buildPanel() {
     W.push({ type: 'button', x: PW - M - 80, y, w: 80, h: 54, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
-  const yo = 950;
+  const yo = 1028;
   W.push({ type: 'label', x: M, y: yo, text: 'OBRA: ' + obraName() + (obraDirty() ? ' •' : ''), size: 22 });
   const ow = (IW - 3 * 8) / 4;
   [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
@@ -1443,7 +1488,7 @@ function xrFrame(dt) {
   // Stick derecho ↑/↓ = tamaño del pincel (o de la capa agarrada con Mover).
   if (Math.abs(ay) > 0.2 && moveOp.L) scaleMove(Math.exp(-ay * dt * 1.2));
   else if (Math.abs(ay) > 0.2) {
-    state.radius = THREE.MathUtils.clamp(state.radius * (1 - ay * dt * 1.5), 0.005, 0.3);
+    state.radius = clampRadius(state.radius * (1 - ay * dt * 1.5));
     drawHud3D();
   }
   cursor.position.fromArray(tipL);
@@ -1461,9 +1506,15 @@ function xrFrame(dt) {
   }
   if (trig > 0.08) {
     if (!xr.stroking) { beginStroke(); xr.stroking = true; }
-    applyAt(tipL, dt, 0.3 + 0.7 * trig);
+    const q = stabilize(tipL);
+    cursor.position.fromArray(q);
+    if (state.sym) cursorMirror.position.set(-q[0], q[1], q[2]);
+    applyAt(q, dt, 0.3 + 0.7 * trig);
     gpR.hapticActuators?.[0]?.pulse?.(0.05 * trig, 16);
-  } else xr.stroking = false;
+  } else {
+    xr.stroking = false;
+    rope.visible = false;
+  }
 }
 
 // Gatillo con Mover: agarra la capa que toca el cursor y la lleva con la mano (posición y giro).
@@ -1767,6 +1818,8 @@ renderer.setAnimationLoop(() => {
     updateCursorShape();
     cursor.visible = !!hit;
     cursorMirror.visible = !!hit && state.sym;
+    if (hit && sculpting) hit = stabilize(hit);
+    else rope.visible = false;
     if (hit) {
       cursor.position.set(hit[0], hit[1], hit[2]);
       cursor.scale.setScalar(state.radius);
