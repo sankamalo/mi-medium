@@ -782,10 +782,68 @@ radial.sliders = [
   { id: 'stab', label: 'Estabilizar', color: '#f2c94c', get: () => state.stab,
     set: (t) => (state.stab = Math.round(t * 20) / 20), text: () => (state.stab ? Math.round(state.stab * 100) + '%' : 'no') },
 ];
+// Vista previa del tamaño del pincel mientras ajustas el arco de Tamaño: encima del dial, con la
+// forma del pincel y el tamaño que tendrá en pantalla (en las gafas, a tamaño real; ver xrFrame).
+const preview = document.createElement('canvas');
+preview.id = 'brushPreview';
+preview.width = preview.height = 320;
+document.body.appendChild(preview);
+const PREVIEW_PX = 160;
+function brushScreenRadius() {
+  // A la profundidad del último sitio donde estuvo el cursor (al principio, el centro del modelo).
+  const ref = cursor.getWorldPosition(vA);
+  const depth = Math.max(0.05, ref.sub(camera.position).dot(camera.getWorldDirection(vB)));
+  const px = (state.radius * model.scale.x) / (depth * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * (innerHeight / 2);
+  return px;
+}
+function drawPreview() {
+  const show = radialOpen && radial.highlight === 'slider:size' && !renderer.xr.isPresenting;
+  preview.style.display = show ? 'block' : 'none';
+  if (!show) return;
+  const top = menuCenter.y - MENU_PX / 2 - PREVIEW_PX - 4;
+  preview.style.left = menuCenter.x - PREVIEW_PX / 2 + 'px';
+  preview.style.top = (top >= 0 ? top : menuCenter.y + MENU_PX / 2 + 4) + 'px';
+  const g = preview.getContext('2d'), S = preview.width, c = S / 2;
+  g.clearRect(0, 0, S, S);
+  const real = brushScreenRadius() * (S / PREVIEW_PX);
+  const R = Math.min(real, c - 6);
+  g.strokeStyle = '#' + cursor.material.color.getHexString();
+  g.fillStyle = 'rgba(14,15,19,0.55)';
+  g.lineWidth = 3;
+  const sh = shapeActive() ? state.shape : 'sphere';
+  g.beginPath();
+  if (sh === 'cube') g.rect(c - R * 0.75, c - R * 0.75, R * 1.5, R * 1.5);
+  else if (sh === 'pyramid') { g.moveTo(c, c - R * 1.1); g.lineTo(c + R, c + R * 0.75); g.lineTo(c - R, c + R * 0.75); g.closePath(); }
+  else g.arc(c, c, R, 0, Math.PI * 2);
+  g.fill();
+  g.stroke();
+  // Líneas de "malla" como el cursor.
+  g.lineWidth = 1.5;
+  g.globalAlpha = 0.6;
+  g.beginPath();
+  if (sh === 'sphere') {
+    g.ellipse(c, c, R, R * 0.35, 0, 0, Math.PI * 2);
+    g.moveTo(c + R * 0.35, c);
+    g.ellipse(c, c, R * 0.35, R, 0, 0, Math.PI * 2);
+  } else if (sh === 'cube') {
+    g.moveTo(c, c - R * 0.75); g.lineTo(c, c + R * 0.75);
+    g.moveTo(c - R * 0.75, c); g.lineTo(c + R * 0.75, c);
+  } else {
+    g.moveTo(c, c - R * 1.1); g.lineTo(c, c + R * 0.75);
+  }
+  g.stroke();
+  g.globalAlpha = 1;
+  g.fillStyle = '#e8ecf3';
+  g.font = '600 26px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillText(real > c - 6 ? 'más grande ↗' : 'tamaño real', c, S - 14);
+}
+
 // Mueve el arco i al ángulo de (x, y) (píxeles del canvas desde el centro).
 function dragSlider(i, x, y) {
   radial.sliders[i].set(radial.sliderValue(x, y));
   updateHud();
+  drawPreview();
 }
 const menuCenter = { x: 0, y: 0 };
 const MENU_PX = 420;
@@ -810,6 +868,7 @@ function closeMenu(pick) {
   radial.canvas.style.display = 'none';
   radialOpen = false;
   radialDrag = -1;
+  drawPreview();
   if (pick && h) choose(h);
 }
 // buttons: botones del ratón pulsados (para arrastrar los arcos de Tamaño / Estabilizar).
@@ -824,12 +883,12 @@ function hoverMenu(x, y, buttons = 0) {
       radialDrag = si;
       dragSlider(si, dx * k, dy * k);
     } else radial.draw(state, infoText());
+    drawPreview();
     return;
   }
-  const dist = Math.hypot(dx, dy);
-  const inner = (radial.r / radial.size) * MENU_PX;
-  const h = dist < inner * 0.8 || dist > MENU_PX * 0.8 ? null : radial.itemAt(dx, dy);
+  const h = radial.inside(dx * k, dy * k) ? radial.itemAt(dx, dy) : null;
   if (radial.setHighlight(h)) radial.draw(state, infoText());
+  drawPreview();
 }
 radial.canvas.addEventListener('pointerdown', (e) => {
   e.stopPropagation();
@@ -1201,6 +1260,19 @@ const menu3d = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ map: radialTex, transparent: true, depthTest: false }),
 );
 menu3d.renderOrder = 999;
+// Gafas: muestra del pincel a tamaño real encima del dial mientras ajustas Tamaño.
+const preview3d = new THREE.Mesh(cursor.geometry, cursor.material);
+preview3d.visible = false;
+scene.add(preview3d);
+function updatePreview3D() {
+  preview3d.visible = radialOpen && menu3d.visible && radial.highlight === 'slider:size';
+  if (!preview3d.visible) return;
+  const r = state.radius * model.scale.x;
+  preview3d.geometry = cursor.geometry;
+  preview3d.scale.setScalar(r);
+  preview3d.quaternion.copy(menu3d.quaternion);
+  preview3d.position.set(0, 0.13 + r * 1.5 + 0.015, 0).applyQuaternion(menu3d.quaternion).add(menu3d.position);
+}
 menu3d.visible = false;
 scene.add(menu3d);
 
@@ -1384,6 +1456,7 @@ function closeRadial3D(pick) {
   xr.menuOpen = false;
   radialOpen = false;
   menu3d.visible = false;
+  preview3d.visible = false;
   if (pick && radial.highlight) choose(radial.highlight);
 }
 
@@ -1508,11 +1581,12 @@ function xrFrame(dt) {
         radialTex.needsUpdate = true;
       }
     } else if (Math.hypot(ax, ay) > 0.5) h = radial.itemAt(ax, ay);
-    else if (Math.hypot(p.x, p.y) > 0.03) h = radial.itemAt(p.x, -p.y);
+    else if (radial.inside(cx * 0.8, cy * 0.8)) h = radial.itemAt(p.x, -p.y); // en VR, algo más de margen
     if (radial.setHighlight(h) | radial.tick()) {
       radial.draw(state, infoText());
       radialTex.needsUpdate = true;
     }
+    updatePreview3D();
     if (xr.menuMode === 'hold' && !ab) closeRadial3D(true);
     else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev && !radial.highlight?.startsWith('slider:')))) {
       closeRadial3D(true);

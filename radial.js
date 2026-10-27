@@ -74,6 +74,13 @@ export class RadialMenu {
     return this.sliderR.findIndex((rr, i) => i < this.sliders.length && Math.abs(d - rr) < half);
   }
 
+  // ¿(x, y) cae dentro de algún quesito? Fuera (esquinas del canvas, hueco entre aros) = nada.
+  inside(x, y) {
+    const d = Math.hypot(x, y);
+    if (d < this.r * 0.8) return false;
+    return y < 0 ? d <= this.R * 1.03 : d <= this.Rb * 1.03;
+  }
+
   // Valor 0..1 según el ángulo: izquierda = 0, abajo = 0.5, derecha = 1.
   sliderValue(x, y) {
     const a = Math.atan2(Math.max(0, y), x); // 0 (derecha) .. π (izquierda)
