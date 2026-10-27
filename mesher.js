@@ -107,7 +107,7 @@ export function meshRegion(grid, c0x, c0y, c0z, S, base = [207, 198, 187]) {
     positions: new Float32Array(pos),
     normals: new Float32Array(nor),
     colors: new Float32Array(col),
-    ids,
+    ids: Int32Array.from(ids),
     quads: new Uint32Array(quads),
   };
 }

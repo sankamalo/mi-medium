@@ -125,11 +125,19 @@
       <button id="layerClear" title="Vaciar la capa">Vaciar</button>
       <button id="layerDel" title="Borrar la capa">Borrar</button>
     </div>
-    <div class="sec">Remesh (Blender)</div>
+    <div class="sec">Remesh + horneado</div>
     <label>Quads <span id="quadsVal"></span></label>
     <input id="quads" type="range" min="1000" max="60000" step="1000" class="wide" />
+    <div class="row" id="bakeSizes">
+      <button data-bake="1024" title="Más rápido">Textura 1K</button>
+      <button data-bake="2048">2K</button>
+      <button data-bake="4096" title="Más detalle, más lento">4K</button>
+    </div>
     <div class="row">
-      <button id="btnRemesh" title="Quads uniformes (R)">Remesh capa</button>
+      <button id="btnRemesh" title="Malla nueva + detalle horneado, en este dispositivo (R)">Remesh capa</button>
+      <button id="btnRemeshMac" title="QuadriFlow en Blender: sigue mejor la forma (necesita el Mac)">Remesh en Blender</button>
+    </div>
+    <div class="row">
       <button id="btnExport" title="E">Enviar a Blender</button>
     </div>
     <div class="row">

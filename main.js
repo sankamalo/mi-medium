@@ -7,10 +7,13 @@ import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { CanvasPanel } from './panel.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
+import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const CHUNK = 32;
-const UNDO_BYTES = 800e6;
+// En el casco la memoria es mucho más justa que en el Mac: menos historial de deshacer.
+const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
+const UNDO_BYTES = ON_QUEST ? 300e6 : 800e6;
 const BRICK_BYTES = 512 * 4;
 const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
@@ -26,7 +29,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
-  color: '#e04f4f', addColor: false,
+  color: '#e04f4f', addColor: false, bakeSize: 2048,
 };
 
 // Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
@@ -118,21 +121,53 @@ function buildMesh(positions, normals, colors, quads, mat) {
   const geo = new THREE.BufferGeometry();
   const pos = new THREE.BufferAttribute(positions, 3);
   geo.setAttribute('position', pos);
-  geo.setAttribute('color', new THREE.BufferAttribute(srgbToLinear(colors), 3));
+  // Color en 3 bytes por vértice (en vez de 12): con mucho detalle la memoria del casco se nota.
+  geo.setAttribute('color', new THREE.BufferAttribute(colorsToBytes(colors), 3, true));
   geo.setIndex(new THREE.BufferAttribute(quadsToTris(quads), 1));
   if (normals) geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   else geo.computeVertexNormals();
-  const lgeo = new THREE.BufferGeometry();
-  lgeo.setAttribute('position', pos);
-  lgeo.setIndex(new THREE.BufferAttribute(quadsToLines(quads), 1));
-  const lines = new THREE.LineSegments(lgeo, wireMat);
-  lines.visible = state.wire;
-  return { mesh: new THREE.Mesh(geo, mat), lines };
+  const r = { mesh: new THREE.Mesh(geo, mat), lines: null, quads, group: null };
+  if (state.wire) wireOf(r);
+  return r;
+}
+// Las líneas de la malla solo se crean cuando se activa "Malla".
+function wireOf(r) {
+  if (!r.lines) {
+    const lgeo = new THREE.BufferGeometry();
+    lgeo.setAttribute('position', r.mesh.geometry.getAttribute('position'));
+    lgeo.setIndex(new THREE.BufferAttribute(quadsToLines(r.quads), 1));
+    r.lines = new THREE.LineSegments(lgeo, wireMat);
+    if (r.group) r.group.add(r.lines);
+  }
+  return r.lines;
+}
+function addMesh(group, r) {
+  r.group = group;
+  group.add(r.mesh);
+  if (r.lines) group.add(r.lines);
+}
+function setMeshWire(r, v) {
+  if (v) wireOf(r).visible = true;
+  else if (r.lines) {
+    r.group?.remove(r.lines);
+    r.lines.geometry.dispose();
+    r.lines = null;
+  }
 }
 function disposeMesh(group, r) {
-  group.remove(r.mesh, r.lines);
+  group.remove(r.mesh);
   r.mesh.geometry.dispose();
-  r.lines.geometry.dispose();
+  setMeshWire(r, false);
+}
+// sRGB 0-1 -> lineal en bytes (three.js los normaliza).
+const LIN8 = new Uint8Array(256).map((_, i) => {
+  const c = i / 255;
+  return Math.round(255 * (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+});
+function colorsToBytes(c) {
+  const out = new Uint8Array(c.length);
+  for (let i = 0; i < c.length; i++) out[i] = LIN8[Math.max(0, Math.min(255, Math.round(c[i] * 255)))];
+  return out;
 }
 
 let layerSeq = 0;
@@ -207,7 +242,7 @@ class Layer {
       if (m) {
         const r = buildMesh(m.positions, m.normals, m.colors, m.quads, clay);
         r.m = m;
-        this.voxels.add(r.mesh, r.lines);
+        addMesh(this.voxels, r);
         this.chunks[ci] = r;
       }
       if (performance.now() - t0 > budgetMs) break;
@@ -231,22 +266,69 @@ class Layer {
       }
       parsed.colors = cols;
     }
-    this.remesh = buildMesh(parsed.positions, null, parsed.colors, parsed.quads, clay);
+    this.remesh = buildMesh(parsed.positions, parsed.normals || null, parsed.colors, parsed.quads, clay);
+    if (!parsed.normals) parsed.normals = this.remesh.mesh.geometry.getAttribute('normal').array;
     this.remesh.data = parsed;
-    this.group.add(this.remesh.mesh, this.remesh.lines);
+    addMesh(this.group, this.remesh);
     this.voxels.visible = false;
+  }
+
+  // Malla horneada: la malla nueva con UVs y las texturas (normales + color) del detalle.
+  applyBake(bake) {
+    const r = this.remesh;
+    if (!r) return;
+    this.clearBake();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(bake.positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(bake.normals, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(bake.uvs, 2));
+    geo.setIndex(new THREE.BufferAttribute(bake.index, 1));
+    const tex = (data, srgb) => {
+      const t = new THREE.DataTexture(data, bake.size, bake.size, THREE.RGBAFormat);
+      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      t.generateMipmaps = true;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.anisotropy = 4;
+      t.needsUpdate = true;
+      return t;
+    };
+    // Normal map en convención OpenGL/glTF (Y = arriba en la imagen): three.js sin tangentes
+    // necesita la Y invertida, igual que hace su cargador de glTF.
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex(bake.colorMap, true), normalMap: tex(bake.normalMap, false),
+      normalScale: new THREE.Vector2(1, -1), roughness: 0.55, metalness: 0,
+    });
+    r.baked = new THREE.Mesh(geo, mat);
+    r.bake = bake;
+    r.mesh.visible = false;
+    this.group.add(r.baked);
+  }
+
+  clearBake() {
+    const r = this.remesh;
+    if (!r?.baked) return;
+    this.group.remove(r.baked);
+    r.baked.geometry.dispose();
+    r.baked.material.map.dispose();
+    r.baked.material.normalMap.dispose();
+    r.baked.material.dispose();
+    r.baked = null;
+    r.bake = null;
+    r.mesh.visible = true;
   }
 
   clearRemesh() {
     if (!this.remesh) return;
+    this.clearBake();
     disposeMesh(this.group, this.remesh);
     this.remesh = null;
     this.voxels.visible = true;
   }
 
   setWire(v) {
-    this.chunks.forEach((ch) => ch && (ch.lines.visible = v));
-    if (this.remesh) this.remesh.lines.visible = v;
+    this.chunks.forEach((ch) => ch && setMeshWire(ch, v));
+    if (this.remesh) setMeshWire(this.remesh, v);
   }
 
   dispose() {
@@ -510,8 +592,45 @@ function setColor(hex) {
   updateHud();
 }
 
-// ---------- Remesh (QuadriFlow en Blender, en el Mac) ----------
+// ---------- Remesh en el casco: malla nueva de quads + horneado del detalle ----------
+// La malla nueva sale de la propia rejilla (sin Blender) y el detalle de alta resolución se
+// hornea en un mapa de normales y otro de color. Va por tramos: la escena no se congela.
 async function remeshLayer(L) {
+  if (L.busy) return toast('Ya está haciendo remesh…');
+  const hi = L.merged();
+  if (!hi.quads.length) return toast('La capa está vacía');
+  L.busy = true;
+  const ver = L.version;
+  updateHud();
+  const t0 = performance.now();
+  const stale = () => L.version !== ver || !layers.includes(L);
+  const prog = (stage, f) => toast(`${L.name} · ${stage}… ${Math.round(f * 100)}%`, 3000);
+  try {
+    const low = await remeshSDF(L.grid, meshArea(hi.positions, hi.quads), state.quads, prog);
+    if (stale()) throw new Error('stale');
+    await bakeRemesh(L, low, ver);
+    toast(`${L.name}: ${(low.quads.length / 4).toLocaleString('es')} quads + detalle horneado ` +
+      `(${state.bakeSize}px) en ${((performance.now() - t0) / 1000).toFixed(1)} s`, 5000);
+  } catch (e) {
+    if (e.message === 'stale') toast('Has esculpido durante el remesh: vuelve a lanzarlo');
+    else { console.error(e); toast('Remesh falló: ' + e.message); }
+  }
+  L.busy = false;
+  updateHud();
+}
+
+// Pone la malla nueva en la capa y hornea el detalle (también al recuperar una obra).
+async function bakeRemesh(L, low, ver = L.version, size = state.bakeSize) {
+  const prog = (stage, f) => toast(`${L.name} · ${stage}… ${Math.round(f * 100)}%`, 3000);
+  const bake = await bakeMesh(L.grid, low, L.base, size, prog);
+  if (L.version !== ver || !layers.includes(L)) throw new Error('stale');
+  if (L.remesh?.data.positions !== low.positions) L.setRemesh({ positions: low.positions, normals: low.normals, quads: low.quads });
+  L.applyBake(bake);
+  live.structure();
+}
+
+// ---------- Remesh con QuadriFlow en Blender (en el Mac) ----------
+async function remeshBlender(L) {
   if (L.busy) return toast('Ya está haciendo remesh…');
   const mesh = L.merged();
   if (!mesh.quads.length) return toast('La capa está vacía');
@@ -554,11 +673,50 @@ function exportObjects() {
     .filter((L) => L.visible)
     .map((L) => ({
       name: L.name.replace(/[^\w-]+/g, '_'),
-      mesh: L.remesh
-        ? { ...L.remesh.data, normals: L.remesh.mesh.geometry.getAttribute('normal').array }
-        : L.merged(),
+      mesh: L.remesh ? L.remesh.data : L.merged(),
+      bake: L.remesh?.bake || null,
     }))
     .filter((o) => o.mesh.quads.length);
+}
+
+// GLB: una pieza por capa. Las capas horneadas llevan UVs, mapa de color y mapa de normales;
+// el resto, color por vértice.
+async function buildGLB(objects) {
+  const root = new THREE.Group();
+  root.name = 'LaPlastilina';
+  const textures = [];
+  for (const o of objects) {
+    const geo = new THREE.BufferGeometry();
+    let mat;
+    if (o.bake) {
+      const b = o.bake;
+      geo.setAttribute('position', new THREE.BufferAttribute(b.positions, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(b.normals, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(b.uvs, 2));
+      geo.setIndex(new THREE.BufferAttribute(b.index, 1));
+      const tex = (data, srgb) => {
+        const t = new THREE.DataTexture(data, b.size, b.size, THREE.RGBAFormat);
+        t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        t.needsUpdate = true;
+        textures.push(t);
+        return t;
+      };
+      mat = new THREE.MeshStandardMaterial({ map: tex(b.colorMap, true), normalMap: tex(b.normalMap, false), roughness: 0.55 });
+    } else {
+      geo.setAttribute('position', new THREE.BufferAttribute(o.mesh.positions, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(o.mesh.normals, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(srgbToLinear(o.mesh.colors), 3));
+      geo.setIndex(new THREE.BufferAttribute(quadsToTris(o.mesh.quads), 1));
+      mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 });
+    }
+    const m = new THREE.Mesh(geo, mat);
+    m.name = o.name;
+    root.add(m);
+  }
+  const glb = await new GLTFExporter().parseAsync(root, { binary: true });
+  root.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+  textures.forEach((t) => t.dispose());
+  return glb;
 }
 
 function exportName() {
@@ -578,22 +736,9 @@ async function exportModel() {
     const objects = exportObjects();
     if (!objects.length) throw new Error('nada visible');
     const base = exportName();
+    const glb = await buildGLB(objects);
     await sendToMac(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
-    const root = new THREE.Group();
-    root.name = 'LaPlastilina';
-    for (const o of objects) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(o.mesh.positions, 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(o.mesh.normals, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(srgbToLinear(o.mesh.colors), 3));
-      geo.setIndex(new THREE.BufferAttribute(quadsToTris(o.mesh.quads), 1));
-      const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }));
-      m.name = o.name;
-      root.add(m);
-    }
-    const glb = await new GLTFExporter().parseAsync(root, { binary: true });
     await sendToMac(base + '.glb', new Blob([glb], { type: 'model/gltf-binary' }));
-    root.traverse((o) => o.geometry?.dispose());
     const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
     toast(`Guardado en el Mac: ${objects.length} capa(s) · ${total} quads`);
   } catch (e) {
@@ -606,25 +751,37 @@ async function exportModel() {
 }
 
 // ---------- Compartir (WhatsApp, correo…) ----------
-// Genera un OBJ (quads + color, una pieza por capa). El navegador solo deja compartir
-// ciertos tipos de archivo: si no acepta .obj, va como .obj.txt (Blender lo abre igual).
+// Sin horneado: un OBJ (quads + color, una pieza por capa). Si alguna capa está horneada: un GLB
+// (lleva dentro las texturas). El navegador solo deja compartir ciertos tipos de archivo: si no
+// acepta el bueno, se prueba con otro tipo o como .txt (Blender lo abre igual).
 let shareFiles = null;
 async function shareModel() {
   const objects = exportObjects();
   if (!objects.length) return toast('No hay nada visible que exportar');
   // El menú de compartir no se puede abrir dentro de la vista inmersiva: se sale primero.
   if (renderer.xr.isPresenting) await renderer.xr.getSession().end();
-  const text = toOBJ(objects);
   const base = exportName();
-  const files = [
-    new File([text], base + '.obj', { type: 'model/obj' }),
-    new File([text], base + '.obj.txt', { type: 'text/plain' }),
-  ];
+  const baked = objects.some((o) => o.bake);
+  let files;
+  if (baked) {
+    const glb = await buildGLB(objects);
+    files = [
+      new File([glb], base + '.glb', { type: 'model/gltf-binary' }),
+      new File([glb], base + '.glb', { type: 'application/octet-stream' }),
+    ];
+  } else {
+    const text = toOBJ(objects);
+    files = [
+      new File([text], base + '.obj', { type: 'model/obj' }),
+      new File([text], base + '.obj.txt', { type: 'text/plain' }),
+    ];
+  }
   const ok = files.find((f) => navigator.canShare?.({ files: [f] }));
   shareFiles = { share: ok || null, download: files[0] };
   const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
-  $('shareInfo').textContent = `${(ok || files[0]).name} · ${objects.length} capa(s) · ${total.toLocaleString('es')} quads · ` +
-    `${(files[0].size / 1048576).toFixed(1)} MB` + (ok ? '' : '. Este navegador no deja compartir archivos: descárgalo y adjúntalo desde WhatsApp.');
+  $('shareInfo').textContent = `${(ok || files[0]).name} · ${objects.length} capa(s) · ${total.toLocaleString('es')} quads` +
+    (baked ? ' · con texturas' : '') + ` · ${(files[0].size / 1048576).toFixed(1)} MB` +
+    (ok ? '' : '. Este navegador no deja compartir este archivo: descárgalo y adjúntalo desde WhatsApp.');
   $('shareGo').style.display = ok ? '' : 'none';
   $('share').classList.add('show');
 }
@@ -664,11 +821,13 @@ $('btnExport').onclick = exportModel;
 $('btnShare').onclick = shareModel;
 $('btnSym').onclick = () => choose('sym');
 $('btnWire').onclick = () => choose('wire');
+document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => (b.onclick = () => { state.bakeSize = +b.dataset.bake; updateHud(); }));
 document.querySelectorAll('#shapes [data-shape]').forEach((b) => (b.onclick = () => choose('shape:' + b.dataset.shape)));
 $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
+$('btnRemeshMac').onclick = () => remeshBlender(active);
 $('layerAdd').onclick = newLayer;
 $('layerDel').onclick = () => deleteLayer(active);
 $('layerSphere').onclick = () => resetLayer('sphere');
@@ -689,8 +848,26 @@ for (const hex of PALETTE) {
 }
 
 const label = (id) => LABELS[id] || id;
+// Carga de la escena: quads en pantalla y memoria de las rejillas (para ver cuánto aguanta el casco).
+let loadCache = null, loadSig = '';
+function sceneLoad() {
+  // Solo se recalcula si algo cambió (recorrer 512³ en bloques no es gratis).
+  const sig = layers.map((L) => `${L.id}:${L.version}:${L.visible}:${L.remesh ? L.remesh.quads.length : 0}:${L.dirty.size}`).join('|');
+  if (loadCache && sig === loadSig) return loadCache;
+  loadSig = sig;
+  let quads = 0, bytes = 0;
+  for (const L of layers) {
+    bytes += L.grid.bytes();
+    if (!L.visible) continue;
+    if (L.remesh) quads += L.remesh.quads.length / 4;
+    else for (const ch of L.chunks) if (ch) quads += ch.quads.length / 4;
+  }
+  return (loadCache = { quads, mb: bytes / 1048576 });
+}
 function infoText() {
-  return `${active.name} · ${active.grid.n}³${state.sym ? ' · simetría' : ''}${state.wire ? ' · malla' : ''}`;
+  const { quads, mb } = sceneLoad();
+  const k = quads >= 1e6 ? (quads / 1e6).toFixed(1) + 'M' : Math.round(quads / 1000) + 'k';
+  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${state.sym ? ' · simetría' : ''}${state.wire ? ' · malla' : ''}`;
 }
 
 function renderLayers() {
@@ -746,6 +923,7 @@ function updateHud() {
   $('btnPaint').classList.toggle('on', state.tool === 'paint');
   $('btnSym').classList.toggle('on', state.sym);
   $('btnWire').classList.toggle('on', state.wire);
+  document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
   $('quadsVal').textContent = state.quads.toLocaleString('es');
   for (const s of swatchBox.children) s.classList.toggle('on', s.dataset.hex === state.color);
@@ -1760,7 +1938,7 @@ function packScene() {
     parts.push(...s.parts);
     if (L.remesh) {
       const d = L.remesh.data;
-      lm.remesh = { nv: d.positions.length, nq: d.quads.length };
+      lm.remesh = { nv: d.positions.length, nq: d.quads.length, bake: L.remesh.bake ? L.remesh.bake.size : 0 };
       parts.push(d.positions.slice().buffer, d.colors.slice().buffer, d.quads.slice().buffer);
     }
     meta.layers.push(lm);
@@ -1785,6 +1963,12 @@ function applySnapshot(buf) {
       const colors = new Float32Array(buf.slice(off, off + nv * 4)); off += nv * 4;
       const quads = new Uint32Array(buf.slice(off, off + nq * 4)); off += nq * 4;
       L.setRemesh({ positions, colors, quads });
+      // Las texturas no se guardan (pesan mucho): se vuelven a hornear al abrir.
+      if (lm.remesh.bake) {
+        const d = L.remesh.data;
+        L.busy = true;
+        bakeRemesh(L, d, L.version, lm.remesh.bake).catch(() => {}).finally(() => { L.busy = false; updateHud(); });
+      }
     }
     layers.push(L);
   }
@@ -2109,4 +2293,5 @@ if ('serviceWorker' in navigator && window.isSecureContext && !SPECTATOR) {
 
 updateHud();
 if (!window.isSecureContext && !SPECTATOR) toast('Abre la app por https:// para usar las gafas');
-window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel };
+window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+  glb: () => buildGLB(exportObjects()) };
