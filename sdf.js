@@ -207,9 +207,10 @@ export class SDFGrid {
     );
   }
 
-  // Mueve y gira la forma (movimiento rígido, conserva el color). inv: matriz 4x4 por columnas
-  // (como three.js) que lleva cada punto nuevo a donde estaba antes. Lo que salga de la caja se pierde.
-  applyTransform(inv) {
+  // Mueve, gira y escala la forma (conserva el color). inv: matriz 4x4 por columnas (como three.js)
+  // que lleva cada punto nuevo a donde estaba antes; scale: escala uniforme aplicada (las distancias
+  // crecen igual). Lo que salga de la caja se pierde.
+  applyTransform(inv, scale = 1) {
     const old = new SDFGrid(2, 'empty');
     old.setState(this.state());
     this.setResolution(this.n);
@@ -220,7 +221,7 @@ export class SDFGrid {
       e[2] * x + e[6] * y + e[10] * z + e[14],
     ];
     this.build(
-      (x, y, z) => { const p = tp(x, y, z); return old.sample(p[0], p[1], p[2]); },
+      (x, y, z) => { const p = tp(x, y, z); return old.sample(p[0], p[1], p[2]) * scale; },
       (bx, by, bz) => {
         // Caja (en vóxeles de antes) que ocupa este bloque una vez girado.
         const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];

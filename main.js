@@ -733,18 +733,31 @@ function dragMoveDesktop() {
 
 // Mientras arrastras solo se mueve su grupo 3D; al soltar, el movimiento se "hornea" en la
 // rejilla de la capa (así esculpir, deshacer, exportar y el espejo siguen igual).
-const moveOp = { L: null, mode: 'move', p0: new THREE.Vector3(), n: new THREE.Vector3(), x0: 0, y0: 0, start: new THREE.Matrix4() };
+const moveOp = { L: null, mode: 'move', p0: new THREE.Vector3(), n: new THREE.Vector3(), x0: 0, y0: 0, start: new THREE.Matrix4(), scale: 1, toastT: 0 };
 
 function beginMove(L) {
   moveOp.L = L;
+  moveOp.scale = 1;
   if (L !== active) setActive(L);
   L.group.position.set(0, 0, 0);
   L.group.quaternion.identity();
 }
 
+// m = movimiento de la mano/ratón; la escala se aplica antes, alrededor del punto agarrado (p0).
 function setMoveMatrix(m) {
-  m.decompose(moveOp.L.group.position, moveOp.L.group.quaternion, tmpS);
-  moveOp.L.group.scale.set(1, 1, 1);
+  const s = moveOp.scale, p = moveOp.p0;
+  m.multiply(new THREE.Matrix4().makeTranslation(p.x * (1 - s), p.y * (1 - s), p.z * (1 - s)).scale(tmpV.set(s, s, s)));
+  m.decompose(moveOp.L.group.position, moveOp.L.group.quaternion, moveOp.L.group.scale);
+}
+
+// Stick ↑/↓ (o la rueda en el Mac) mientras agarras: más grande / más pequeña.
+function scaleMove(f) {
+  moveOp.scale = THREE.MathUtils.clamp(moveOp.scale * f, 0.1, 10);
+  const now = performance.now();
+  if (now - moveOp.toastT > 120) {
+    moveOp.toastT = now;
+    toast(`${moveOp.L.name}: ${Math.round(moveOp.scale * 100)}%`, 900);
+  }
 }
 
 function endMove() {
@@ -753,11 +766,12 @@ function endMove() {
   if (!L) return;
   L.group.updateMatrix();
   const m = L.group.matrix.clone();
-  const moved = L.group.position.length() > 1e-4 || 1 - Math.abs(L.group.quaternion.w) > 1e-6;
+  const s = L.group.scale.x;
+  const moved = L.group.position.length() > 1e-4 || 1 - Math.abs(L.group.quaternion.w) > 1e-6 || Math.abs(s - 1) > 1e-3;
   if (moved && layers.includes(L)) {
     const hadRemesh = !!L.remesh;
     pushFull(L);
-    L.grid.applyTransform(m.invert().elements);
+    L.grid.applyTransform(m.invert().elements, s);
     L.rebuildAll();
     L.flush(); // todo de golpe, para que no parpadee en la posición vieja
     live.structure();
@@ -765,6 +779,7 @@ function endMove() {
   }
   L.group.position.set(0, 0, 0);
   L.group.quaternion.identity();
+  L.group.scale.set(1, 1, 1);
 }
 
 const mouse = { x: 0, y: 0, ndc: new THREE.Vector2(), inside: false };
@@ -886,6 +901,10 @@ addEventListener('pointermove', (e) => {
   if (radialOpen && radialMode === 'click' && e.target === radial.canvas) hoverMenu(e.clientX, e.clientY);
 });
 addEventListener('contextmenu', (e) => e.preventDefault());
+addEventListener('wheel', (e) => {
+  if (!moveOp.L || renderer.xr.isPresenting) return;
+  scaleMove(Math.exp(-e.deltaY * 0.0015));
+}, { passive: true });
 addEventListener('pointerup', (e) => {
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
@@ -1317,8 +1336,9 @@ function xrFrame(dt) {
   xr.menuPrev = ab;
   xr.trigPrev = trigDown;
 
-  // Stick derecho ↑/↓ = tamaño del pincel.
-  if (Math.abs(ay) > 0.2) {
+  // Stick derecho ↑/↓ = tamaño del pincel (o de la capa agarrada con Mover).
+  if (Math.abs(ay) > 0.2 && moveOp.L) scaleMove(Math.exp(-ay * dt * 1.2));
+  else if (Math.abs(ay) > 0.2) {
     state.radius = THREE.MathUtils.clamp(state.radius * (1 - ay * dt * 1.5), 0.005, 0.3);
     drawHud3D();
   }
@@ -1358,6 +1378,7 @@ function xrMove(right, gp, tipL, down) {
       return;
     }
     beginMove(best);
+    moveOp.p0.fromArray(tipL);
     moveOp.start.copy(ctrlLocal).invert();
     gp.hapticActuators?.[0]?.pulse?.(0.6, 40);
   }
