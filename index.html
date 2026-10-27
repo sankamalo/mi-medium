@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mi Medium</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" />
+  <meta name="theme-color" content="#1d2026" />
+  <style>
+    :root { --bg: #1d2026; --panel: rgba(18, 20, 25, 0.88); --fg: #e8ecf3; --mute: #9aa4b5; --acc: #3d8bff; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+      font: 14px/1.4 system-ui, -apple-system, sans-serif; user-select: none; }
+    #app canvas { display: block; }
+    #hud { position: fixed; top: 12px; left: 12px; width: 250px; padding: 14px; border-radius: 12px;
+      background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
+    #hud h1 { margin: 0 0 10px; font-size: 16px; letter-spacing: 0.5px; }
+    #tool { font-size: 20px; font-weight: 700; }
+    #info { color: var(--mute); margin: 2px 0 10px; }
+    label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--mute); }
+    input[type=range] { width: 130px; accent-color: var(--acc); }
+    .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    button { flex: 1 1 auto; padding: 8px 10px; border: 0; border-radius: 8px; background: #2c313b; color: var(--fg);
+      font: inherit; font-weight: 600; cursor: pointer; }
+    button:hover { background: #3a414e; }
+    button.primary { background: var(--acc); }
+    button:disabled { opacity: 0.35; cursor: default; }
+    #hud { width: 270px; max-height: calc(100vh - 24px); overflow-y: auto; }
+    .sec { display: flex; justify-content: space-between; align-items: center; margin: 14px 0 6px;
+      padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); font-weight: 700; font-size: 12px;
+      letter-spacing: 0.6px; text-transform: uppercase; color: var(--mute); }
+    button.mini { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
+    input.wide { width: 100%; }
+    #layerList { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; }
+    .layer { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+      background: rgba(255,255,255,0.03); border: 1px solid transparent; }
+    .layer:hover { background: rgba(255,255,255,0.07); }
+    .layer.active { border-color: var(--acc); background: rgba(61,139,255,0.14); }
+    .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+    .lname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lres { color: var(--mute); font-size: 12px; }
+    .eye { flex: 0 0 auto; padding: 2px 6px; background: transparent; font-size: 13px; }
+    .sec input[type=color] { width: 34px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+    #swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+    .swatch { flex: none; height: 22px; padding: 0; border-radius: 6px; border: 2px solid transparent; }
+    .swatch.on { border-color: #fff; }
+    button.on { background: var(--acc); }
+    label.check { justify-content: flex-start; gap: 8px; font-size: 13px; }
+    #spec { display: none; position: fixed; top: 12px; right: 12px; width: 280px; padding: 12px 14px; border-radius: 12px;
+      background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
+    #spec small { display: block; margin-top: 10px; color: var(--mute); }
+    #specStatus { color: #7fd18f; margin-left: 6px; font-size: 12px; }
+    body.spectator #spec { display: block; }
+    body.spectator #spec.hidden { display: none; }
+    body.spectator #hud, body.spectator #help { display: none; }
+    #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
+    #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; }
+    #toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 10px;
+      background: var(--panel); border: 1px solid rgba(255,255,255,0.1); opacity: 0; transition: opacity .25s; pointer-events: none; }
+    #toast.show { opacity: 1; }
+    @media (max-width: 600px) { #hud { width: calc(100% - 24px); } #help { display: none; } }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <h1>MI MEDIUM</h1>
+    <div id="tool">Añadir</div>
+    <div id="info"></div>
+    <label>Tamaño <input id="size" type="range" min="0.01" max="0.3" step="0.005" /></label>
+    <label>Fuerza <input id="strength" type="range" min="0.05" max="1" step="0.05" /></label>
+    <div class="row">
+      <button id="btnMenu">Herramientas</button>
+      <button id="btnUndo">Deshacer</button>
+    </div>
+    <div class="sec">Color <input id="color" type="color" title="Color actual" /></div>
+    <div id="swatches"></div>
+    <div class="row">
+      <button id="btnPaint" title="Pincel de pintar (P)">✎ Pintar</button>
+      <button id="btnBase" title="Usar el color actual como color base de la capa activa">Color → base capa</button>
+    </div>
+    <label class="check"><input id="addColor" type="checkbox" /> Añadir barro con el color actual</label>
+    <div class="sec">Capas <button id="layerAdd" class="mini" title="Nueva capa (N)">+ Capa</button></div>
+    <div id="layerList"></div>
+    <div class="row">
+      <button id="layerSphere" title="Rellenar la capa con una esfera">Esfera</button>
+      <button id="layerClear" title="Vaciar la capa">Vaciar</button>
+      <button id="layerDel" title="Borrar la capa">Borrar</button>
+    </div>
+    <div class="sec">Remesh (Blender)</div>
+    <label>Quads <span id="quadsVal"></span></label>
+    <input id="quads" type="range" min="1000" max="60000" step="1000" class="wide" />
+    <div class="row">
+      <button id="btnRemesh" title="Quads uniformes (R)">Remesh capa</button>
+      <button id="btnExport" title="E">Enviar a Blender</button>
+    </div>
+    <div class="row">
+      <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
+      <button id="btnVR" disabled>Gafas: VR</button>
+    </div>
+  </div>
+  <div id="help">
+    Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas ·
+    Botón central: mover vista · Rueda: zoom · SHIFT: suavizar · CTRL: invertir · ALT+clic: coger color · [ ]: tamaño ·
+    1–6: herramientas · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer
+  </div>
+  <div id="spec">
+    <b>MI MEDIUM · ESPEJO</b> <span id="specStatus">Esperando a las gafas…</span>
+    <div class="row">
+      <button data-view="gafas" title="1">Tus ojos</button>
+      <button data-view="libre" title="2">Cámara libre</button>
+      <button data-view="giro" title="3">Giro</button>
+    </div>
+    <div class="row">
+      <button id="specBg" title="F">Fondo</button>
+      <button id="specHide" title="H">Ocultar</button>
+    </div>
+    <small>1/2/3 vista · F fondo (verde = croma) · M malla · H ocultar/mostrar este panel.<br>
+      Graba con QuickTime (Archivo → Nueva grabación de pantalla) u OBS.</small>
+  </div>
+  <div id="toast"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
