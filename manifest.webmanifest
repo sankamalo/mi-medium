@@ -1,6 +1,6 @@
 {
-  "name": "Mi Medium",
-  "short_name": "Mi Medium",
+  "name": "La Plastilina",
+  "short_name": "Plastilina",
   "description": "Escultura con vóxeles para Quest 3",
   "start_url": "./",
   "scope": "./",

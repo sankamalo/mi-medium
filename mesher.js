@@ -169,7 +169,7 @@ export function srgbToLinear(arr) {
 
 // OBJ con caras de 4 lados (Blender las importa como quads). Varios objetos = varias capas.
 export function toOBJ(objects) {
-  const out = ['# Mi Medium'];
+  const out = ['# La Plastilina'];
   let base = 1;
   for (const { name, mesh: m } of objects) {
     out.push(`o ${name}`);

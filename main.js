@@ -564,7 +564,7 @@ function exportObjects() {
 function exportName() {
   const d = new Date();
   const pad = (v) => String(v).padStart(2, '0');
-  return `mimedium_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `plastilina_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 let exporting = false;
@@ -580,7 +580,7 @@ async function exportModel() {
     const base = exportName();
     await sendToMac(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
     const root = new THREE.Group();
-    root.name = 'MiMedium';
+    root.name = 'LaPlastilina';
     for (const o of objects) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(o.mesh.positions, 3));
@@ -630,7 +630,7 @@ async function shareModel() {
 }
 $('shareGo').onclick = async () => {
   try {
-    await navigator.share({ files: [shareFiles.share], title: 'Mi Medium' });
+    await navigator.share({ files: [shareFiles.share], title: 'La Plastilina' });
     $('share').classList.remove('show');
   } catch (e) {
     if (e.name !== 'AbortError') toast('No se pudo compartir: ' + e.message);
