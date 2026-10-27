@@ -869,6 +869,7 @@ if (!SPECTATOR) {
       return;
     }
     if (state.tool === 'move') {
+      if (moveOp.mode === 'wheel' && moveOp.L) { clearTimeout(wheelMoveTimer); endMove(); }
       const hit = pickLocal(false);
       if (hit && hit.layer) {
         // Arrastrar = mover en el plano de la pantalla · Shift + arrastrar = girar.
@@ -901,10 +902,30 @@ addEventListener('pointermove', (e) => {
   if (radialOpen && radialMode === 'click' && e.target === radial.canvas) hoverMenu(e.clientX, e.clientY);
 });
 addEventListener('contextmenu', (e) => e.preventDefault());
-addEventListener('wheel', (e) => {
-  if (!moveOp.L || renderer.xr.isPresenting) return;
-  scaleMove(Math.exp(-e.deltaY * 0.0015));
-}, { passive: true });
+// Rueda con Mover: escala la capa que tienes cogida, o la que está bajo el ratón (sin clic).
+// En ese segundo caso se fija sola cuando dejas de girar la rueda (un solo paso de deshacer).
+let wheelMoveTimer = 0;
+if (!SPECTATOR) {
+  $('app').addEventListener('wheel', (e) => {
+    if (renderer.xr.isPresenting || state.tool !== 'move') return;
+    if (!moveOp.L) {
+      setMouse(e);
+      const hit = pickLocal(false);
+      if (!hit || !hit.layer) return; // fuera de las capas: la rueda sigue siendo zoom
+      beginMove(hit.layer);
+      moveOp.p0.set(hit[0], hit[1], hit[2]);
+      moveOp.mode = 'wheel';
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    scaleMove(Math.exp(-e.deltaY * 0.0015));
+    if (moveOp.mode === 'wheel') {
+      setMoveMatrix(new THREE.Matrix4());
+      clearTimeout(wheelMoveTimer);
+      wheelMoveTimer = setTimeout(() => moveOp.mode === 'wheel' && endMove(), 450);
+    }
+  }, { capture: true, passive: false });
+}
 addEventListener('pointerup', (e) => {
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
@@ -916,7 +937,7 @@ addEventListener('pointerup', (e) => {
     sculpting = false;
     controls.enabled = true;
   }
-  if (moveOp.L && !renderer.xr.isPresenting) {
+  if (moveOp.L && moveOp.mode !== 'wheel' && !renderer.xr.isPresenting) {
     endMove();
     controls.enabled = true;
   }
@@ -1653,7 +1674,7 @@ renderer.setAnimationLoop(() => {
     }
   } else {
     controls.update();
-    if (moveOp.L) dragMoveDesktop();
+    if (moveOp.L && moveOp.mode !== 'wheel') dragMoveDesktop();
     const airOk = state.tool === 'add' && !state.invert && !state.smoothHold;
     let hit = (mouse.inside || sculpting) && !radialOpen ? pickLocal(airOk) : null;
     if (sculpting) hit = strokePoint(hit);
