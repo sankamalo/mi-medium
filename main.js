@@ -29,6 +29,10 @@ const state = {
   color: '#e04f4f', addColor: false,
 };
 
+// Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
+// y el estado de la escena la última vez que se guardó.
+let obras = [], obraId = null, obraSig = '', obrasReady = false;
+
 const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const rgbToHex = (c) => '#' + c.slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('');
 
@@ -390,6 +394,8 @@ function choose(id) {
     case 'undo': undo(); break;
     case 'remesh': remeshLayer(active); break;
     case 'export': exportModel(); break;
+    case 'save': saveObra(); break;
+    case 'share': shareModel(); break;
     case 'layerNew': newLayer(); break;
     case 'layerNext': nextLayer(); break;
   }
@@ -432,73 +438,44 @@ async function remeshLayer(L) {
   updateHud();
 }
 
+const $ = (id) => document.getElementById(id);
+
 // ---------- Exportar a Blender ----------
 async function sendToMac(name, blob) {
   const r = await fetch(API + '/api/export?name=' + encodeURIComponent(name), { method: 'POST', body: blob });
   if (!r.ok) throw new Error(r.status);
 }
 
-// Sin Mac (sin Wi-Fi): se guarda en las gafas y se manda solo cuando vuelva a haber conexión.
-// Solo cuenta la última versión de cada formato.
-async function upload(name, blob) {
-  if (server.ok) {
-    try {
-      await sendToMac(name, blob);
-      return true;
-    } catch { /* cae a pendiente */ }
-  }
-  try {
-    await idbSet('pendiente' + name.slice(name.lastIndexOf('.')), { name, blob });
-  } catch {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  }
-  return false;
+function exportObjects() {
+  return layers
+    .filter((L) => L.visible)
+    .map((L) => ({
+      name: L.name.replace(/[^\w-]+/g, '_'),
+      mesh: L.remesh
+        ? { ...L.remesh.data, normals: L.remesh.mesh.geometry.getAttribute('normal').array }
+        : L.merged(),
+    }))
+    .filter((o) => o.mesh.quads.length);
 }
 
-let flushingPending = false;
-async function flushPending() {
-  if (flushingPending || !server.ok) return;
-  flushingPending = true;
-  try {
-    let sent = 0;
-    for (const key of await idbKeys()) {
-      if (!String(key).startsWith('pendiente')) continue;
-      const { name, blob } = await idbGet(key);
-      await sendToMac(name, blob);
-      await idbDel(key);
-      sent++;
-    }
-    if (sent) toast('Exportación pendiente enviada a Blender ✔');
-  } catch (e) {
-    console.warn('pendientes', e);
-  }
-  flushingPending = false;
+function exportName() {
+  const d = new Date();
+  const pad = (v) => String(v).padStart(2, '0');
+  return `mimedium_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 let exporting = false;
 async function exportModel() {
   if (exporting) return;
+  // Sin el Mac a mano (sin Wi-Fi, o la app instalada desde GitHub): compartir el archivo.
+  if (!(await checkServer())) return shareModel();
   exporting = true;
   toast('Exportando…');
   try {
-    const objects = layers
-      .filter((L) => L.visible)
-      .map((L) => ({
-        name: L.name.replace(/[^\w-]+/g, '_'),
-        mesh: L.remesh
-          ? { ...L.remesh.data, normals: L.remesh.mesh.geometry.getAttribute('normal').array }
-          : L.merged(),
-      }))
-      .filter((o) => o.mesh.quads.length);
+    const objects = exportObjects();
     if (!objects.length) throw new Error('nada visible');
-    const d = new Date();
-    const pad = (v) => String(v).padStart(2, '0');
-    const base = `modelo_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    const okObj = await upload(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
+    const base = exportName();
+    await sendToMac(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
     const root = new THREE.Group();
     root.name = 'MiMedium';
     for (const o of objects) {
@@ -512,19 +489,61 @@ async function exportModel() {
       root.add(m);
     }
     const glb = await new GLTFExporter().parseAsync(root, { binary: true });
-    await upload(base + '.glb', new Blob([glb], { type: 'model/gltf-binary' }));
+    await sendToMac(base + '.glb', new Blob([glb], { type: 'model/gltf-binary' }));
     root.traverse((o) => o.geometry?.dispose());
     const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
-    toast(`${okObj ? 'Guardado en el Mac' : 'Sin Mac: se enviará a Blender al volver a su Wi-Fi'}: ${objects.length} capa(s) · ${total} quads`);
+    toast(`Guardado en el Mac: ${objects.length} capa(s) · ${total} quads`);
   } catch (e) {
     console.error(e);
-    toast('Error al exportar: ' + e.message);
+    exporting = false;
+    if (e.message === 'nada visible') return toast('No hay nada visible que exportar');
+    return shareModel();
   }
   exporting = false;
 }
 
+// ---------- Compartir (WhatsApp, correo…) ----------
+// Genera un OBJ (quads + color, una pieza por capa). El navegador solo deja compartir
+// ciertos tipos de archivo: si no acepta .obj, va como .obj.txt (Blender lo abre igual).
+let shareFiles = null;
+async function shareModel() {
+  const objects = exportObjects();
+  if (!objects.length) return toast('No hay nada visible que exportar');
+  // El menú de compartir no se puede abrir dentro de la vista inmersiva: se sale primero.
+  if (renderer.xr.isPresenting) await renderer.xr.getSession().end();
+  const text = toOBJ(objects);
+  const base = exportName();
+  const files = [
+    new File([text], base + '.obj', { type: 'model/obj' }),
+    new File([text], base + '.obj.txt', { type: 'text/plain' }),
+  ];
+  const ok = files.find((f) => navigator.canShare?.({ files: [f] }));
+  shareFiles = { share: ok || null, download: files[0] };
+  const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
+  $('shareInfo').textContent = `${(ok || files[0]).name} · ${objects.length} capa(s) · ${total.toLocaleString('es')} quads · ` +
+    `${(files[0].size / 1048576).toFixed(1)} MB` + (ok ? '' : '. Este navegador no deja compartir archivos: descárgalo y adjúntalo desde WhatsApp.');
+  $('shareGo').style.display = ok ? '' : 'none';
+  $('share').classList.add('show');
+}
+$('shareGo').onclick = async () => {
+  try {
+    await navigator.share({ files: [shareFiles.share], title: 'Mi Medium' });
+    $('share').classList.remove('show');
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('No se pudo compartir: ' + e.message);
+  }
+};
+$('shareDl').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(shareFiles.download);
+  a.download = shareFiles.download.name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Descargado en la carpeta Descargas');
+};
+$('shareClose').onclick = () => $('share').classList.remove('show');
+
 // ---------- HUD escritorio ----------
-const $ = (id) => document.getElementById(id);
 const sizeIn = $('size'), strIn = $('strength'), quadsIn = $('quads'), colorIn = $('color');
 sizeIn.value = state.radius;
 strIn.value = state.strength;
@@ -538,6 +557,10 @@ $('btnPaint').onclick = () => choose('paint');
 $('btnBase').onclick = () => setLayerBase(active, state.color);
 $('btnUndo').onclick = undo;
 $('btnExport').onclick = exportModel;
+$('btnShare').onclick = shareModel;
+$('btnSave').onclick = () => saveObra();
+$('btnSaveAs').onclick = () => saveObra(true);
+$('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
 $('layerAdd').onclick = newLayer;
 $('layerDel').onclick = () => deleteLayer(active);
@@ -617,6 +640,7 @@ function updateHud() {
   const paintLike = tool === 'paint' || (tool === 'add' && state.addColor);
   cursor.material.color.set(state.invert ? '#ffffff' : paintLike ? state.color : TOOL_COLORS[tool]);
   renderLayers();
+  if (obrasReady) renderObras();
   if (radialOpen) radial.draw(state, infoText());
   drawHud3D();
   if (panel3d.visible) drawPanel();
@@ -804,6 +828,9 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     if (!radialOpen) openMenu(mouse.x || innerWidth / 2, mouse.y || innerHeight / 2, 'hold');
+  } else if ((e.metaKey || e.ctrlKey) && k === 's') {
+    e.preventDefault();
+    saveObra(e.shiftKey);
   } else if ((e.metaKey || e.ctrlKey) && k === 'z') {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
@@ -948,7 +975,8 @@ function drawHud3D() {
 }
 
 // ---------- Panel de la mano izquierda (gafas) ----------
-const PW = 768, PH = 1000;
+const PW = 768, PH = 1240;
+let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
 panelTex.colorSpace = THREE.SRGBColorSpace;
@@ -961,6 +989,7 @@ panel3d.rotation.x = -0.35;
 panel3d.visible = false;
 
 function buildPanel() {
+  if (panelPage === 'obras') return buildObrasPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' (invertido)' : ''), color: TOOL_COLORS[activeTool()], size: 40 });
@@ -1002,6 +1031,13 @@ function buildPanel() {
     W.push({ type: 'button', x: PW - M - 80, y, w: 80, h: 54, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
+  const yo = 885;
+  W.push({ type: 'label', x: M, y: yo, text: 'OBRA: ' + obraName() + (obraDirty() ? ' •' : ''), size: 22 });
+  const ow = (IW - 3 * 8) / 4;
+  [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
+    ['Nueva', newObra], ['Compartir', shareModel]]
+    .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (ow + 8), y: yo + 22, w: ow, h: 64, label: l, size: 22,
+      active: () => i === 0 && obraDirty(), onClick: f }));
   const yb = PH - 200;
   W.push({
     type: 'slider', x: M, y: yb, w: IW, h: 30, label: 'Quads del remesh',
@@ -1016,6 +1052,23 @@ function buildPanel() {
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   return W;
 }
+function buildObrasPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M;
+  W.push({ type: 'label', x: M, y: 44, text: 'Obras en las gafas', size: 36 });
+  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
+    onClick: () => { panelPage = 'main'; drawPanel(); } });
+  if (!obras.length) W.push({ type: 'label', x: M, y: 130, text: 'Aún no has guardado ninguna. Pulsa Guardar.', size: 24, weight: 500 });
+  obras.slice(0, 14).forEach((o, i) => W.push({
+    type: 'button', x: M, y: 100 + i * 72, w: IW, h: 62, size: 24,
+    label: `${o.name}   ·   ${fmtDate(o.date)}`, active: () => o.id === obraId,
+    onClick: async () => { await openObra(o.id); panelPage = 'main'; drawPanel(); },
+  }));
+  W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
+    text: 'Abrir otra guarda antes la actual' });
+  return W;
+}
+
 function drawPanel() {
   panel.draw();
   panelTex.needsUpdate = true;
@@ -1442,7 +1495,6 @@ if (SPECTATOR) {
 live.hub = new Live(onLiveMessage);
 server.listeners.push((ok) => {
   if (ok && SPECTATOR) setTimeout(() => live.hub.send({ t: 'hello' }), 300);
-  if (ok) flushPending();
   if (!SPECTATOR && !ok) toast('Sin conexión con el Mac: sigues trabajando y se guarda en las gafas');
 });
 checkServer();
@@ -1493,7 +1545,9 @@ async function autosave() {
   if (sig === savedSig) return;
   try {
     await idbSet('escena', packScene());
+    await idbSet('escenaMeta', { obraId, dirty: obraDirty() });
     savedSig = sig;
+    if (obrasReady) renderObras();
   } catch (e) {
     console.warn('autoguardado', e);
   }
@@ -1511,8 +1565,122 @@ async function restoreScene() {
     console.warn('recuperar', e);
   }
 }
-if (!SPECTATOR && !params.has('nuevo')) {
-  restoreScene().then(() => {
+// ---------- Obras guardadas (dentro de las gafas, sin internet) ----------
+// "Guardar" guarda la obra abierta; abrir otra o empezar una nueva guarda antes la actual.
+
+const obraDirty = () => sceneSig() !== obraSig;
+const obraName = () => obras.find((o) => o.id === obraId)?.name || 'sin guardar';
+const fmtDate = (t) => new Date(t).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+async function saveObra(asNew = false, quiet = false) {
+  if (sculpting) return;
+  let o = !asNew && obras.find((x) => x.id === obraId);
+  if (!o) {
+    const num = Math.max(0, ...obras.map((x) => +(x.name.match(/^Obra (\d+)$/)?.[1] || 0))) + 1;
+    o = { id: Date.now(), name: `Obra ${num}` };
+    obras.push(o);
+  }
+  try {
+    const buf = packScene();
+    await idbSet('obra:' + o.id, buf);
+    o.date = Date.now();
+    o.size = buf.byteLength;
+    obras.sort((a, b) => b.date - a.date);
+    await idbSet('obras', obras);
+    obraId = o.id;
+    obraSig = sceneSig();
+    await idbSet('escenaMeta', { obraId, dirty: false });
+    if (!quiet) toast(`Guardado: ${o.name} (en las gafas)`);
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo guardar: ' + e.message);
+  }
+  updateHud();
+}
+
+function resetHistory() {
+  undoStack.length = 0;
+  redoStack.length = 0;
+}
+
+async function openObra(id) {
+  if (id === obraId) return;
+  if (obraDirty()) await saveObra(false, true);
+  const buf = await idbGet('obra:' + id);
+  if (!buf) return toast('No encuentro esa obra');
+  applySnapshot(buf);
+  synced = false;
+  resetHistory();
+  obraId = id;
+  obraSig = sceneSig();
+  await idbSet('escenaMeta', { obraId, dirty: false });
+  updateHud();
+  live.structure();
+  toast(`Abierta: ${obraName()}`);
+}
+
+async function newObra() {
+  if (obraDirty()) await saveObra(false, true);
+  layers.forEach((L) => L.dispose());
+  layers = [new Layer(256, 'sphere')];
+  active = layers[0];
+  resetHistory();
+  obraId = null;
+  obraSig = sceneSig();
+  await idbSet('escenaMeta', { obraId, dirty: false });
+  updateHud();
+  live.structure();
+  toast('Obra nueva (la anterior está guardada)');
+}
+
+async function deleteObra(id) {
+  const o = obras.find((x) => x.id === id);
+  if (!o || !confirm(`¿Borrar ${o.name} de las gafas? No se puede deshacer.`)) return;
+  await idbDel('obra:' + id);
+  obras = obras.filter((x) => x !== o);
+  await idbSet('obras', obras);
+  if (obraId === id) { obraId = null; obraSig = ''; }
+  updateHud();
+}
+
+function renderObras() {
+  $('obraName').textContent = obraName() + (obraDirty() ? ' •' : '');
+  const list = $('obraList');
+  list.innerHTML = '';
+  for (const o of obras) {
+    const row = document.createElement('div');
+    row.className = 'obra' + (o.id === obraId ? ' active' : '');
+    row.innerHTML = '<span class="lname"></span><span class="lres"></span><button class="eye" title="Borrar">✕</button>';
+    row.children[0].textContent = o.name;
+    row.children[0].title = 'Doble clic para renombrar';
+    row.children[1].textContent = fmtDate(o.date);
+    row.onclick = () => openObra(o.id);
+    row.children[0].ondblclick = async (e) => {
+      e.stopPropagation();
+      const v = prompt('Nombre de la obra', o.name);
+      if (v) { o.name = v.trim().slice(0, 30); await idbSet('obras', obras); updateHud(); }
+    };
+    row.children[2].onclick = (e) => { e.stopPropagation(); deleteObra(o.id); };
+    list.append(row);
+  }
+}
+
+async function loadObras() {
+  try {
+    obras = (await idbGet('obras')) || [];
+    const meta = (await idbGet('escenaMeta')) || {};
+    obraId = obras.some((o) => o.id === meta.obraId) ? meta.obraId : null;
+    obraSig = obraId && !meta.dirty ? sceneSig() : '';
+    if (!obraId && !meta.dirty) obraSig = sceneSig();
+  } catch (e) {
+    console.warn('obras', e);
+  }
+  obrasReady = true;
+  updateHud();
+}
+
+if (!SPECTATOR) {
+  (params.has('nuevo') ? Promise.resolve() : restoreScene()).then(loadObras).then(() => {
     setInterval(autosave, 3000);
     addEventListener('visibilitychange', () => document.hidden && autosave());
   });

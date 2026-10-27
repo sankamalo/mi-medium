@@ -56,6 +56,20 @@
     body.spectator #hud, body.spectator #help { display: none; }
     #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
     #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; }
+    #obraList { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 150px; overflow-y: auto; }
+    .obra { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; cursor: pointer;
+      background: rgba(255,255,255,0.03); border: 1px solid transparent; font-size: 13px; }
+    .obra:hover { background: rgba(255,255,255,0.07); }
+    .obra.active { border-color: var(--acc); }
+    .obra .lres { margin-left: auto; }
+    #obraName { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--fg); }
+    #share { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; }
+    #share.show { display: flex; }
+    #share .box { width: min(420px, calc(100% - 32px)); padding: 20px; border-radius: 14px; background: #1d2026;
+      border: 1px solid rgba(255,255,255,0.12); font-size: 16px; }
+    #share p { color: var(--mute); margin: 8px 0 4px; }
+    #share button { padding: 14px; font-size: 16px; }
+    #share small { display: block; margin-top: 12px; color: var(--mute); }
     #toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 10px;
       background: var(--panel); border: 1px solid rgba(255,255,255,0.1); opacity: 0; transition: opacity .25s; pointer-events: none; }
     #toast.show { opacity: 1; }
@@ -77,6 +91,13 @@
       <button id="btnMenu">Herramientas</button>
       <button id="btnUndo">Deshacer</button>
     </div>
+    <div class="sec">Obra <span id="obraName"></span></div>
+    <div class="row">
+      <button id="btnSave" class="primary" title="Guardar (Cmd+S)">Guardar</button>
+      <button id="btnSaveAs" title="Guardar como obra nueva">Copia</button>
+      <button id="btnNew" title="Empezar otra (la actual se guarda)">Nueva</button>
+    </div>
+    <div id="obraList"></div>
     <div class="sec">Color <input id="color" type="color" title="Color actual" /></div>
     <div id="swatches"></div>
     <div class="row">
@@ -97,6 +118,9 @@
     <div class="row">
       <button id="btnRemesh" title="Quads uniformes (R)">Remesh capa</button>
       <button id="btnExport" title="E">Enviar a Blender</button>
+    </div>
+    <div class="row">
+      <button id="btnShare" title="Mandar el modelo por WhatsApp, correo…">Compartir (WhatsApp…)</button>
     </div>
     <div class="row">
       <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
@@ -121,6 +145,18 @@
     </div>
     <small>1/2/3 vista · F fondo (verde = croma) · M malla · H ocultar/mostrar este panel.<br>
       Graba con QuickTime (Archivo → Nueva grabación de pantalla) u OBS.</small>
+  </div>
+  <div id="share">
+    <div class="box">
+      <b>Modelo listo</b>
+      <p id="shareInfo"></p>
+      <div class="row">
+        <button id="shareGo" class="primary">Compartir…</button>
+        <button id="shareDl">Descargar</button>
+        <button id="shareClose">Cerrar</button>
+      </div>
+      <small>En el Mac: Blender con <code>blender_autorecarga.py</code> abre solo lo que llegue a Descargas.</small>
+    </div>
   </div>
   <div id="toast"></div>
   <script type="module" src="./main.js"></script>

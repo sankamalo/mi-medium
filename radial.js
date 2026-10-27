@@ -24,6 +24,8 @@ export const ITEMS = [
   { id: 'undo', label: 'Deshacer', icon: '↶' },
   { id: 'remesh', label: 'Remesh quads', icon: '⊞' },
   { id: 'export', label: 'A Blender', icon: '⇪' },
+  { id: 'save', label: 'Guardar', icon: '⤓' },
+  { id: 'share', label: 'Compartir', icon: '➦' },
   { id: 'layerNext', label: 'Capa siguiente', icon: '⇅' },
   { id: 'layerNew', label: 'Nueva capa', icon: '❏' },
 ];
