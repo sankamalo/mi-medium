@@ -61,6 +61,23 @@ export class RadialMenu {
     this.R = size * 0.49; // arriba (grandes)
     this.Rb = size * 0.37; // abajo (pequeñas)
     this.r = size * 0.15;
+    // Deslizadores en arco alrededor de la mitad de abajo (de izquierda = mínimo a derecha = máximo).
+    // Los rellena main.js: { id, label, color, get() 0..1, set(t), text() }.
+    this.sliders = [];
+    this.sliderR = [size * 0.405, size * 0.457];
+  }
+
+  // (x, y) en píxeles del canvas desde el centro. ¿Está sobre un arco? Devuelve su índice o -1.
+  sliderAt(x, y) {
+    if (y < -this.size * 0.03) return -1; // solo la mitad de abajo (con un poco de margen)
+    const d = Math.hypot(x, y), half = this.size * 0.026;
+    return this.sliderR.findIndex((rr, i) => i < this.sliders.length && Math.abs(d - rr) < half);
+  }
+
+  // Valor 0..1 según el ángulo: izquierda = 0, abajo = 0.5, derecha = 1.
+  sliderValue(x, y) {
+    const a = Math.atan2(Math.max(0, y), x); // 0 (derecha) .. π (izquierda)
+    return Math.max(0, Math.min(1, 1 - a / Math.PI));
   }
 
   get top() {
@@ -90,7 +107,7 @@ export class RadialMenu {
     this.highlight = id;
     this.since = performance.now();
     // Salir de las formas: al centro o a la mitad de abajo.
-    if (this.sub && (id === null || BOTTOM.some((i) => i.id === id))) this.sub = false;
+    if (this.sub && (id === null || id.startsWith('slider:') || BOTTOM.some((i) => i.id === id))) this.sub = false;
     return true;
   }
 
@@ -148,10 +165,56 @@ export class RadialMenu {
     const segB = Math.PI / BOTTOM.length;
     BOTTOM.forEach((it, i) => wedge(it, i * segB, (i + 1) * segB, Rb, false));
 
+    // Arcos deslizadores (Tamaño, Estabilizar).
+    this.sliders.forEach((sl, i) => {
+      const rr = this.sliderR[i], t = sl.get();
+      const hl = this.highlight === 'slider:' + sl.id;
+      const end = Math.PI - t * Math.PI; // ángulo de canvas: π = izquierda, 0 = derecha (por abajo)
+      ctx.lineCap = 'butt';
+      ctx.lineWidth = size * (hl ? 0.03 : 0.024);
+      ctx.strokeStyle = 'rgba(24,26,32,0.92)';
+      ctx.beginPath();
+      ctx.arc(c, c, rr, 0, Math.PI);
+      ctx.stroke();
+      ctx.lineWidth = size * (hl ? 0.018 : 0.012);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = sl.color;
+      ctx.beginPath();
+      ctx.arc(c, c, rr, end, Math.PI);
+      ctx.stroke();
+      const kx = c + Math.cos(end) * rr, ky = c + Math.sin(end) * rr;
+      ctx.beginPath();
+      ctx.arc(kx, ky, size * (hl ? 0.03 : 0.022), 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      // Nombre en la esquina de abajo (izquierda el arco de dentro, derecha el de fuera), del color
+      // del arco; el valor va en la bolita.
+      const lx = i === 0 ? size * 0.13 : size * 0.87, ly = size * 0.93;
+      ctx.fillStyle = sl.color;
+      ctx.font = `700 ${size * (hl ? 0.032 : 0.027)}px system-ui, sans-serif`;
+      ctx.fillText(sl.label, lx, ly);
+      ctx.font = `600 ${size * 0.02}px system-ui, sans-serif`;
+      ctx.fillStyle = '#9aa4b5';
+      ctx.fillText(i === 0 ? 'arco de dentro' : 'arco de fuera', lx, ly + size * 0.035);
+      ctx.fillStyle = '#101215';
+      ctx.font = `800 ${size * (hl ? 0.02 : 0.016)}px system-ui, sans-serif`;
+      ctx.fillText(sl.text(), kx, ky + 1);
+    });
+
     ctx.beginPath();
     ctx.arc(c, c, r - 8, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(14,15,19,0.95)';
     ctx.fill();
+    const sl = this.highlight?.startsWith('slider:') && this.sliders.find((x) => 'slider:' + x.id === this.highlight);
+    if (sl) {
+      ctx.fillStyle = sl.color;
+      ctx.font = `700 ${size * 0.034}px system-ui, sans-serif`;
+      ctx.fillText(sl.label, c, c - size * 0.022);
+      ctx.fillStyle = '#e8ecf3';
+      ctx.font = `700 ${size * 0.03}px system-ui, sans-serif`;
+      ctx.fillText(sl.text(), c, c + size * 0.035);
+      return;
+    }
     const curId = this.highlight || state.tool;
     const cur = [...TOP, ...BOTTOM, ...SHAPES].find((i) => i.id === curId) || TOP[0];
     ctx.fillStyle = TOOL_COLORS[cur.id] || (cur.shape ? TOOL_COLORS.add : '#fff');

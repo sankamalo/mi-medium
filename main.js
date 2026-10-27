@@ -775,6 +775,18 @@ const radial = new RadialMenu(768);
 radial.canvas.id = 'radial';
 document.body.appendChild(radial.canvas);
 let radialOpen = false, radialMode = null;
+let radialDrag = -1; // arco deslizador que se está arrastrando
+radial.sliders = [
+  { id: 'size', label: 'Tamaño', color: '#e8ecf3', get: () => radiusToT(state.radius),
+    set: (t) => (state.radius = tToRadius(t)), text: () => String(Math.round(state.radius * 1000) / 10) },
+  { id: 'stab', label: 'Estabilizar', color: '#f2c94c', get: () => state.stab,
+    set: (t) => (state.stab = Math.round(t * 20) / 20), text: () => (state.stab ? Math.round(state.stab * 100) + '%' : 'no') },
+];
+// Mueve el arco i al ángulo de (x, y) (píxeles del canvas desde el centro).
+function dragSlider(i, x, y) {
+  radial.sliders[i].set(radial.sliderValue(x, y));
+  updateHud();
+}
 const menuCenter = { x: 0, y: 0 };
 const MENU_PX = 420;
 
@@ -782,11 +794,13 @@ function openMenu(x, y, mode) {
   menuCenter.x = Math.max(MENU_PX / 2, Math.min(innerWidth - MENU_PX / 2, x));
   menuCenter.y = Math.max(MENU_PX / 2, Math.min(innerHeight - MENU_PX / 2, y));
   const el = radial.canvas;
+  el.style.width = el.style.height = MENU_PX + 'px';
   el.style.left = menuCenter.x - MENU_PX / 2 + 'px';
   el.style.top = menuCenter.y - MENU_PX / 2 + 'px';
   el.style.display = 'block';
   radialOpen = true;
   radialMode = mode;
+  radialDrag = -1;
   radial.reset();
   radial.draw(state, infoText());
 }
@@ -795,10 +809,23 @@ function closeMenu(pick) {
   const h = radial.highlight;
   radial.canvas.style.display = 'none';
   radialOpen = false;
+  radialDrag = -1;
   if (pick && h) choose(h);
 }
-function hoverMenu(x, y) {
+// buttons: botones del ratón pulsados (para arrastrar los arcos de Tamaño / Estabilizar).
+function hoverMenu(x, y, buttons = 0) {
   const dx = x - menuCenter.x, dy = y - menuCenter.y;
+  const k = radial.size / MENU_PX;
+  if (!buttons) radialDrag = -1;
+  const si = radialDrag >= 0 ? radialDrag : radial.sliderAt(dx * k, dy * k);
+  if (si >= 0) {
+    radial.setHighlight('slider:' + radial.sliders[si].id);
+    if (buttons) {
+      radialDrag = si;
+      dragSlider(si, dx * k, dy * k);
+    } else radial.draw(state, infoText());
+    return;
+  }
   const dist = Math.hypot(dx, dy);
   const inner = (radial.r / radial.size) * MENU_PX;
   const h = dist < inner * 0.8 || dist > MENU_PX * 0.8 ? null : radial.itemAt(dx, dy);
@@ -806,7 +833,8 @@ function hoverMenu(x, y) {
 }
 radial.canvas.addEventListener('pointerdown', (e) => {
   e.stopPropagation();
-  hoverMenu(e.clientX, e.clientY);
+  hoverMenu(e.clientX, e.clientY, e.buttons || 1);
+  if (radial.highlight?.startsWith('slider:')) return; // arrastrando un arco: el menú sigue abierto
   closeMenu(true);
 });
 
@@ -1012,8 +1040,8 @@ addEventListener('pointermove', (e) => {
   setMouse(e);
   if (!renderer.xr.isPresenting && !SPECTATOR) setModifiers(e);
   mouse.inside = e.target === renderer.domElement;
-  if (radialOpen && radialMode === 'hold') hoverMenu(e.clientX, e.clientY);
-  if (radialOpen && radialMode === 'click' && e.target === radial.canvas) hoverMenu(e.clientX, e.clientY);
+  if (radialOpen && radialMode === 'hold') hoverMenu(e.clientX, e.clientY, e.buttons);
+  if (radialOpen && radialMode === 'click' && (e.target === radial.canvas || radialDrag >= 0)) hoverMenu(e.clientX, e.clientY, e.buttons);
 });
 addEventListener('contextmenu', (e) => e.preventDefault());
 // Rueda con Mover: escala la capa que tienes cogida, o la que está bajo el ratón (sin clic).
@@ -1041,6 +1069,7 @@ if (!SPECTATOR) {
   }, { capture: true, passive: false });
 }
 addEventListener('pointerup', (e) => {
+  radialDrag = -1;
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
   if (e.button === 2 && radialOpen && radialMode === 'hold') {
@@ -1344,6 +1373,7 @@ function openRadial3D(tipW, mode) {
   xr.menuOpenedFrame = true; // el mismo clic que lo abre no debe cerrarlo
   radialOpen = true;
   radial.reset();
+  xr.radialDrag = -1;
   radial.draw(state, infoText());
   radialTex.needsUpdate = true;
   menu3d.position.copy(tipW);
@@ -1462,17 +1492,29 @@ function xrFrame(dt) {
   }
   if (xr.menuOpen) {
     let h = null;
-    if (Math.hypot(ax, ay) > 0.5) h = radial.itemAt(ax, ay);
-    else {
-      const p = menu3d.worldToLocal(tipW.clone());
-      if (Math.hypot(p.x, p.y) > 0.03) h = radial.itemAt(p.x, -p.y);
-    }
+    const p = menu3d.worldToLocal(tipW.clone());
+    const k = radial.size / 0.26, cx = p.x * k, cy = -p.y * k;
+    if (!trigDown) xr.radialDrag = -1;
+    const si = xr.radialDrag >= 0 ? xr.radialDrag : Math.hypot(ax, ay) > 0.5 ? -1 : radial.sliderAt(cx, cy);
+    if (si >= 0) {
+      // Arcos de Tamaño / Estabilizar: apunta con la punta del mando y arrastra con el gatillo.
+      h = 'slider:' + radial.sliders[si].id;
+      if (trigDown) {
+        xr.radialDrag = si;
+        const before = radial.sliders[si].text();
+        radial.sliders[si].set(radial.sliderValue(cx, cy));
+        if (radial.sliders[si].text() !== before) gpR.hapticActuators?.[0]?.pulse?.(0.15, 8);
+        updateHud();
+        radialTex.needsUpdate = true;
+      }
+    } else if (Math.hypot(ax, ay) > 0.5) h = radial.itemAt(ax, ay);
+    else if (Math.hypot(p.x, p.y) > 0.03) h = radial.itemAt(p.x, -p.y);
     if (radial.setHighlight(h) | radial.tick()) {
       radial.draw(state, infoText());
       radialTex.needsUpdate = true;
     }
     if (xr.menuMode === 'hold' && !ab) closeRadial3D(true);
-    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev))) {
+    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev && !radial.highlight?.startsWith('slider:')))) {
       closeRadial3D(true);
     }
     xr.menuOpenedFrame = false;
