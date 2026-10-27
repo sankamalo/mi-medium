@@ -12,7 +12,7 @@ const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const CHUNK = 32;
 const UNDO_BYTES = 800e6;
 const BRICK_BYTES = 512 * 4;
-const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint'];
+const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
 const PALETTE = [
   '#f2efe9', '#cfc6bb', '#8a8580', '#2b2b2e', '#e8b796', '#c47a5a', '#7a4a33', '#e04f4f',
@@ -383,7 +383,7 @@ function resetLayer(shape) {
 
 function choose(id) {
   switch (id) {
-    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': state.tool = id; break;
+    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': state.tool = id; break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
     case 'sym': state.sym = !state.sym; toast(`Simetría ${state.sym ? 'ON' : 'OFF'}`); break;
@@ -702,6 +702,71 @@ radial.canvas.addEventListener('pointerdown', (e) => {
 });
 
 // ---------- Ratón ----------
+// ---------- Mover una capa (sin tocar las demás ni el entorno) ----------
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3();
+function dragMoveDesktop() {
+  raycaster.setFromCamera(mouse.ndc, camera);
+  model.updateMatrixWorld();
+  invM.copy(model.matrixWorld).invert();
+  const o = raycaster.ray.origin.clone().applyMatrix4(invM);
+  const d = raycaster.ray.direction.clone().transformDirection(invM);
+  const m = new THREE.Matrix4();
+  if (moveOp.mode === 'move') {
+    // Punto del rayo sobre el plano (mirando a cámara) que pasa por donde agarraste.
+    const den = d.dot(moveOp.n);
+    if (Math.abs(den) < 1e-6) return;
+    const t = tmpV.copy(moveOp.p0).sub(o).dot(moveOp.n) / den;
+    m.makeTranslation(o.addScaledVector(d, t).sub(moveOp.p0));
+  } else {
+    // Girar alrededor del punto agarrado: horizontal = eje vertical de la cámara, vertical = eje horizontal.
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).transformDirection(invM);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).transformDirection(invM);
+    const k = 0.01;
+    tmpQ.setFromAxisAngle(up, (mouse.x - moveOp.x0) * k)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(right, (mouse.y - moveOp.y0) * k));
+    m.makeTranslation(moveOp.p0)
+      .multiply(new THREE.Matrix4().makeRotationFromQuaternion(tmpQ))
+      .multiply(new THREE.Matrix4().makeTranslation(tmpV.copy(moveOp.p0).negate()));
+  }
+  setMoveMatrix(m);
+}
+
+// Mientras arrastras solo se mueve su grupo 3D; al soltar, el movimiento se "hornea" en la
+// rejilla de la capa (así esculpir, deshacer, exportar y el espejo siguen igual).
+const moveOp = { L: null, mode: 'move', p0: new THREE.Vector3(), n: new THREE.Vector3(), x0: 0, y0: 0, start: new THREE.Matrix4() };
+
+function beginMove(L) {
+  moveOp.L = L;
+  if (L !== active) setActive(L);
+  L.group.position.set(0, 0, 0);
+  L.group.quaternion.identity();
+}
+
+function setMoveMatrix(m) {
+  m.decompose(moveOp.L.group.position, moveOp.L.group.quaternion, tmpS);
+  moveOp.L.group.scale.set(1, 1, 1);
+}
+
+function endMove() {
+  const L = moveOp.L;
+  moveOp.L = null;
+  if (!L) return;
+  L.group.updateMatrix();
+  const m = L.group.matrix.clone();
+  const moved = L.group.position.length() > 1e-4 || 1 - Math.abs(L.group.quaternion.w) > 1e-6;
+  if (moved && layers.includes(L)) {
+    const hadRemesh = !!L.remesh;
+    pushFull(L);
+    L.grid.applyTransform(m.invert().elements);
+    L.rebuildAll();
+    L.flush(); // todo de golpe, para que no parpadee en la posición vieja
+    live.structure();
+    if (hadRemesh) toast('Capa movida: el remesh se descarta (vuelve a lanzarlo)');
+  }
+  L.group.position.set(0, 0, 0);
+  L.group.quaternion.identity();
+}
+
 const mouse = { x: 0, y: 0, ndc: new THREE.Vector2(), inside: false };
 const raycaster = new THREE.Raycaster();
 const invM = new THREE.Matrix4();
@@ -788,6 +853,21 @@ if (!SPECTATOR) {
       if (hit) { pickColor(hit); e.stopPropagation(); }
       return;
     }
+    if (state.tool === 'move') {
+      const hit = pickLocal(false);
+      if (hit && hit.layer) {
+        // Arrastrar = mover en el plano de la pantalla · Shift + arrastrar = girar.
+        beginMove(hit.layer);
+        moveOp.mode = e.shiftKey ? 'rotate' : 'move';
+        moveOp.p0.set(hit[0], hit[1], hit[2]);
+        moveOp.n.set(...lastRay.d).normalize();
+        moveOp.x0 = e.clientX;
+        moveOp.y0 = e.clientY;
+        controls.enabled = false;
+        e.stopPropagation();
+      }
+      return;
+    }
     const hit = pickLocal(state.tool === 'add' && !state.invert && !state.smoothHold);
     if (hit) {
       strokeDepth = hit[3] + state.radius * 0.3;
@@ -817,6 +897,10 @@ addEventListener('pointerup', (e) => {
     sculpting = false;
     controls.enabled = true;
   }
+  if (moveOp.L && !renderer.xr.isPresenting) {
+    endMove();
+    controls.enabled = true;
+  }
 });
 
 addEventListener('keydown', (e) => {
@@ -836,7 +920,8 @@ addEventListener('keydown', (e) => {
     e.shiftKey ? redo() : undo();
   } else if (e.key === '[') { state.radius = Math.max(0.005, state.radius / 1.15); updateHud(); }
   else if (e.key === ']') { state.radius = Math.min(0.3, state.radius * 1.15); updateHud(); }
-  else if (k >= '1' && k <= '6') choose(TOOL_KEYS[+k - 1]);
+  else if (k >= '1' && k <= '7') choose(TOOL_KEYS[+k - 1]);
+  else if (k === 'g') choose('move');
   else if (k === 'p') choose('paint');
   else if (k === 'w') choose('wire');
   else if (k === 'x') choose('sym');
@@ -1004,10 +1089,10 @@ function buildPanel() {
     get: () => (state.strength - 0.05) / 0.95, set: (t) => (state.strength = 0.05 + t * 0.95),
     text: () => Math.round(state.strength * 100) + '%',
   });
-  const tools = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint'];
-  const tw = (IW - 5 * 8) / 6;
+  const tools = TOOL_KEYS;
+  const tw = (IW - (tools.length - 1) * 8) / tools.length;
   tools.forEach((t, i) => W.push({
-    type: 'button', x: M + i * (tw + 8), y: 240, w: tw, h: 64, label: label(t), size: 20,
+    type: 'button', x: M + i * (tw + 8), y: 240, w: tw, h: 64, label: t === 'move' ? 'Mover' : label(t), size: 20,
     active: () => state.tool === t, onClick: () => choose(t),
   }));
   W.push({ type: 'label', x: M, y: 340, text: 'COLOR', size: 22 });
@@ -1245,11 +1330,43 @@ function xrFrame(dt) {
     cursorMirror.scale.setScalar(state.radius);
     cursorMirror.visible = true;
   }
+  if (state.tool === 'move') {
+    xrMove(right, gpR, tipL, trigDown);
+    return;
+  }
   if (trig > 0.08) {
     if (!xr.stroking) { beginStroke(); xr.stroking = true; }
     applyAt(tipL, dt, 0.3 + 0.7 * trig);
     gpR.hapticActuators?.[0]?.pulse?.(0.05 * trig, 16);
   } else xr.stroking = false;
+}
+
+// Gatillo con Mover: agarra la capa que toca el cursor y la lleva con la mano (posición y giro).
+const ctrlLocal = new THREE.Matrix4();
+function xrMove(right, gp, tipL, down) {
+  ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
+  if (down && !moveOp.L && !xr.moveHeld) {
+    xr.moveHeld = true;
+    let best = null, bestD = state.radius;
+    for (const L of layers) {
+      if (!L.visible) continue;
+      const d = L.grid.sample(tipL[0], tipL[1], tipL[2]);
+      if (d < bestD) { bestD = d; best = L; }
+    }
+    if (!best) {
+      toast('Acerca el cursor a una capa para agarrarla', 1500);
+      return;
+    }
+    beginMove(best);
+    moveOp.start.copy(ctrlLocal).invert();
+    gp.hapticActuators?.[0]?.pulse?.(0.6, 40);
+  }
+  if (!down) {
+    xr.moveHeld = false;
+    if (moveOp.L) { endMove(); gp.hapticActuators?.[0]?.pulse?.(0.3, 30); }
+    return;
+  }
+  if (moveOp.L) setMoveMatrix(new THREE.Matrix4().multiplyMatrices(ctrlLocal, moveOp.start));
 }
 
 // ---------- Espejo en directo (gafas -> Mac) ----------
@@ -1515,6 +1632,7 @@ renderer.setAnimationLoop(() => {
     }
   } else {
     controls.update();
+    if (moveOp.L) dragMoveDesktop();
     const airOk = state.tool === 'add' && !state.invert && !state.smoothHold;
     let hit = (mouse.inside || sculpting) && !radialOpen ? pickLocal(airOk) : null;
     if (sculpting) hit = strokePoint(hit);

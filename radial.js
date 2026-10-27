@@ -8,6 +8,7 @@ export const TOOL_COLORS = {
   flatten: '#f2c94c',
   inflate: '#c38bff',
   paint: '#ff9f43',
+  move: '#4fd1c5',
 };
 
 export const ITEMS = [
@@ -17,6 +18,7 @@ export const ITEMS = [
   { id: 'flatten', label: 'Aplanar', icon: '▬' },
   { id: 'inflate', label: 'Inflar', icon: '◉' },
   { id: 'paint', label: 'Pintar', icon: '✎' },
+  { id: 'move', label: 'Mover capa', icon: '✥' },
   { id: 'resUp', label: '+ Resolución', icon: '▦' },
   { id: 'resDown', label: '− Resolución', icon: '▢' },
   { id: 'sym', label: 'Simetría X', icon: '⇋' },

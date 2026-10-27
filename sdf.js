@@ -207,6 +207,43 @@ export class SDFGrid {
     );
   }
 
+  // Mueve y gira la forma (movimiento rígido, conserva el color). inv: matriz 4x4 por columnas
+  // (como three.js) que lleva cada punto nuevo a donde estaba antes. Lo que salga de la caja se pierde.
+  applyTransform(inv) {
+    const old = new SDFGrid(2, 'empty');
+    old.setState(this.state());
+    this.setResolution(this.n);
+    const e = inv, s = old.n - 1, h = this.h;
+    const tp = (x, y, z) => [
+      e[0] * x + e[4] * y + e[8] * z + e[12],
+      e[1] * x + e[5] * y + e[9] * z + e[13],
+      e[2] * x + e[6] * y + e[10] * z + e[14],
+    ];
+    this.build(
+      (x, y, z) => { const p = tp(x, y, z); return old.sample(p[0], p[1], p[2]); },
+      (bx, by, bz) => {
+        // Caja (en vóxeles de antes) que ocupa este bloque una vez girado.
+        const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+        for (let c = 0; c < 8; c++) {
+          const p = tp(-0.5 + (bx * B + (c & 1) * (B - 1)) * h, -0.5 + (by * B + ((c >> 1) & 1) * (B - 1)) * h,
+            -0.5 + (bz * B + (c >> 2) * (B - 1)) * h);
+          for (let a = 0; a < 3; a++) {
+            const v = (p[a] + 0.5) * s;
+            lo[a] = Math.min(lo[a], Math.floor(v) - 1);
+            hi[a] = Math.max(hi[a], Math.ceil(v) + 1);
+          }
+        }
+        if (hi.some((v) => v < 0) || lo.some((v) => v > s)) return 1;
+        const partial = lo.some((v) => v < 0) || hi.some((v) => v > s);
+        const L = lo.map((v) => Math.max(0, v)), H = hi.map((v) => Math.min(s, v));
+        if (!old.regionUniform(L[0], L[1], L[2], H[0], H[1], H[2])) return 0;
+        const f = old.fill[(L[0] >> 3) + old.nb * ((L[1] >> 3) + old.nb * (L[2] >> 3))];
+        return partial && f !== 1 ? 0 : f;
+      },
+      (x, y, z) => { const p = tp(x, y, z); return old.sampleColor(p[0], p[1], p[2]); },
+    );
+  }
+
   // Rayo (local) contra la superficie. Devuelve [x,y,z, t] o null.
   raymarch(o, d) {
     let t0 = -Infinity, t1 = Infinity;
