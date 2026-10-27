@@ -9,6 +9,26 @@
 
 const B = 8, B3 = 512;
 const smooth = (t) => (t >= 1 ? 0 : (1 - t) * (1 - t) * (1 + 2 * t));
+// Inflar: meseta plana en el centro y borde suave → bulto redondo en vez de pico.
+const plateau = (t) => (t >= 1 ? 0 : t <= 0.45 ? 1 : smooth((t - 0.45) / 0.55));
+
+// Pirámide de base cuadrada (lado 1, base en y = 0, altura h). De Inigo Quilez.
+function sdPyramid(px, py, pz, h) {
+  const m2 = h * h + 0.25;
+  px = Math.abs(px); pz = Math.abs(pz);
+  if (pz > px) { const t = px; px = pz; pz = t; }
+  px -= 0.5; pz -= 0.5;
+  const qx = pz, qy = h * py - 0.5 * px, qz = h * px + 0.5 * py;
+  const s = Math.max(-qx, 0);
+  const t = Math.min(1, Math.max(0, (qy - 0.5 * pz) / (m2 + 0.25)));
+  const a = m2 * (qx + s) * (qx + s) + qy * qy;
+  const b = m2 * (qx + 0.5 * t) * (qx + 0.5 * t) + (qy - m2 * t) * (qy - m2 * t);
+  const d2 = Math.min(qy, -qx * m2 - qy * 0.5) > 0 ? 0 : Math.min(a, b);
+  return Math.sqrt((d2 + qz * qz) / m2) * Math.sign(Math.max(qz, -py));
+}
+
+// Cuánto sobresale cada forma respecto a r (para no saltarse bloques que toca).
+export const SHAPE_REACH = { sphere: 1, cube: 1.32, pyramid: 1.62 };
 
 export class SDFGrid {
   constructor(n = 192, shape = 'sphere') {
@@ -275,12 +295,18 @@ export class SDFGrid {
   // `undo` (Map) recibe la copia original de cada bloque antes de tocarlo.
   // `paint` = { rgb: [r,g,b], base: [r,g,b] }: color con el que añade/pinta.
   // Devuelve la caja de muestras modificadas {lo, hi} o null.
-  applyBrush(tool, a, b, r, strength, invert, dt, undo, paint) {
+  // opts: { shape: 'sphere' | 'cube' | 'pyramid', rot: matriz 3x3 (9 números, por columnas) } para
+  // añadir/quitar con forma. 'grab' (arrastrar) lleva el barro de a hasta b con caída suave.
+  applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
     const { n, h, band, nb, bricks, colors, fill } = this;
+    const shape = (tool === 'add' || tool === 'remove') && opts?.shape && opts.shape !== 'sphere' ? opts.shape : null;
+    const reach = shape ? r * SHAPE_REACH[shape] : r;
+    // Arrastrar mira hacia atrás (de dónde viene el barro): la caja crece en -delta.
+    const back = tool === 'grab' ? [2 * a[0] - b[0], 2 * a[1] - b[1], 2 * a[2] - b[2]] : a;
     const lo = [0, 0, 0], hi = [0, 0, 0];
     for (let i = 0; i < 3; i++) {
-      lo[i] = Math.max(0, Math.floor((Math.min(a[i], b[i]) - r + 0.5) / h) - 1);
-      hi[i] = Math.min(n - 1, Math.ceil((Math.max(a[i], b[i]) + r + 0.5) / h) + 1);
+      lo[i] = Math.max(0, Math.floor((Math.min(a[i], b[i], back[i]) - reach + 0.5) / h) - 1);
+      hi[i] = Math.min(n - 1, Math.ceil((Math.max(a[i], b[i], back[i]) + reach + 0.5) / h) + 1);
       if (lo[i] > hi[i]) return null;
     }
     let op = tool;
@@ -294,13 +320,46 @@ export class SDFGrid {
       const qx = px - a[0] - abx * t, qy = py - a[1] - aby * t, qz = pz - a[2] - abz * t;
       return Math.sqrt(qx * qx + qy * qy + qz * qz);
     };
+    // Distancia con signo a la forma del pincel (barrida a lo largo del tramo a→b).
+    const R = opts?.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const shapeDist = (px, py, pz) => {
+      let t = ab2 > 0 ? ((px - a[0]) * abx + (py - a[1]) * aby + (pz - a[2]) * abz) / ab2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dx = px - a[0] - abx * t, dy = py - a[1] - aby * t, dz = pz - a[2] - abz * t;
+      // Al sistema del pincel (ejes = columnas de R).
+      const lx = dx * R[0] + dy * R[1] + dz * R[2];
+      const ly = dx * R[3] + dy * R[4] + dz * R[5];
+      const lz = dx * R[6] + dy * R[7] + dz * R[8];
+      if (shape === 'cube') {
+        const e = r * 0.75;
+        const qx = Math.abs(lx) - e, qy = Math.abs(ly) - e, qz = Math.abs(lz) - e;
+        const ox = Math.max(qx, 0), oy = Math.max(qy, 0), oz = Math.max(qz, 0);
+        return Math.sqrt(ox * ox + oy * oy + oz * oz) + Math.min(Math.max(qx, qy, qz), 0);
+      }
+      const S = 2 * r; // pirámide: base 2r × 2r, altura 2r, centrada en su "peso"
+      return sdPyramid(lx / S, (ly + 0.6 * r) / S, lz / S, 1) * S;
+    };
 
     let src = null;
     const sx = hi[0] - lo[0] + 1, sy = hi[1] - lo[1] + 1, sz = hi[2] - lo[2] + 1;
-    if (op === 'smooth') {
+    let srcC = null;
+    if (op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab') {
       src = new Float32Array(sx * sy * sz);
-      this.copyRegion(lo[0], lo[1], lo[2], sx, sy, sz, src);
+      if (op === 'grab') srcC = new Uint8Array(sx * sy * sz * 4);
+      this.copyRegion(lo[0], lo[1], lo[2], sx, sy, sz, src, srcC);
     }
+    // Lectura trilineal de la copia (en vóxeles relativos a lo).
+    const srcAt = (fx, fy, fz) => {
+      fx = Math.max(0, Math.min(sx - 1.001, fx)); fy = Math.max(0, Math.min(sy - 1.001, fy)); fz = Math.max(0, Math.min(sz - 1.001, fz));
+      const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+      const tx = fx - x0, ty = fy - y0, tz = fz - z0;
+      const j = x0 + sx * (y0 + sy * z0), X = 1, Y = sx, Z = sx * sy;
+      const l = (u, v, t) => u + (v - u) * t;
+      return l(l(l(src[j], src[j + X], tx), l(src[j + Y], src[j + X + Y], tx), ty),
+        l(l(src[j + Z], src[j + X + Z], tx), l(src[j + Y + Z], src[j + X + Y + Z], tx), ty), tz);
+    };
+    const gdx = b[0] - a[0], gdy = b[1] - a[1], gdz = b[2] - a[2];
+    const glen = Math.hypot(gdx, gdy, gdz);
     const pn = op === 'flatten' ? this.gradient(b[0], b[1], b[2]) : null;
     const rgb = paint ? (op === 'paint' && invert ? paint.base : paint.rgb) : null;
     const base = paint ? paint.base : null;
@@ -313,11 +372,14 @@ export class SDFGrid {
           if (!bricks[bi]) {
             // Saltar bloques vacíos que la herramienta no puede cambiar.
             if (op === 'paint') continue;
-            const dist = segDist(-0.5 + (bx * B + 3.5) * h, -0.5 + (by * B + 3.5) * h, -0.5 + (bz * B + 3.5) * h);
+            const cx = -0.5 + (bx * B + 3.5) * h, cy = -0.5 + (by * B + 3.5) * h, cz = -0.5 + (bz * B + 3.5) * h;
             const rb = B * 0.87 * h;
-            if (dist - rb > r + band) continue;
+            if (op === 'grab') {
+              if (Math.hypot(cx - a[0], cy - a[1], cz - a[2]) - rb > r + glen + band) continue;
+            } else if (segDist(cx, cy, cz) - rb > reach + band) continue;
+            const dist = segDist(cx, cy, cz);
             if (op === 'add' && fill[bi] < 0) continue;
-            if (op === 'remove' && fill[bi] > 0 && dist - rb > r) continue;
+            if (op === 'remove' && fill[bi] > 0 && dist - rb > reach) continue;
           }
           if (undo && !undo.has(bi)) {
             undo.set(bi, { d: bricks[bi] ? bricks[bi].slice() : null, f: fill[bi], c: colors[bi] ? colors[bi].slice() : null });
@@ -341,7 +403,7 @@ export class SDFGrid {
                 let d = bk[li];
                 switch (op) {
                   case 'add': {
-                    const s = dist - r;
+                    const s = shape ? shapeDist(px, py, pz) : dist - r;
                     if (s < d) {
                       d = s;
                       if (rgb && s < band) {
@@ -352,9 +414,37 @@ export class SDFGrid {
                     }
                     break;
                   }
-                  case 'remove': d = Math.max(d, r - dist); break;
-                  case 'inflate': d -= w * k * h * 0.35; break;
-                  case 'deflate': d += w * k * h * 0.35; break;
+                  case 'remove': d = Math.max(d, shape ? -shapeDist(px, py, pz) : r - dist); break;
+                  case 'inflate': case 'deflate': {
+                    // Empuja la superficie hacia fuera (o dentro) y la relaja un poco: queda redonda.
+                    const wp = plateau(dist / r);
+                    if (wp > 0) {
+                      const X = x - lo[0], Y = y - lo[1], Z = z - lo[2];
+                      const j = X + sx * (Y + sy * Z);
+                      const s0 = src[j];
+                      const avg = ((X > 0 ? src[j - 1] : s0) + (X < sx - 1 ? src[j + 1] : s0) +
+                        (Y > 0 ? src[j - sx] : s0) + (Y < sy - 1 ? src[j + sx] : s0) +
+                        (Z > 0 ? src[j - sx * sy] : s0) + (Z < sz - 1 ? src[j + sx * sy] : s0)) / 6;
+                      d += (op === 'inflate' ? -1 : 1) * wp * k * h * 0.35 + (avg - d) * Math.min(1, wp * k * 0.12);
+                    }
+                    break;
+                  }
+                  case 'grab': {
+                    // Cada punto toma el barro de donde venía: x - w·delta (caída alrededor de a).
+                    const wg = smooth(Math.hypot(px - a[0], py - a[1], pz - a[2]) / r);
+                    if (wg > 0) {
+                      const fx = x - lo[0] - (wg * gdx) / h, fy = y - lo[1] - (wg * gdy) / h, fz = z - lo[2] - (wg * gdz) / h;
+                      d = srcAt(fx, fy, fz);
+                      const j0 = (Math.round(Math.max(0, Math.min(sx - 1, fx))) + sx * (Math.round(Math.max(0, Math.min(sy - 1, fy))) +
+                        sy * Math.round(Math.max(0, Math.min(sz - 1, fz))))) * 4;
+                      if (srcC[j0 + 3] || cb) {
+                        if (!cb) cb = colors[bi] = new Uint8Array(B3 * 4);
+                        const jj = li * 4;
+                        cb[jj] = srcC[j0]; cb[jj + 1] = srcC[j0 + 1]; cb[jj + 2] = srcC[j0 + 2]; cb[jj + 3] = srcC[j0 + 3];
+                      }
+                    }
+                    break;
+                  }
                   case 'flatten':
                     if (w > 0) {
                       const target = (px - b[0]) * pn[0] + (py - b[1]) * pn[1] + (pz - b[2]) * pn[2];

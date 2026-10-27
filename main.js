@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { SDFGrid } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
-import { RadialMenu, ITEMS, TOOL_COLORS } from './radial.js';
+import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { CanvasPanel } from './panel.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
@@ -12,7 +12,7 @@ const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const CHUNK = 32;
 const UNDO_BYTES = 800e6;
 const BRICK_BYTES = 512 * 4;
-const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move'];
+const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
 const PALETTE = [
   '#f2efe9', '#cfc6bb', '#8a8580', '#2b2b2e', '#e8b796', '#c47a5a', '#7a4a33', '#e04f4f',
@@ -25,7 +25,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 
 const state = {
   tool: 'add', radius: 0.06, strength: 0.6, sym: false, wire: false,
-  invert: false, smoothHold: false, quads: 8000,
+  invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
   color: '#e04f4f', addColor: false,
 };
 
@@ -79,6 +79,27 @@ model.add(cursor);
 const cursorMirror = cursor.clone();
 cursorMirror.material = cursor.material;
 model.add(cursorMirror);
+// Forma del cursor = huella del pincel (a escala r): esfera, cubo o pirámide.
+const CURSOR_GEO = {
+  sphere: cursor.geometry,
+  cube: new THREE.BoxGeometry(1.5, 1.5, 1.5, 2, 2, 2),
+  pyramid: new THREE.ConeGeometry(Math.SQRT2, 2, 4, 1).rotateY(Math.PI / 4).translate(0, 0.4, 0),
+};
+function updateCursorShape() {
+  const sh = shapeActive() ? state.shape : 'sphere';
+  if (cursor.geometry !== CURSOR_GEO[sh]) cursor.geometry = cursorMirror.geometry = CURSOR_GEO[sh];
+  if (sh === 'sphere') {
+    cursor.quaternion.identity();
+    cursorMirror.quaternion.identity();
+    return;
+  }
+  const e = brushRot();
+  if (!e) return;
+  rotM.set(e[0], e[3], e[6], 0, e[1], e[4], e[7], 0, e[2], e[5], e[8], 0, 0, 0, 0, 1);
+  cursor.quaternion.setFromRotationMatrix(rotM);
+  const q = cursor.quaternion;
+  cursorMirror.quaternion.set(q.x, -q.y, -q.z, q.w);
+}
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -334,11 +355,30 @@ function beginStroke() {
 }
 
 // Una pincelada = el tramo desde el punto anterior hasta el actual (trazo continuo).
-function brushCall(L, tool, a, b, r, s, inv, dt, paint) {
-  const res = L.grid.applyBrush(tool, a, b, r, s, inv, dt, L === active ? strokeRec : null, paint);
+function brushCall(L, tool, a, b, r, s, inv, dt, paint, opts) {
+  const res = L.grid.applyBrush(tool, a, b, r, s, inv, dt, L === active ? strokeRec : null, paint, opts);
   if (res) L.markDirty(res.lo, res.hi);
-  live.brush(L, tool, a, b, r, s, inv, dt, paint);
+  live.brush(L, tool, a, b, r, s, inv, dt, paint, opts);
 }
+
+// Orientación del pincel de forma (cubo, pirámide) en coordenadas del modelo:
+// en el Mac mira a la cámara; en las gafas sigue al mando derecho.
+let brushObj = null;
+const rotM = new THREE.Matrix4(), rot3 = new THREE.Matrix3();
+function brushRot() {
+  if (!brushObj) return null;
+  model.updateMatrixWorld();
+  brushObj.updateMatrixWorld();
+  rotM.copy(model.matrixWorld).invert().multiply(brushObj.matrixWorld);
+  rot3.setFromMatrix4(rotM);
+  const e = rot3.elements;
+  for (let c = 0; c < 3; c++) {
+    const l = Math.hypot(e[3 * c], e[3 * c + 1], e[3 * c + 2]) || 1;
+    e[3 * c] /= l; e[3 * c + 1] /= l; e[3 * c + 2] /= l;
+  }
+  return Array.from(e, (v) => Math.round(v * 1e4) / 1e4);
+}
+const shapeActive = () => (activeTool() === 'add' || activeTool() === 'remove') && state.shape !== 'sphere';
 
 function applyAt(p, dt, pressure = 1) {
   const tool = activeTool();
@@ -346,6 +386,21 @@ function applyAt(p, dt, pressure = 1) {
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
   const moved = Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
   if (strokePrev && moved < state.radius * 0.05 && (tool === 'add' || tool === 'remove')) return;
+  if (tool === 'grab') {
+    // Arrastrar: lleva el barro con la mano en pasos pequeños (elástico, sin romperse).
+    if (!strokePrev) { strokePrev = [p[0], p[1], p[2]]; return; }
+    if (moved < active.grid.h * 0.05) return;
+    const steps = Math.ceil(moved / (state.radius * 0.2));
+    for (let i = 1; i <= steps; i++) {
+      const q0 = strokePrev, q1 = [a[0] + (p[0] - a[0]) * (i / steps), a[1] + (p[1] - a[1]) * (i / steps), a[2] + (p[2] - a[2]) * (i / steps)];
+      brushCall(active, 'grab', q0, q1, state.radius, 1, false, dt, null);
+      if (state.sym && Math.abs(q0[0]) > active.grid.h * 0.5) {
+        brushCall(active, 'grab', [-q0[0], q0[1], q0[2]], [-q1[0], q1[1], q1[2]], state.radius, 1, false, dt, null);
+      }
+      strokePrev = q1;
+    }
+    return;
+  }
   strokePrev = [p[0], p[1], p[2]];
   const s = state.strength * pressure;
   const paint = {
@@ -353,9 +408,13 @@ function applyAt(p, dt, pressure = 1) {
     base: active.base,
   };
   const usePaint = tool === 'paint' || (tool === 'add' && state.addColor) ? paint : null;
-  brushCall(active, tool, a, p, state.radius, s, state.invert, dt, usePaint);
+  const rot = shapeActive() ? brushRot() : null;
+  const opts = rot ? { shape: state.shape, rot } : null;
+  brushCall(active, tool, a, p, state.radius, s, state.invert, dt, usePaint, opts);
   if (state.sym && Math.abs(p[0]) > active.grid.h * 0.5) {
-    brushCall(active, tool, [-a[0], a[1], a[2]], [-p[0], p[1], p[2]], state.radius, s, state.invert, dt, usePaint);
+    // Espejo en X: la forma también se refleja.
+    const mOpts = opts ? { shape: opts.shape, rot: rot.map((v, i) => (i % 3 === 0 ? -v : v)) } : null;
+    brushCall(active, tool, [-a[0], a[1], a[2]], [-p[0], p[1], p[2]], state.radius, s, state.invert, dt, usePaint, mOpts);
   }
 }
 
@@ -383,7 +442,14 @@ function resetLayer(shape) {
 
 function choose(id) {
   switch (id) {
-    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': state.tool = id; break;
+    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': case 'grab':
+      state.tool = id;
+      break;
+    case 'shape:sphere': case 'shape:cube': case 'shape:pyramid':
+      state.shape = id.slice(6);
+      if (state.tool !== 'remove') state.tool = 'add';
+      toast(`Pincel: ${LABELS[id]}`, 1200);
+      break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
     case 'sym': state.sym = !state.sym; toast(`Simetría ${state.sym ? 'ON' : 'OFF'}`); break;
@@ -558,6 +624,9 @@ $('btnBase').onclick = () => setLayerBase(active, state.color);
 $('btnUndo').onclick = undo;
 $('btnExport').onclick = exportModel;
 $('btnShare').onclick = shareModel;
+$('btnSym').onclick = () => choose('sym');
+$('btnWire').onclick = () => choose('wire');
+document.querySelectorAll('#shapes [data-shape]').forEach((b) => (b.onclick = () => choose('shape:' + b.dataset.shape)));
 $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
@@ -581,7 +650,7 @@ for (const hex of PALETTE) {
   swatchBox.append(s);
 }
 
-const label = (id) => ITEMS.find((i) => i.id === id)?.label || id;
+const label = (id) => LABELS[id] || id;
 function infoText() {
   return `${active.name} · ${active.grid.n}³${state.sym ? ' · simetría' : ''}${state.wire ? ' · malla' : ''}`;
 }
@@ -635,6 +704,9 @@ function updateHud() {
   colorIn.value = state.color;
   $('addColor').checked = state.addColor;
   $('btnPaint').classList.toggle('on', state.tool === 'paint');
+  $('btnSym').classList.toggle('on', state.sym);
+  $('btnWire').classList.toggle('on', state.wire);
+  document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
   $('quadsVal').textContent = state.quads.toLocaleString('es');
   for (const s of swatchBox.children) s.classList.toggle('on', s.dataset.hex === state.color);
   const paintLike = tool === 'paint' || (tool === 'add' && state.addColor);
@@ -675,7 +747,7 @@ function openMenu(x, y, mode) {
   el.style.display = 'block';
   radialOpen = true;
   radialMode = mode;
-  radial.highlight = -1;
+  radial.reset();
   radial.draw(state, infoText());
 }
 function closeMenu(pick) {
@@ -683,17 +755,14 @@ function closeMenu(pick) {
   const h = radial.highlight;
   radial.canvas.style.display = 'none';
   radialOpen = false;
-  if (pick && h >= 0) choose(ITEMS[h].id);
+  if (pick && h) choose(h);
 }
 function hoverMenu(x, y) {
   const dx = x - menuCenter.x, dy = y - menuCenter.y;
   const dist = Math.hypot(dx, dy);
   const inner = (radial.r / radial.size) * MENU_PX;
-  const h = dist < inner * 0.8 || dist > MENU_PX * 0.75 ? -1 : radial.indexFromVector(dx, dy);
-  if (h !== radial.highlight) {
-    radial.highlight = h;
-    radial.draw(state, infoText());
-  }
+  const h = dist < inner * 0.8 || dist > MENU_PX * 0.8 ? null : radial.itemAt(dx, dy);
+  if (radial.setHighlight(h)) radial.draw(state, infoText());
 }
 radial.canvas.addEventListener('pointerdown', (e) => {
   e.stopPropagation();
@@ -821,6 +890,11 @@ function pickLocal(allowAir) {
 // o el corte excava sin fin). Fuera del modelo, mantienen la última profundidad.
 function strokePoint(hit) {
   const tool = activeTool();
+  if (tool === 'grab') {
+    // Arrastrar: el punto agarrado sigue al ratón a la misma profundidad.
+    const { o, d } = lastRay;
+    return [o[0] + d[0] * strokeDepth, o[1] + d[1] * strokeDepth, o[2] + d[2] * strokeDepth, strokeDepth];
+  }
   if (tool !== 'add' && tool !== 'remove') return hit;
   if (hit) strokeDepth = hit[3] + (tool === 'add' ? state.radius * 0.3 : 0);
   const { o, d } = lastRay;
@@ -886,7 +960,7 @@ if (!SPECTATOR) {
     }
     const hit = pickLocal(state.tool === 'add' && !state.invert && !state.smoothHold);
     if (hit) {
-      strokeDepth = hit[3] + state.radius * 0.3;
+      strokeDepth = hit[3] + (activeTool() === 'grab' ? 0 : state.radius * 0.3);
       sculpting = true;
       controls.enabled = false;
       beginStroke();
@@ -930,7 +1004,7 @@ addEventListener('pointerup', (e) => {
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
   if (e.button === 2 && radialOpen && radialMode === 'hold') {
-    if (radial.highlight >= 0) closeMenu(true);
+    if (radial.highlight) closeMenu(true);
     else radialMode = 'click';
   }
   if (sculpting) {
@@ -960,7 +1034,8 @@ addEventListener('keydown', (e) => {
     e.shiftKey ? redo() : undo();
   } else if (e.key === '[') { state.radius = Math.max(0.005, state.radius / 1.15); updateHud(); }
   else if (e.key === ']') { state.radius = Math.min(0.3, state.radius * 1.15); updateHud(); }
-  else if (k >= '1' && k <= '7') choose(TOOL_KEYS[+k - 1]);
+  else if (k >= '1' && k <= '8') choose(TOOL_KEYS[+k - 1]);
+  else if (k === 'b') choose('shape:' + { sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape]);
   else if (k === 'g') choose('move');
   else if (k === 'p') choose('paint');
   else if (k === 'w') choose('wire');
@@ -1100,7 +1175,7 @@ function drawHud3D() {
 }
 
 // ---------- Panel de la mano izquierda (gafas) ----------
-const PW = 768, PH = 1240;
+const PW = 768, PH = 1310;
 let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
@@ -1132,16 +1207,24 @@ function buildPanel() {
   const tools = TOOL_KEYS;
   const tw = (IW - (tools.length - 1) * 8) / tools.length;
   tools.forEach((t, i) => W.push({
-    type: 'button', x: M + i * (tw + 8), y: 240, w: tw, h: 64, label: t === 'move' ? 'Mover' : label(t), size: 20,
+    type: 'button', x: M + i * (tw + 8), y: 240, w: tw, h: 64, size: 18,
+    label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[t] || label(t),
     active: () => state.tool === t, onClick: () => choose(t),
   }));
-  W.push({ type: 'label', x: M, y: 340, text: 'COLOR', size: 22 });
+  // Forma del pincel de Añadir / Quitar.
+  const shw = (IW - 2 * 8) / 3;
+  ['sphere', 'cube', 'pyramid'].forEach((sh, i) => W.push({
+    type: 'button', x: M + i * (shw + 8), y: 316, w: shw, h: 52, size: 22,
+    label: `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`, active: () => state.shape === sh,
+    onClick: () => choose('shape:' + sh),
+  }));
+  W.push({ type: 'label', x: M, y: 405, text: 'COLOR', size: 22 });
   const sw = (IW - 7 * 8) / 8;
   PALETTE.forEach((hex, i) => W.push({
-    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 360 + Math.floor(i / 8) * (sw * 0.7 + 8), w: sw, h: sw * 0.7,
+    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 425 + Math.floor(i / 8) * (sw * 0.7 + 8), w: sw, h: sw * 0.7,
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
-  const yc = 360 + 2 * (sw * 0.7 + 8) + 4;
+  const yc = 425 + 2 * (sw * 0.7 + 8) + 4;
   W.push({ type: 'button', x: M, y: yc, w: IW / 2 - 4, h: 56, label: 'Añadir con color', size: 22,
     active: () => state.addColor, onClick: () => { state.addColor = !state.addColor; updateHud(); } });
   W.push({ type: 'button', x: M + IW / 2 + 4, y: yc, w: IW / 2 - 4, h: 56, label: 'Color → base capa', size: 22,
@@ -1156,7 +1239,7 @@ function buildPanel() {
     W.push({ type: 'button', x: PW - M - 80, y, w: 80, h: 54, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
-  const yo = 885;
+  const yo = 950;
   W.push({ type: 'label', x: M, y: yo, text: 'OBRA: ' + obraName() + (obraDirty() ? ' •' : ''), size: 22 });
   const ow = (IW - 3 * 8) / 4;
   [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
@@ -1169,10 +1252,10 @@ function buildPanel() {
     get: () => (state.quads - 1000) / 59000, set: (t) => (state.quads = Math.round((1000 + t * 59000) / 1000) * 1000),
     text: () => state.quads.toLocaleString('es'),
   });
-  const bw = (IW - 3 * 8) / 4;
-  [['− Res', () => choose('resDown')], ['+ Res', () => choose('resUp')],
-    ['Remesh', () => choose('remesh')], ['A Blender', () => choose('export')]]
-    .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: yb + 56, w: bw, h: 64, label: l, size: 22, onClick: f }));
+  const bw = (IW - 5 * 8) / 6;
+  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Remesh', 'remesh'], ['A Blender', 'export']]
+    .forEach(([l, id], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: yb + 56, w: bw, h: 64, label: l, size: 19,
+      active: () => (id === 'sym' && state.sym) || (id === 'wire' && state.wire), onClick: () => choose(id) }));
   W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   return W;
@@ -1215,7 +1298,7 @@ function openRadial3D(tipW, mode) {
   xr.menuMode = mode;
   xr.menuOpenedFrame = true; // el mismo clic que lo abre no debe cerrarlo
   radialOpen = true;
-  radial.highlight = -1;
+  radial.reset();
   radial.draw(state, infoText());
   radialTex.needsUpdate = true;
   menu3d.position.copy(tipW);
@@ -1226,7 +1309,7 @@ function closeRadial3D(pick) {
   xr.menuOpen = false;
   radialOpen = false;
   menu3d.visible = false;
-  if (pick && radial.highlight >= 0) choose(ITEMS[radial.highlight].id);
+  if (pick && radial.highlight) choose(radial.highlight);
 }
 
 function xrFrame(dt) {
@@ -1303,6 +1386,7 @@ function xrFrame(dt) {
   ray.visible = false;
   if (!gpR) return;
 
+  brushObj = right;
   const tipW = right.localToWorld(TIP.clone());
   const tipL = model.worldToLocal(tipW.clone()).toArray();
   const trig = gpR.buttons[0]?.value || 0;
@@ -1332,14 +1416,13 @@ function xrFrame(dt) {
     else if (ab && !xr.menuPrev) openRadial3D(tipW, 'hold');
   }
   if (xr.menuOpen) {
-    let h = -1;
-    if (Math.hypot(ax, ay) > 0.5) h = radial.indexFromVector(ax, ay);
+    let h = null;
+    if (Math.hypot(ax, ay) > 0.5) h = radial.itemAt(ax, ay);
     else {
       const p = menu3d.worldToLocal(tipW.clone());
-      if (Math.hypot(p.x, p.y) > 0.03) h = radial.indexFromVector(p.x, -p.y);
+      if (Math.hypot(p.x, p.y) > 0.03) h = radial.itemAt(p.x, -p.y);
     }
-    if (h !== radial.highlight) {
-      radial.highlight = h;
+    if (radial.setHighlight(h) | radial.tick()) {
       radial.draw(state, infoText());
       radialTex.needsUpdate = true;
     }
@@ -1365,6 +1448,7 @@ function xrFrame(dt) {
   }
   cursor.position.fromArray(tipL);
   cursor.scale.setScalar(state.radius);
+  updateCursorShape();
   cursor.visible = true;
   if (state.sym) {
     cursorMirror.position.set(-tipL[0], tipL[1], tipL[2]);
@@ -1418,9 +1502,9 @@ const live = {
   structTimer: 0,
   get emitting() { return !SPECTATOR && (renderer.xr.isPresenting || FORCE_EMIT); },
 
-  brush(L, tool, a, b, r, s, inv, dt, paint) {
+  brush(L, tool, a, b, r, s, inv, dt, paint, o) {
     if (!this.emitting) return;
-    this.hub.send({ t: 'b', l: L.id, tool, a, b, r, s, inv, dt, paint });
+    this.hub.send({ t: 'b', l: L.id, tool, a, b, r, s, inv, dt, paint, o });
   },
   // Deshacer/rehacer: se mandan los bloques restaurados.
   patch(L, keys) {
@@ -1490,7 +1574,7 @@ async function applyRemote(m) {
     if (!synced) return;
     const L = layerById(m.l);
     if (!L) return;
-    const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint);
+    const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, m.o);
     if (res) L.markDirty(res.lo, res.hi);
   } else if (m.t === 'blob') {
     const buf = await fetchBlob(m.id);
@@ -1674,10 +1758,13 @@ renderer.setAnimationLoop(() => {
     }
   } else {
     controls.update();
+    if (radialOpen && radial.tick()) radial.draw(state, infoText());
+    brushObj = camera;
     if (moveOp.L && moveOp.mode !== 'wheel') dragMoveDesktop();
     const airOk = state.tool === 'add' && !state.invert && !state.smoothHold;
     let hit = (mouse.inside || sculpting) && !radialOpen ? pickLocal(airOk) : null;
     if (sculpting) hit = strokePoint(hit);
+    updateCursorShape();
     cursor.visible = !!hit;
     cursorMirror.visible = !!hit && state.sym;
     if (hit) {

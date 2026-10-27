@@ -46,6 +46,7 @@
     .swatch { flex: none; height: 22px; padding: 0; border-radius: 6px; border: 2px solid transparent; }
     .swatch.on { border-color: #fff; }
     button.on { background: var(--acc); }
+    #shapes button { padding: 8px 2px; font-size: 13px; }
     label.check { justify-content: flex-start; gap: 8px; font-size: 13px; }
     #spec { display: none; position: fixed; top: 12px; right: 12px; width: 280px; padding: 12px 14px; border-radius: 12px;
       background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
@@ -91,6 +92,15 @@
       <button id="btnMenu">Herramientas</button>
       <button id="btnUndo">Deshacer</button>
     </div>
+    <div class="row" id="shapes">
+      <button data-shape="sphere" title="Pincel esfera (Añadir/Quitar)">● Esfera</button>
+      <button data-shape="cube" title="Pincel cubo">■ Cubo</button>
+      <button data-shape="pyramid" title="Pincel pirámide">▲ Pirámide</button>
+    </div>
+    <div class="row">
+      <button id="btnSym" title="X">Simetría</button>
+      <button id="btnWire" title="W">Ver malla</button>
+    </div>
     <div class="sec">Obra <span id="obraName"></span></div>
     <div class="row">
       <button id="btnSave" class="primary" title="Guardar (Cmd+S)">Guardar</button>
@@ -130,7 +140,7 @@
   <div id="help">
     Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas ·
     Botón central: mover vista · Rueda: zoom · SHIFT: suavizar · CTRL: invertir · ALT+clic: coger color · [ ]: tamaño ·
-    1–7: herramientas · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer
+    1–8: herramientas (8 = arrastrar) · B: forma del pincel · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer
   </div>
   <div id="spec">
     <b>MI MEDIUM · ESPEJO</b> <span id="specStatus">Esperando a las gafas…</span>
