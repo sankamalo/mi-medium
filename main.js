@@ -8,6 +8,7 @@ import { CanvasPanel } from './panel.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
+import { createWebcam, calibUI } from './camara.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const CHUNK = 32;
@@ -1358,10 +1359,15 @@ addEventListener('keyup', (e) => {
   if (e.code === 'Space' && radialMode === 'hold') closeMenu(true);
 });
 
-addEventListener('resize', () => {
+function fitWindow() {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
+}
+addEventListener('resize', () => {
+  if (webcam?.active) webcam.layout();
+  else fitWindow();
 });
 
 // ---------- Gafas (WebXR) ----------
@@ -2004,8 +2010,16 @@ avatar.add(headMesh, ...handMeshes);
 const spec = { view: 'gafas', bg: 'oscuro', smooth: 0.2, orbitT: 0, lastPose: null };
 const BGS = { oscuro: 0x15171c, croma: 0x00ff00, blanco: 0xf4f4f2, negro: 0x000000 };
 
+// Cámara externa (webcam o iPhone) con la escultura encima; ver camara.js.
+const webcam = SPECTATOR ? createWebcam({ renderer, scene, camera, toast, api: API, onLayoutReset: fitWindow }) : null;
+
 function spectatorPose(m) {
   spec.lastPose = m;
+  webcam.push(m);
+  // Con la webcam, la pose se aplica con retraso en spectatorFrame.
+  if (spec.view !== 'webcam') applyPose(m);
+}
+function applyPose(m) {
   const [x, y, z, qx, qy, qz, qw, s] = m.model;
   model.position.set(x, y, z);
   model.quaternion.set(qx, qy, qz, qw);
@@ -2032,12 +2046,25 @@ function spectatorKey(e) {
   else if (k === 'f') setSpecBg();
   else if (k === 'h') $('spec').classList.toggle('hidden');
   else if (k === 'm') { state.wire = !state.wire; layers.forEach((L) => L.setWire(state.wire)); }
+  else if (k === '4') setSpecView('webcam');
+  else if (k === 'r') toggleRecord();
+  else if (spec.view === 'webcam' && webcam.nudge(e)) e.preventDefault();
 }
-function setSpecView(v) {
+async function setSpecView(v) {
+  if (v === 'webcam' && !webcam.active) {
+    if (!(await webcam.start($('camSel').value))) return;
+    await fillCams();
+  } else if (v !== 'webcam' && webcam.active) {
+    webcam.stop();
+    setSpecBg(spec.bg);
+  }
   spec.view = v;
   controls.enabled = v === 'libre';
   headMesh.visible = v === 'libre';
-  if (v !== 'gafas') {
+  $('camSec').classList.toggle('hidden', v !== 'webcam');
+  if (v === 'webcam') {
+    webcam.layout();
+  } else if (v !== 'gafas') {
     controls.target.copy(model.position);
     camera.fov = 40;
   } else camera.fov = 75;
@@ -2047,12 +2074,47 @@ function setSpecView(v) {
 function setSpecBg(name) {
   const names = Object.keys(BGS);
   spec.bg = name || names[(names.indexOf(spec.bg) + 1) % names.length];
-  scene.background = new THREE.Color(BGS[spec.bg]);
+  if (!webcam.active) scene.background = new THREE.Color(BGS[spec.bg]);
   $('specBg').textContent = 'Fondo: ' + spec.bg;
+}
+
+async function fillCams() {
+  const sel = $('camSel'), cur = sel.value;
+  const cams = await webcam.devices();
+  sel.innerHTML = cams.map((c, i) => `<option value="${c.deviceId}">${c.label || 'Cámara ' + (i + 1)}</option>`).join('');
+  const active = webcam.stream?.getVideoTracks()[0]?.getSettings().deviceId;
+  sel.value = active || cur || sel.value;
+}
+async function toggleRecord() {
+  const b = $('recBtn');
+  if (webcam.rec) {
+    b.textContent = 'Guardando…';
+    await webcam.stopRecord();
+    b.textContent = '● Grabar';
+    b.classList.remove('rec');
+    return;
+  }
+  if (!(await webcam.record({ mic: $('recMic').checked }))) return;
+  b.textContent = '■ Parar';
+  b.classList.add('rec');
+}
+function recTimer() {
+  const r = webcam.rec;
+  if (!r) return;
+  const s = Math.floor((performance.now() - r.t0) / 1000);
+  $('recBtn').textContent = `■ Parar ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} · ${(r.bytes / 1048576).toFixed(0)} MB`;
 }
 
 function spectatorFrame(dt) {
   const p = spec.lastPose;
+  recTimer();
+  if (spec.view === 'webcam') {
+    const d = webcam.delayed();
+    if (d) applyPose(d);
+    webcam.applyCamera();
+    handMeshes.forEach((h, i) => (h.visible = webcam.showCtrls && !!d?.hands[i]));
+    return;
+  }
   if (spec.view === 'gafas' && p) {
     // Cámara = tu cabeza, suavizada para que el vídeo no tiemble.
     const k = 1 - Math.pow(spec.smooth, dt * 10);
@@ -2084,6 +2146,15 @@ if (SPECTATOR) {
   document.querySelectorAll('#spec [data-view]').forEach((b) => (b.onclick = () => setSpecView(b.dataset.view)));
   $('specBg').onclick = () => setSpecBg();
   $('specHide').onclick = () => $('spec').classList.add('hidden');
+  const cal = calibUI();
+  $('camSel').onchange = async () => { if (webcam.active) { await webcam.start($('camSel').value); webcam.layout(); } };
+  $('camCal').onclick = () => webcam.calibrate(cal);
+  $('camCtrl').onclick = () => { webcam.showCtrls = !webcam.showCtrls; $('camCtrl').classList.toggle('on', webcam.showCtrls); };
+  $('camDelay').value = webcam.delay;
+  $('camDelayV').textContent = webcam.delay + ' ms';
+  $('camDelay').oninput = (e) => { webcam.setDelay(+e.target.value); $('camDelayV').textContent = e.target.value + ' ms'; };
+  $('recBtn').onclick = toggleRecord;
+  fillCams();
 }
 
 live.hub = new Live(onLiveMessage);
@@ -2294,4 +2365,4 @@ if ('serviceWorker' in navigator && window.isSecureContext && !SPECTATOR) {
 updateHud();
 if (!window.isSecureContext && !SPECTATOR) toast('Abre la app por https:// para usar las gafas');
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()) };
+  glb: () => buildGLB(exportObjects()), webcam, setSpecView: SPECTATOR ? setSpecView : null, spectatorPose: SPECTATOR ? spectatorPose : null };

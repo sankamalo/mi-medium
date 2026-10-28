@@ -55,6 +55,17 @@
     body.spectator #spec { display: block; }
     body.spectator #spec.hidden { display: none; }
     body.spectator #hud, body.spectator #help { display: none; }
+    #spec .hidden { display: none; }
+    #spec select { width: 100%; margin-top: 8px; }
+    #camSec input[type=range] { flex: 1; }
+    #recBtn.rec { background: #c8324f; }
+    #calib { display: none; position: fixed; inset: 0; z-index: 50; background: rgba(10,11,14,0.82); color: #fff;
+      flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center; }
+    #calib.on { display: flex; }
+    #calib .msg { font-size: 18px; max-width: 760px; line-height: 1.45; }
+    #calib .big { font-size: 140px; font-weight: 700; line-height: 1; }
+    #calib .sub { font-size: 20px; color: #ffd36b; }
+    #calib canvas { cursor: crosshair; border-radius: 8px; }
     #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
     #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; }
     #brushPreview { position: fixed; width: 160px; height: 160px; display: none; pointer-events: none; }
@@ -159,13 +170,39 @@
       <button data-view="gafas" title="1">Tus ojos</button>
       <button data-view="libre" title="2">Cámara libre</button>
       <button data-view="giro" title="3">Giro</button>
+      <button data-view="webcam" title="4">Webcam</button>
+    </div>
+    <div id="camSec" class="hidden">
+      <select id="camSel"></select>
+      <div class="row">
+        <button id="camCal">Calibrar</button>
+        <button id="camCtrl" title="Muestra los mandos virtuales para comprobar que encajan">Mandos</button>
+      </div>
+      <label class="check">Retraso gafas <input id="camDelay" type="range" min="0" max="500" step="10"> <span id="camDelayV"></span></label>
+      <small>Flechas: girar · Mayús+flechas: mover · +/−: zoom (retoque fino de la cámara).</small>
     </div>
     <div class="row">
       <button id="specBg" title="F">Fondo</button>
       <button id="specHide" title="H">Ocultar</button>
     </div>
-    <small>1/2/3 vista · F fondo (verde = croma) · M malla · H ocultar/mostrar este panel.<br>
-      Graba con QuickTime (Archivo → Nueva grabación de pantalla) u OBS.</small>
+    <div class="row">
+      <button id="recBtn" title="R">● Grabar</button>
+      <label class="check"><input type="checkbox" id="recMic"> Micro</label>
+    </div>
+    <small>1/2/3/4 vista · F fondo (verde = croma) · M malla · R grabar · H ocultar/mostrar este panel.<br>
+      Las grabaciones se guardan en el Mac, en la carpeta <b>grabaciones/</b>.</small>
+  </div>
+  <div id="calib">
+    <div class="msg"></div>
+    <div class="big"></div>
+    <div class="sub"></div>
+    <canvas></canvas>
+    <div class="row">
+      <button data-a="skip">Saltar</button>
+      <button data-a="redo">Repetir</button>
+      <button data-a="ok" class="primary">Usar esta calibración</button>
+      <button data-a="cancel">Cancelar</button>
+    </div>
   </div>
   <div id="share">
     <div class="box">
