@@ -3,9 +3,14 @@
 //
 import { t } from './i18n.js';
 
-// Widgets: { type: 'label' | 'button' | 'slider' | 'swatch', x, y, w, h, ... }
-//   button: label, active(), onClick()     slider: label, get() 0..1, set(t), text()
-//   swatch: color, active(), onClick()     label: text, color, size
+// Widgets: { type: 'block' | 'label' | 'button' | 'slider' | 'swatch', x, y, w, h, ... }
+//   block: color (lo que va después se dibuja encima y toma de él el color del texto)
+//   button: label, active(), onClick(), group (misma letra en toda la fila), plain (sin mayúsculas)
+//   slider: label, get() 0..1, set(t), text()     swatch: color, active(), onClick()
+//   label: text, size, head (letra de botón), max (encoge para caber), wrap (ancho: corta en líneas)
+
+// La caja de ceras: los bloques van en azul, rojo, papel y negro; el amarillo es siempre «esto está puesto».
+export const CERA = { red: '#E3242B', blue: '#1B4FD8', yellow: '#FFD21F', ink: '#141210', paper: '#FFF8E3', white: '#FFFFFF' };
 
 export class CanvasPanel {
   constructor(w, h, build) {
@@ -25,7 +30,7 @@ export class CanvasPanel {
   hit(px, py) {
     for (let i = this.widgets.length - 1; i >= 0; i--) {
       const w = this.widgets[i];
-      if (w.type === 'label') continue;
+      if (w.type === 'label' || w.type === 'block') continue;
       if (px >= w.x && px <= w.x + w.w && py >= w.y && py <= w.y + w.h) return i;
     }
     return -1;
@@ -56,61 +61,119 @@ export class CanvasPanel {
     this.widgets = this.build();
     const g = this.ctx;
     g.clearRect(0, 0, this.w, this.h);
-    g.fillStyle = 'rgba(16,18,23,0.94)';
-    round(g, 0, 0, this.w, this.h, 36);
-    g.fill();
     g.textBaseline = 'middle';
+    // Los bloques van sobre un fondo negro que solo llega hasta donde acaban: esa es la línea gruesa.
+    const blocks = this.widgets.filter((w) => w.type === 'block');
+    const bottom = blocks.reduce((b, w) => Math.max(b, w.y + w.h), 0);
+    g.fillStyle = CERA.ink;
+    g.fillRect(0, 0, this.w, bottom + 8);
+    // Los botones de una misma fila llevan todos la misma letra: la que le quepa al texto más largo.
+    const sizes = {};
+    this.widgets.forEach((w) => {
+      if (w.type !== 'button' || !w.group) return;
+      sizes[w.group] = Math.min(sizes[w.group] ?? 99, fitSize(g, kanit, w.plain ? t(w.label) : t(w.label).toUpperCase(), w.size || 26, w.w - 12 - (w.dot ? 50 : 0)));
+    });
+    let text = CERA.ink, onInk = false;
     this.widgets.forEach((w, i) => {
       const hov = i === this.hover;
-      if (w.type === 'label') {
-        g.fillStyle = w.color || '#9aa4b5';
-        g.font = `${w.weight || 700} ${w.size || 26}px system-ui, "Noto Sans Thai", sans-serif`;
+      if (w.type === 'block') {
+        g.fillStyle = w.color;
+        g.fillRect(w.x, w.y, w.w, w.h);
+        text = w.color === CERA.paper ? CERA.ink : CERA.white;
+        onInk = w.color === CERA.ink;
+      } else if (w.type === 'label') {
+        const font = w.head ? kanit : mali;
+        const str = t(w.text);
+        g.fillStyle = text;
         g.textAlign = w.align || 'left';
-        g.fillText(t(w.text), w.x, w.y);
+        const size = w.size || 26;
+        if (w.wrap) {
+          const lines = wrapLines(g, font, str, size, w.wrap);
+          g.font = font(lines.size);
+          lines.forEach((l, n) => g.fillText(l, w.x, w.y + n * lines.size * 1.22));
+        } else {
+          g.font = font(w.max ? fitSize(g, font, str, size, w.max) : size);
+          g.fillText(str, w.x, w.y);
+        }
       } else if (w.type === 'button') {
         const on = w.active?.();
-        g.fillStyle = on ? '#3d8bff' : hov ? '#3a414e' : '#2a2f39';
-        round(g, w.x, w.y, w.w, w.h, 14);
-        g.fill();
+        const str = w.plain ? t(w.label) : t(w.label).toUpperCase();
+        // Sin apretar lleva sombra dura; apretado se hunde sobre ella y se pone amarillo.
+        const d = on ? 4 : 0;
+        if (!on && !onInk) { g.fillStyle = CERA.ink; g.fillRect(w.x + 5, w.y + 5, w.w, w.h); }
+        g.fillStyle = on ? CERA.yellow : hov ? '#ffe98a' : CERA.white;
+        g.fillRect(w.x + d, w.y + d, w.w, w.h);
+        g.lineWidth = 4;
+        g.strokeStyle = onInk && on ? CERA.white : CERA.ink;
+        g.strokeRect(w.x + d + 2, w.y + d + 2, w.w - 4, w.h - 4);
         if (w.dot) {
           g.fillStyle = w.dot;
           g.beginPath();
-          g.arc(w.x + 26, w.y + w.h / 2, 11, 0, Math.PI * 2);
+          g.arc(w.x + d + 28, w.y + d + w.h / 2, 12, 0, Math.PI * 2);
           g.fill();
-        }
-        g.fillStyle = w.textColor || '#e8ecf3';
-        g.font = `600 ${w.size || 26}px system-ui, "Noto Sans Thai", sans-serif`;
-        g.textAlign = w.dot ? 'left' : 'center';
-        g.fillText(t(w.label), w.dot ? w.x + 48 : w.x + w.w / 2, w.y + w.h / 2 + 1);
-      } else if (w.type === 'swatch') {
-        g.fillStyle = w.color;
-        round(g, w.x, w.y, w.w, w.h, 12);
-        g.fill();
-        if (w.active?.() || hov) {
-          g.lineWidth = w.active?.() ? 6 : 3;
-          g.strokeStyle = '#ffffff';
+          g.lineWidth = 3;
           g.stroke();
         }
+        g.fillStyle = CERA.ink;
+        const room = w.w - 12 - (w.dot ? 50 : 0);
+        g.font = kanit(w.group ? sizes[w.group] : fitSize(g, kanit, str, w.size || 26, room));
+        g.textAlign = w.dot ? 'left' : 'center';
+        g.fillText(str, (w.dot ? w.x + 50 : w.x + w.w / 2) + d, w.y + d + w.h / 2 + 1);
+      } else if (w.type === 'swatch') {
+        const on = w.active?.();
+        const cx = w.x + w.w / 2, cy = w.y + w.h / 2, r = Math.min(w.w, w.h) / 2;
+        const disc = (rad, color) => { g.fillStyle = color; g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2); g.fill(); };
+        disc(r, CERA.ink);
+        if (on) { disc(r - 5, CERA.yellow); disc(r - 13, CERA.ink); disc(r - 17, w.color); }
+        else disc(r - (hov ? 8 : 5), w.color);
       } else if (w.type === 'slider') {
         const v = w.get();
-        g.fillStyle = '#9aa4b5';
-        g.font = '600 24px system-ui, "Noto Sans Thai", sans-serif';
+        g.fillStyle = text;
+        g.font = mali(25);
         g.textAlign = 'left';
-        g.fillText(t(w.label), w.x, w.y - 18);
+        g.fillText(t(w.label), w.x, w.y - 20);
         g.textAlign = 'right';
-        g.fillText(t(w.text?.() ?? ''), w.x + w.w, w.y - 18);
-        g.fillStyle = '#2a2f39';
-        round(g, w.x, w.y, w.w, w.h, w.h / 2);
-        g.fill();
-        g.fillStyle = hov || this.drag === w ? '#5aa0ff' : '#3d8bff';
-        round(g, w.x, w.y, Math.max(w.h, w.w * v), w.h, w.h / 2);
-        g.fill();
+        g.fillText(t(w.text?.() ?? ''), w.x + w.w, w.y - 20);
+        const inner = w.w - 26;
+        g.fillStyle = CERA.white;
+        g.fillRect(w.x, w.y, w.w, w.h);
+        g.fillStyle = onInk ? CERA.yellow : CERA.ink;
+        g.fillRect(w.x, w.y, 13 + inner * v, w.h);
+        g.lineWidth = 4;
+        g.strokeStyle = CERA.ink;
+        g.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
+        g.fillStyle = hov || this.drag === w ? '#ffe98a' : CERA.yellow;
+        g.fillRect(w.x + inner * v, w.y - 7, 26, w.h + 14);
+        g.strokeRect(w.x + inner * v + 2, w.y - 5, 22, w.h + 10);
       }
     });
   }
 }
 
-function round(g, x, y, w, h, r) {
-  g.beginPath();
-  g.roundRect(x, y, w, h, r);
+const FALLBACK = '"Noto Sans Thai", system-ui, sans-serif';
+const kanit = (s) => `900 ${s}px Kanit, ${FALLBACK}`;
+const mali = (s) => `700 ${s}px Mali, ${FALLBACK}`;
+
+// La letra más grande (hasta size) con la que el texto cabe en room.
+function fitSize(g, font, str, size, room) {
+  g.font = font(size);
+  const w = g.measureText(str).width;
+  return w <= room ? size : Math.max(12, Math.floor((size * room) / w));
+}
+
+// Corta en líneas por los espacios. El tailandés apenas lleva espacios: si una palabra no cabe, encoge.
+function wrapLines(g, font, str, size, room) {
+  const words = str.split(' ');
+  const widest = words.reduce((b, x) => Math.max(b, (g.font = font(size), g.measureText(x).width)), 0);
+  const fit = widest > room ? Math.max(12, Math.floor((size * room) / widest)) : size;
+  g.font = font(fit);
+  const lines = [];
+  let cur = '';
+  for (const x of words) {
+    const next = cur ? cur + ' ' + x : x;
+    if (cur && g.measureText(next).width > room) { lines.push(cur); cur = x; } else cur = next;
+  }
+  lines.push(cur);
+  lines.size = fit;
+  return lines;
 }

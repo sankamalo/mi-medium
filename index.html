@@ -6,95 +6,111 @@
   <title>La Plastilina</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon-192.png" />
-  <meta name="theme-color" content="#1d2026" />
+  <meta name="theme-color" content="#141210" />
   <style>
     @font-face { font-family: 'Noto Sans Thai'; src: url('vendor/fonts/NotoSansThai.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
-    :root { --bg: #1d2026; --panel: rgba(18, 20, 25, 0.88); --fg: #e8ecf3; --mute: #9aa4b5; --acc: #3d8bff; }
+    @font-face { font-family: Kanit; src: url('vendor/fonts/Kanit-latin.woff2') format('woff2'); font-weight: 900; font-display: swap; unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+    @font-face { font-family: Kanit; src: url('vendor/fonts/Kanit-thai.woff2') format('woff2'); font-weight: 900; font-display: swap; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; }
+    @font-face { font-family: Mali; src: url('vendor/fonts/Mali-latin.woff2') format('woff2'); font-weight: 700; font-display: swap; unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+    @font-face { font-family: Mali; src: url('vendor/fonts/Mali-thai.woff2') format('woff2'); font-weight: 700; font-display: swap; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; }
+    /* La caja de ceras. Cada bloque un color de fondo; dentro, todos los botones iguales.
+       El amarillo es siempre «esto está puesto». */
+    :root { --ink: #141210; --paper: #FFF8E3; --white: #FFFFFF; --red: #E3242B; --blue: #1B4FD8; --yellow: #FFD21F;
+      --bg: #1d2026; --fg: var(--paper); --mute: #cfc9b8; --btn: 900 12px/1.15 Kanit, 'Noto Sans Thai', system-ui, sans-serif; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
-      font: 14px/1.4 system-ui, -apple-system, 'Noto Sans Thai', sans-serif; user-select: none; }
+      font: 700 13px/1.35 Mali, 'Noto Sans Thai', system-ui, -apple-system, sans-serif; user-select: none; }
     #app canvas { display: block; }
-    #hud { position: fixed; top: 12px; left: 12px; width: 250px; padding: 14px; border-radius: 12px;
-      background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
-    #hud h1 { margin: 0 0 10px; font-size: 16px; letter-spacing: 0.5px; }
-    #tool { font-size: 20px; font-weight: 700; }
-    #info { color: var(--mute); margin: 2px 0 10px; }
-    label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--mute); }
-    input[type=range] { width: 130px; accent-color: var(--acc); }
-    .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-    button { flex: 1 1 auto; padding: 8px 10px; border: 0; border-radius: 8px; background: #2c313b; color: var(--fg);
-      font: inherit; font-weight: 600; cursor: pointer; }
-    button:hover { background: #3a414e; }
-    button.primary { background: var(--acc); }
-    button:disabled { opacity: 0.35; cursor: default; }
-    #hud { width: 270px; max-height: calc(100vh - 24px); overflow-y: auto; }
-    .sec { display: flex; justify-content: space-between; align-items: center; margin: 14px 0 6px;
-      padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); font-weight: 700; font-size: 12px;
-      letter-spacing: 0.6px; text-transform: uppercase; color: var(--mute); }
-    button.mini { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
+    #hud { position: fixed; top: 12px; left: 12px; width: 348px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin;
+      background: var(--ink); border: 6px solid var(--ink); display: flex; flex-direction: column; gap: 6px; z-index: 2; }
+    .blk { padding: 12px; color: var(--fg); }
+    .blk.ink { background: var(--ink); --fg: var(--paper); --mute: #cfc9b8; }
+    .blk.blue { background: var(--blue); --fg: var(--white); --mute: var(--white); }
+    .blk.red { background: var(--red); --fg: var(--white); --mute: var(--white); }
+    .blk.paper { background: var(--paper); --fg: var(--ink); --mute: #4d483f; }
+    #hud h1 { margin: 0 0 8px; font: 900 26px/1 Kanit, 'Noto Sans Thai', sans-serif; color: var(--yellow); }
+    #tool { font: 900 30px/1.1 Kanit, 'Noto Sans Thai', sans-serif; }
+    #info { color: var(--mute); margin: 2px 0 8px; font-size: 12px; }
+    label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--fg); }
+    input[type=range] { appearance: none; -webkit-appearance: none; width: 150px; height: 14px; margin: 4px 0; background: var(--white); border: 3px solid var(--ink); cursor: pointer; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 24px; background: var(--yellow); border: 3px solid var(--ink); }
+    input[type=range]::-moz-range-thumb { width: 12px; height: 20px; border-radius: 0; background: var(--yellow); border: 3px solid var(--ink); }
+    .row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+    button { flex: 1 1 auto; padding: 8px 8px; border: 3px solid var(--ink); border-radius: 0; background: var(--white); color: var(--ink);
+      box-shadow: 3px 3px 0 var(--ink); font: var(--btn); text-transform: uppercase; cursor: pointer; }
+    button:hover { background: #ffe98a; }
+    button:focus-visible { outline: 3px solid var(--white); outline-offset: 1px; }
+    button.primary, button.on { background: var(--yellow); box-shadow: none; transform: translate(3px, 3px); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .blk.ink button { box-shadow: none; }
+    .blk.ink button.on, .blk.ink button.primary { transform: none; outline: 3px solid var(--white); outline-offset: -6px; }
+    .sec { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 14px 0 6px;
+      font: 900 15px/1.1 Kanit, 'Noto Sans Thai', sans-serif; color: var(--fg); }
+    .blk > .sec:first-child { margin-top: 0; }
+    button.mini { flex: 0 0 auto; padding: 4px 10px; }
     input.wide { width: 100%; }
-    #layerList { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; }
-    .layer { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer;
-      background: rgba(255,255,255,0.03); border: 1px solid transparent; }
-    .layer:hover { background: rgba(255,255,255,0.07); }
-    .layer.active { border-color: var(--acc); background: rgba(61,139,255,0.14); }
-    .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+    #layerList { display: flex; flex-direction: column; gap: 5px; max-height: 190px; overflow-y: auto; }
+    .layer, .obra { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; color: var(--ink);
+      background: var(--white); border: 3px solid var(--ink); }
+    .layer:hover, .obra:hover { background: #ffe98a; }
+    .layer.active, .obra.active { background: var(--yellow); }
+    .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ink); flex: 0 0 auto; }
     .lname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .lres { color: var(--mute); font-size: 12px; }
-    .eye { flex: 0 0 auto; padding: 2px 6px; background: transparent; font-size: 13px; }
+    .lres { color: #4d483f; font-size: 12px; }
+    button.eye { flex: 0 0 auto; padding: 2px 6px; background: transparent; border: 0; box-shadow: none; }
     .sec input[type=color] { width: 34px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
-    #swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
-    .swatch { flex: none; height: 22px; padding: 0; border-radius: 6px; border: 2px solid transparent; }
-    .swatch.on { border-color: #fff; }
-    button.on { background: var(--acc); }
-    #shapes button { padding: 8px 2px; font-size: 13px; }
-    #material { margin-top: 10px; }
-    #material summary { cursor: pointer; font-weight: 700; font-size: 13px; padding: 6px 0; }
-    .opts { flex-wrap: nowrap; gap: 4px; }
-    .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 11px; }
-    label.check { justify-content: flex-start; gap: 8px; font-size: 13px; }
-    #spec { display: none; position: fixed; top: 12px; right: 12px; width: 280px; padding: 12px 14px; border-radius: 12px;
-      background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
+    #swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
+    button.swatch { flex: none; height: auto; aspect-ratio: 1; padding: 0; border-radius: 50%; border: 3px solid var(--ink); box-shadow: none; }
+    button.swatch.on { transform: none; box-shadow: 0 0 0 3px var(--yellow), 0 0 0 6px var(--ink); }
+    #shapes button { padding: 8px 2px; }
+    #material { margin-top: 12px; }
+    #material summary { cursor: pointer; font: 900 15px/1.1 Kanit, 'Noto Sans Thai', sans-serif; padding: 4px 0; }
+    .opts { flex-wrap: nowrap; gap: 5px; }
+    .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 10.5px; box-shadow: 2px 2px 0 var(--ink); }
+    .opts button.on { box-shadow: none; transform: translate(2px, 2px); }
+    label.check { justify-content: flex-start; gap: 8px; }
+    #spec { display: none; position: fixed; top: 12px; right: 12px; width: 300px; padding: 12px 14px;
+      background: var(--ink); border: 6px solid var(--ink); }
+    #spec button { box-shadow: none; }
+    #spec button.on { transform: none; }
     #spec small { display: block; margin-top: 10px; color: var(--mute); }
-    #specStatus { color: #7fd18f; margin-left: 6px; font-size: 12px; }
+    #specStatus { color: var(--yellow); margin-left: 6px; font-size: 12px; }
     body.spectator #spec { display: block; }
     body.spectator.vertical { background: #000; }
     body.spectator #spec.hidden { display: none; }
     body.spectator #hud, body.spectator #help { display: none; }
-    .lang { margin-bottom: 10px; }
-    .lang button { font-size: 15px; padding: 8px 4px; }
+    .lang b { font: 900 13px/1 Kanit, 'Noto Sans Thai', sans-serif; }
+    .lang .row button { font-size: 14px; padding: 7px 4px; text-transform: none; }
     #spec .hidden { display: none; }
     #spec select { width: 100%; margin-top: 8px; }
     #camSec input[type=range] { flex: 1; }
-    #recBtn.rec { background: #c8324f; }
+    #recBtn.rec { background: var(--red); color: var(--white); }
     #calib { display: none; position: fixed; inset: 0; z-index: 50; background: rgba(10,11,14,0.82); color: #fff;
       flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center; }
     #calib.on { display: flex; }
     #calib.live { background: rgba(10,11,14,0.25); justify-content: flex-start; text-shadow: 0 1px 6px #000; }
     #calib.live .big { font-size: 72px; }
     #calib .msg { font-size: 18px; max-width: 760px; line-height: 1.45; }
-    #calib .big { font-size: 140px; font-weight: 700; line-height: 1; }
-    #calib .sub { font-size: 20px; color: #ffd36b; }
+    #calib .big { font-size: 140px; font-family: Kanit, 'Noto Sans Thai', sans-serif; font-weight: 900; line-height: 1; }
+    #calib .sub { font-size: 20px; color: var(--yellow); }
     #calib i { position: fixed; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: #3bff8a; box-shadow: 0 0 0 3px #0008; pointer-events: none; }
-    #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
-    #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; }
-    #brushPreview { position: fixed; width: 160px; height: 160px; display: none; pointer-events: none; }
-    #obraList { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 150px; overflow-y: auto; }
-    .obra { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; cursor: pointer;
-      background: rgba(255,255,255,0.03); border: 1px solid transparent; font-size: 13px; }
-    .obra:hover { background: rgba(255,255,255,0.07); }
-    .obra.active { border-color: var(--acc); }
+    #help { position: fixed; bottom: 12px; left: 376px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
+    #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; z-index: 3; }
+    #brushPreview { position: fixed; width: 160px; height: 160px; display: none; pointer-events: none; z-index: 3; }
+    #obraList { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; max-height: 150px; overflow-y: auto; }
+    .obra { font-size: 13px; padding: 5px 8px; }
     .obra .lres { margin-left: auto; }
-    #obraName { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--fg); }
-    #share { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; }
+    #obraName { font: 700 13px/1.2 Mali, 'Noto Sans Thai', sans-serif; color: var(--fg); }
+    #share { display: none; position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; }
     #share.show { display: flex; }
-    #share .box { width: min(420px, calc(100% - 32px)); padding: 20px; border-radius: 14px; background: #1d2026;
-      border: 1px solid rgba(255,255,255,0.12); font-size: 16px; }
-    #share p { color: var(--mute); margin: 8px 0 4px; }
-    #share button { padding: 14px; font-size: 16px; }
-    #share small { display: block; margin-top: 12px; color: var(--mute); }
-    #toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 10px;
-      background: var(--panel); border: 1px solid rgba(255,255,255,0.1); opacity: 0; transition: opacity .25s; pointer-events: none; }
+    #share .box { width: min(420px, calc(100% - 32px)); padding: 20px; background: var(--paper); color: var(--ink);
+      border: 6px solid var(--ink); box-shadow: 8px 8px 0 var(--ink); font-size: 16px; }
+    #share b { font: 900 24px/1.1 Kanit, 'Noto Sans Thai', sans-serif; }
+    #share p { color: #4d483f; margin: 8px 0 4px; }
+    #share button { padding: 14px; font-size: 15px; }
+    #share small { display: block; margin-top: 12px; color: #4d483f; }
+    #toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; z-index: 30;
+      background: var(--yellow); color: var(--ink); border: 4px solid var(--ink); opacity: 0; transition: opacity .25s; pointer-events: none; }
     #toast.show { opacity: 1; }
     @media (max-width: 600px) { #hud { width: calc(100% - 24px); } #help { display: none; } }
   </style>
@@ -105,12 +121,15 @@
 <body>
   <div id="app"></div>
   <div id="hud">
+  <div class="blk ink">
     <h1>LA PLASTILINA</h1>
     <div class="lang"><b>Idiomas</b>
       <div class="row">
         <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
       </div>
     </div>
+  </div>
+  <div class="blk blue">
     <div id="tool">Añadir</div>
     <div id="info"></div>
     <label>Tamaño <input id="size" type="range" min="0" max="1" step="0.002" /></label>
@@ -144,6 +163,8 @@
     <div class="row opts">
       <button data-opt="stroke:free">Libre</button><button data-opt="stroke:line" title="L">Recto</button>
     </div>
+  </div>
+  <div class="blk paper">
     <div class="sec">Simetría</div>
     <div class="row opts">
       <button data-opt="sym:x">X</button><button data-opt="sym:y">Y</button><button data-opt="sym:z">Z</button><button data-opt="sym:radial">Radial</button><button data-opt="sym:reset">Centrar</button>
@@ -156,13 +177,6 @@
       <button id="btnWire" title="W">Ver malla</button>
       <button data-opt="floor">Suelo</button>
     </div>
-    <div class="sec">Obra <span id="obraName"></span></div>
-    <div class="row">
-      <button id="btnSave" class="primary" title="Guardar (Cmd+S)">Guardar</button>
-      <button id="btnSaveAs" title="Guardar como obra nueva">Copia</button>
-      <button id="btnNew" title="Empezar otra (la actual se guarda)">Nueva</button>
-    </div>
-    <div id="obraList"></div>
     <div class="sec">Color <input id="color" type="color" title="Color actual" /></div>
     <div id="swatches"></div>
     <div class="row">
@@ -176,6 +190,17 @@
       <button id="layerClear" title="Vaciar la capa">Vaciar</button>
       <button id="layerDel" title="Borrar la capa">Borrar</button>
     </div>
+  </div>
+  <div class="blk red">
+    <div class="sec">Obra <span id="obraName"></span></div>
+    <div class="row">
+      <button id="btnSave" class="primary" title="Guardar (Cmd+S)">Guardar</button>
+      <button id="btnSaveAs" title="Guardar como obra nueva">Copia</button>
+      <button id="btnNew" title="Empezar otra (la actual se guarda)">Nueva</button>
+    </div>
+    <div id="obraList"></div>
+  </div>
+  <div class="blk ink">
     <div class="sec">Remesh + horneado</div>
     <label>Quads <span id="quadsVal"></span></label>
     <input id="quads" type="range" min="1000" max="60000" step="1000" class="wide" />
@@ -198,6 +223,7 @@
       <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
       <button id="btnVR" disabled>Gafas: VR</button>
     </div>
+  </div>
   </div>
   <div id="help">
     Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas ·

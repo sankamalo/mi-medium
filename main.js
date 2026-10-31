@@ -5,7 +5,7 @@ import { SDFGrid } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { createControllerRig, Flower } from './flor.js';
-import { CanvasPanel } from './panel.js';
+import { CanvasPanel, CERA } from './panel.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
@@ -1288,7 +1288,6 @@ function updateHud() {
   const el = $('tool');
   const tool = activeTool();
   el.textContent = label(tool) + (state.invert ? ' ' + t('(invertido)') : '');
-  el.style.color = TOOL_COLORS[tool];
   $('info').textContent = infoText();
   sizeIn.value = radiusToT(state.radius);
   $('stab').value = state.stab;
@@ -1932,7 +1931,7 @@ function drawHud3D() {
 }
 
 // ---------- Panel de la mano izquierda (gafas) ----------
-const PW = 768, PH = 1528;
+const PW = 768, PH = 1668;
 let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
@@ -1944,147 +1943,163 @@ const panel3d = new THREE.Mesh(
 panel3d.position.set(0.02, 0.19, -0.06);
 panel3d.rotation.x = -0.35;
 panel3d.visible = false;
+// Las letras van con la app; el lienzo no las coge solo, hay que pedirlas antes de dibujar.
+Promise.all(['900 30px Kanit', '700 30px Mali'].map((f) => document.fonts.load(f, 'Aก')))
+  .then(() => { if (panel3d.visible) drawPanel(); }, () => {});
 
+// Bloque de color: agrupa lo que va junto. Azul: el pincel. Papel: color y capas. Rojo: la obra. Negro: lo técnico.
+const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
 function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
   if (panelPage === 'pincel') return buildBrushPage();
   if (panelPage === 'material') return buildMaterialPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
-  W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), color: TOOL_COLORS[activeTool()], size: 40 });
-  W.push({ type: 'label', x: PW - M, y: 44, text: infoText(), align: 'right', size: 22, weight: 500 });
+  W.push(panelBlock(8, 548, CERA.blue));
+  W.push({ type: 'label', x: M, y: 54, head: true, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), size: 50, max: IW * 0.55 });
+  W.push({ type: 'label', x: PW - M, y: 54, text: infoText(), align: 'right', size: 22, max: IW * 0.43 });
   W.push({
-    type: 'slider', x: M, y: 112, w: IW, h: 30, label: 'Tamaño',
+    type: 'slider', x: M, y: 128, w: IW, h: 30, label: 'Tamaño',
     get: () => radiusToT(state.radius), set: (t) => (state.radius = tToRadius(t)),
     text: () => Math.round(state.radius * 1000) / 10 + '',
   });
   W.push({
-    type: 'slider', x: M, y: 190, w: IW, h: 30, label: 'Fuerza',
+    type: 'slider', x: M, y: 208, w: IW, h: 30, label: 'Fuerza',
     get: () => (state.strength - 0.05) / 0.95, set: (t) => (state.strength = 0.05 + t * 0.95),
     text: () => Math.round(state.strength * 100) + '%',
   });
   W.push({
-    type: 'slider', x: M, y: 268, w: IW, h: 30, label: 'Estabilizar (línea recta)',
+    type: 'slider', x: M, y: 288, w: IW, h: 30, label: 'Estabilizar (línea recta)',
     get: () => state.stab, set: (t) => (state.stab = Math.round(t * 20) / 20),
     text: () => (state.stab ? Math.round(state.stab * 100) + '%' : t('no')),
   });
-  const tools = TOOL_KEYS;
   const tw = (IW - 4 * 8) / 5;
-  tools.forEach((tl, i) => W.push({
-    type: 'button', x: M + (i % 5) * (tw + 8), y: 318 + Math.floor(i / 5) * 66, w: tw, h: 58, size: 22,
+  TOOL_KEYS.forEach((tl, i) => W.push({
+    type: 'button', x: M + (i % 5) * (tw + 8), y: 340 + Math.floor(i / 5) * 68, w: tw, h: 58, size: 24, group: 'tools',
     label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[tl] || label(tl),
     active: () => state.tool === tl, onClick: () => choose(tl),
   }));
-  W.push({ type: 'label', x: M, y: 483, text: 'COLOR', size: 22 });
+  const hw = (IW - 2 * 10) / 3;
+  W.push({ type: 'button', x: M, y: 480, w: hw, h: 58, label: 'Traer aquí', size: 24, group: 'nav',
+    onClick: () => placeWorkspace(true) });
+  W.push({ type: 'button', x: M + hw + 10, y: 480, w: hw, h: 58, label: 'Pincel ▸', size: 24, group: 'nav',
+    onClick: () => { panelPage = 'pincel'; drawPanel(); } });
+  W.push({ type: 'button', x: M + 2 * (hw + 10), y: 480, w: hw, h: 58, label: 'Material ▸', size: 24, group: 'nav',
+    onClick: () => { panelPage = 'material'; drawPanel(); } });
+
+  W.push(panelBlock(564, 556, CERA.paper));
+  W.push({ type: 'label', x: M, y: 600, head: true, text: 'COLOR', size: 28 });
   const sw = (IW - 7 * 8) / 8;
   PALETTE.forEach((hex, i) => W.push({
-    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 503 + Math.floor(i / 8) * (sw * 0.7 + 8), w: sw, h: sw * 0.7,
+    type: 'swatch', x: M + (i % 8) * (sw + 8), y: 622 + Math.floor(i / 8) * (sw + 8), w: sw, h: sw,
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
-  const yc = 503 + 2 * (sw * 0.7 + 8) + 4;
-  const hw = (IW - 2 * 8) / 3;
-  W.push({ type: 'button', x: M, y: yc, w: hw, h: 56, label: 'Traer aquí', size: 22,
-    onClick: () => placeWorkspace(true) });
-  W.push({ type: 'button', x: M + hw + 8, y: yc, w: hw, h: 56, label: 'Pincel ▸', size: 24,
-    onClick: () => { panelPage = 'pincel'; drawPanel(); } });
-  W.push({ type: 'button', x: M + 2 * (hw + 8), y: yc, w: hw, h: 56, label: 'Material ▸', size: 24,
-    onClick: () => { panelPage = 'material'; drawPanel(); } });
-  const yl = yc + 92;
-  W.push({ type: 'label', x: M, y: yl, text: 'CAPAS', size: 22 });
+  const yl = 834;
+  W.push({ type: 'label', x: M, y: yl, head: true, text: 'CAPAS', size: 28 });
   W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
   layers.slice(-4).forEach((L, i) => {
-    const y = yl + 34 + i * 62;
-    W.push({ type: 'button', x: M, y, w: IW - 90, h: 54, label: `${L.name}  ·  ${L.grid.res}³${L.remesh ? '  ⊞' : ''}`,
+    const y = yl + 36 + i * 60;
+    W.push({ type: 'button', x: M, y, w: IW - 96, h: 50, label: `${L.name}  ·  ${L.grid.res}³${L.remesh ? '  ⊞' : ''}`, plain: true,
       dot: L.color, size: 22, active: () => L === active, onClick: () => setActive(L) });
-    W.push({ type: 'button', x: PW - M - 80, y, w: 80, h: 54, label: L.visible ? 'Ver' : '—', size: 20,
+    W.push({ type: 'button', x: PW - M - 84, y, w: 84, h: 50, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
-  const yo = 1028;
-  W.push({ type: 'label', x: M, y: yo, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 22 });
-  const ow = (IW - 3 * 8) / 4;
+
+  W.push(panelBlock(1128, 142, CERA.red));
+  W.push({ type: 'label', x: M, y: 1160, head: true, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 26, max: IW });
+  const ow = (IW - 3 * 10) / 4;
   [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
     ['Nueva', newObra], ['Compartir', shareModel]]
-    .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (ow + 8), y: yo + 22, w: ow, h: 64, label: l, size: 22,
+    .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (ow + 10), y: 1188, w: ow, h: 62, label: l, size: 24, group: 'obra',
       active: () => i === 0 && obraDirty(), onClick: f }));
-  const yb = 1188;
+
+  W.push(panelBlock(1278, PH - 1286, CERA.ink));
+  const yb = 1334;
   W.push({
-    type: 'slider', x: M, y: yb, w: IW, h: 30, label: 'Quads del remesh',
+    type: 'slider', x: M, y: yb, w: IW, h: 26, label: 'Quads del remesh',
     get: () => (state.quads - 1000) / 59000, set: (t) => (state.quads = Math.round((1000 + t * 59000) / 1000) * 1000),
     text: () => state.quads.toLocaleString(),
   });
-  const bw = (IW - 6 * 8) / 7;
+  const bw = (IW - 3 * 8) / 4;
   [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], ['Remesh', 'remesh'], ['A Blender', 'export']]
-    .forEach(([l, id], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: yb + 56, w: bw, h: 64, label: l, size: 19,
+    .forEach(([l, id], i) => W.push({ type: 'button', x: M + (i % 4) * (bw + 8), y: yb + 44 + Math.floor(i / 4) * 66, w: bw, h: 58, label: l, size: 24, group: 'tech',
       active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => choose(id) }));
   // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
-  const yi = yb + 150;
-  W.push({ type: 'label', x: M, y: yi, text: 'Idiomas', size: 28, color: '#ffffff' });
+  const yi = yb + 190;
+  W.push({ type: 'label', x: M, y: yi, head: true, text: 'Idiomas', size: 24 });
   const lw = (IW - 2 * 8) / 3;
   [['es', 'Español'], ['en', 'English'], ['th', 'ไทย']].forEach(([l, name], i) => W.push({
-    type: 'button', x: M + i * (lw + 8), y: yi + 22, w: lw, h: 100, label: name, size: 36,
+    type: 'button', x: M + i * (lw + 8), y: yi + 20, w: lw, h: 56, label: name, plain: true, size: 30,
     active: () => getLang() === l, onClick: () => changeLang(l),
   }));
-  W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
+  W.push({ type: 'label', x: PW / 2, y: PH - 24, align: 'center', size: 18, max: IW,
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   return W;
+}
+// Cabecera de las páginas de dentro: título y volver, sobre el bloque del que vienen.
+function pageHead(W, title) {
+  W.push({ type: 'label', x: 32, y: 54, head: true, text: title, size: 44, max: PW - 240 });
+  W.push({ type: 'button', x: PW - 32 - 160, y: 24, w: 160, h: 56, label: '◂ Volver', size: 24,
+    onClick: () => { panelPage = 'main'; drawPanel(); } });
 }
 // Página del material: tres retoques suaves de cómo se ve la plastilina.
 function buildMaterialPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M;
-  W.push({ type: 'label', x: M, y: 44, text: 'Material', size: 36 });
-  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
-    onClick: () => { panelPage = 'main'; drawPanel(); } });
+  W.push(panelBlock(8, 92, CERA.blue));
+  pageHead(W, 'Material');
+  W.push(panelBlock(108, 450, CERA.paper));
   LOOK_SLIDERS.forEach(([key, text, min, max], i) => W.push({
-    type: 'slider', x: M, y: 160 + i * 100, w: IW, h: 34, label: text,
+    type: 'slider', x: M, y: 170 + i * 100, w: IW, h: 34, label: text,
     get: () => (state.look[key] - min) / (max - min), set: (v) => changeLook(key, min + v * (max - min)),
     text: () => Math.round(((state.look[key] - min) / (max - min)) * 100) + '%',
   }));
-  W.push({ type: 'button', x: M, y: 450, w: IW, h: 60, label: 'Volver a la plastilina normal', size: 24,
+  W.push({ type: 'button', x: M, y: 464, w: IW, h: 66, label: 'Volver a la plastilina normal', size: 26,
     onClick: () => { for (const k in LOOK_DEFAULT) changeLook(k, LOOK_DEFAULT[k]); drawPanel(); } });
   return W;
 }
 const LOOK_SLIDERS = [['rough', 'Rugosidad', 0.15, 1], ['wax', 'Translucidez', 0, 0.6], ['shine', 'Brillo', 0, 1]];
-// Página del pincel: forma, borde, textura, trazo y simetría.
+// Página del pincel: forma, borde, textura y trazo en azul; simetría en papel.
 function buildBrushPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M;
-  W.push({ type: 'label', x: M, y: 44, text: 'Pincel', size: 36 });
-  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
-    onClick: () => { panelPage = 'main'; drawPanel(); } });
-  let y = 110;
-  const row = (title, items, h = 76) => {
-    W.push({ type: 'label', x: M, y, text: title, size: 24 });
-    const w = (IW - (items.length - 1) * 8) / items.length;
-    items.forEach(([id, text], i) => W.push({ type: 'button', x: M + i * (w + 8), y: y + 24, w, h, label: text, size: 24,
+  const yEnd = 636;
+  W.push(panelBlock(8, yEnd - 8, CERA.blue));
+  pageHead(W, 'Pincel');
+  let y = 116;
+  const row = (title, items, h = 66) => {
+    W.push({ type: 'label', x: M, y, head: true, text: title, size: 26 });
+    const w = (IW - (items.length - 1) * 10) / items.length;
+    items.forEach(([id, text], i) => W.push({ type: 'button', x: M + i * (w + 10), y: y + 22, w, h, label: text, size: 26, group: title,
       active: () => optionOn(id), onClick: () => choose(id) }));
-    y += h + 72;
+    y += h + 62;
   };
   row('FORMA', ['sphere', 'cube', 'pyramid'].map((sh) => ['shape:' + sh, `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`]));
   row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
   row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
   row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
+  W.push(panelBlock(yEnd + 8, 548, CERA.paper));
+  y = yEnd + 44;
   row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial'], ['sym:reset', 'Centrar']]);
   row('COPIAS DE LA RADIAL', [3, 4, 5, 6, 8].map((n) => ['radial:' + n, String(n)]));
-  W.push({ type: 'label', x: M, y: y + 6, size: 22, weight: 500, text: 'Textura: en Añadir, Quitar, Inflar y Pintar.' });
-  W.push({ type: 'label', x: M, y: y + 42, size: 22, weight: 500, text: 'Trazo recto: aprieta en el inicio, suelta en el final.' });
-  W.push({ type: 'label', x: M, y: y + 78, size: 22, weight: 500, text: 'Simetría: coge la bola amarilla con el gatillo para moverla y girarla.' });
+  ['Textura: en Añadir, Quitar, Inflar y Pintar.', 'Trazo recto: aprieta en el inicio, suelta en el final.',
+    'Simetría: coge la bola amarilla con el gatillo para moverla y girarla.']
+    .forEach((text, i) => W.push({ type: 'label', x: M, y: y + 10 + i * 66, size: 24, wrap: IW, text }));
   return W;
 }
 function buildObrasPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M;
-  W.push({ type: 'label', x: M, y: 44, text: 'Obras en las gafas', size: 36 });
-  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
-    onClick: () => { panelPage = 'main'; drawPanel(); } });
-  if (!obras.length) W.push({ type: 'label', x: M, y: 130, text: 'Aún no has guardado ninguna. Pulsa Guardar.', size: 24, weight: 500 });
-  obras.slice(0, 14).forEach((o, i) => W.push({
-    type: 'button', x: M, y: 100 + i * 72, w: IW, h: 62, size: 24,
+  const list = obras.slice(0, 14);
+  W.push(panelBlock(8, 170 + Math.max(1, list.length) * 72, CERA.red));
+  pageHead(W, 'Obras en las gafas');
+  if (!list.length) W.push({ type: 'label', x: M, y: 136, text: 'Aún no has guardado ninguna. Pulsa Guardar.', size: 26, max: IW });
+  list.forEach((o, i) => W.push({
+    type: 'button', x: M, y: 100 + i * 72, w: IW, h: 60, size: 26, plain: true,
     label: `${o.name}   ·   ${fmtDate(o.date)}`, active: () => o.id === obraId,
     onClick: async () => { await openObra(o.id); panelPage = 'main'; drawPanel(); },
   }));
-  W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
-    text: 'Abrir otra guarda antes la actual' });
+  W.push({ type: 'label', x: M, y: 136 + Math.max(1, list.length) * 72, size: 22, max: IW, text: 'Abrir otra guarda antes la actual' });
   return W;
 }
 

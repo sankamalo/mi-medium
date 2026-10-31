@@ -1,10 +1,10 @@
 // Modo sin internet: guarda la app en las gafas la primera vez y luego la sirve desde ahí.
 // Se usa la copia guardada al instante y se actualiza por detrás cuando hay conexión.
-const CACHE = 'mi-medium-v29';
+const CACHE = 'mi-medium-v30';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   './main.js', './sdf.js', './mesher.js', './radial.js', './flor.js', './panel.js', './live.js', './store.js', './remesh.js', './camara.js', './manos.js', './i18n.js',
-  './vendor/fonts/NotoSansThai.woff2',
+  './vendor/fonts/NotoSansThai.woff2', './vendor/fonts/Kanit-latin.woff2', './vendor/fonts/Kanit-thai.woff2', './vendor/fonts/Mali-latin.woff2', './vendor/fonts/Mali-thai.woff2',
   './vendor/three.module.js', './vendor/addons/controls/OrbitControls.js',
   './vendor/addons/exporters/GLTFExporter.js', './vendor/addons/loaders/SVGLoader.js',
   './iconos/inflate.svg', './iconos/move.svg', './iconos/paint.svg', './iconos/add.svg', './iconos/remove.svg', './iconos/flatten.svg', './iconos/grab.svg', './iconos/sym.svg', './iconos/shape-sphere.svg', './iconos/shape-cube.svg', './iconos/shape-pyramid.svg',
