@@ -1660,7 +1660,7 @@ function openFlower(tipW, mode) {
   const head = renderer.xr.getCamera().getWorldPosition(vA);
   const at = rigs.right.group.localToWorld(vB.set(0, 0, -0.025));
   at.addScaledVector(vT0.copy(at).sub(head).normalize(), 0.04);
-  flower.open(at, head, state.tool, tipW);
+  flower.open(at, head, (id) => (id === 'sym' ? state.sym : id.startsWith('shape:') ? (state.shape || 'sphere') === id.slice(6) : state.tool === id), tipW);
 }
 function closeFlower(pick) {
   xr.menuOpen = false;
@@ -1754,14 +1754,14 @@ function xrFrame(dt) {
   model.updateMatrixWorld();
 
   // Mando izquierdo: clic stick = panel · stick ←/→ = deshacer/rehacer · stick ↑/↓ = fuerza
-  //                  gatillo = invertir · X / Y = deshacer / rehacer
+  //                  gatillo = suavizar · X (mantener) = invertir · Y = deshacer
   if (gpL) {
-    const inv = (gpL.buttons[0]?.value || 0) > 0.5;
+    const soft = (gpL.buttons[0]?.value || 0) > 0.5;
+    if (soft !== state.smoothHold) { state.smoothHold = soft; updateHud(); }
+    const inv = !!gpL.buttons[4]?.pressed, Y = !!gpL.buttons[5]?.pressed;
     if (inv !== state.invert) { state.invert = inv; updateHud(); }
-    const X = !!gpL.buttons[4]?.pressed, Y = !!gpL.buttons[5]?.pressed;
-    if (X && !xr.xPrev) undo();
-    if (Y && !xr.yPrev) redo();
-    xr.xPrev = X; xr.yPrev = Y;
+    if (Y && !xr.yPrev) undo();
+    xr.yPrev = Y;
     const lStick = !!gpL.buttons[3]?.pressed;
     if (lStick && !xr.lStickPrev) {
       panel3d.visible = !panel3d.visible;
@@ -1815,11 +1815,17 @@ function xrFrame(dt) {
     else if (ab && !xr.menuPrev) openFlower(tipW, 'hold');
   }
   if (xr.menuOpen) {
-    const h = Math.hypot(ax, ay) > 0.5 ? flower.itemAt(ax, ay) : flower.itemAtWorld(tipW);
-    if (flower.setHighlight(h) && h) gpR.hapticActuators?.[0]?.pulse?.(0.25, 15);
+    // Señala el stick, o la otra mano si está por encima, o la mano que abrió la flor.
+    const tipLeft = left ? left.localToWorld(TIP.clone()) : null;
+    const otherHand = Math.hypot(ax, ay) <= 0.5 && tipLeft && flower.isOver(tipLeft);
+    const moved = Math.hypot(ax, ay) > 0.5 ? flower.hoverDir(ax, ay) : otherHand ? flower.hoverWorld(tipLeft, false) : flower.hoverWorld(tipW, true);
+    if (moved && flower.highlight) (otherHand ? gpL : gpR).hapticActuators?.[0]?.pulse?.(0.25, 12);
     flower.update(dt);
+    const lTrig = (gpL?.buttons[0]?.value || 0) > 0.5;
+    const lDown = lTrig && !xr.lTrigPrev;
+    xr.lTrigPrev = lTrig;
     if (xr.menuMode === 'hold' && !ab) closeFlower(true);
-    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev))) {
+    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev) || lDown)) {
       closeFlower(true);
     }
     xr.menuOpenedFrame = false;

@@ -9,6 +9,7 @@ const COLORS = {
   white: 0xffffff, pink: 0xff7ab8, hand: 0xffc62e,
 };
 const DEG = Math.PI / 180;
+const RIG_ORDER = 990; // mando y mano se pintan después de la flor, encima de ella
 const Y = new THREE.Vector3(0, 1, 0);
 
 const mats = new Map();
@@ -86,7 +87,7 @@ const STICK_TILT = 22 * DEG;
 
 // Cada dedo: nudillo, inclinación, largos, y ángulos en el plano XY abierto → cerrado.
 const FINGERS = [
-  { id: 'index', at: [0.034, -0.021, -0.012], tilt: 14, r: 0.0088, len: [0.036, 0.023, 0.02],
+  { id: 'index', at: [0.034, -0.021, -0.012], tilt: -12, r: 0.0088, len: [0.036, 0.023, 0.02],
     open: [-108, -118, -128], closed: [-170, -226, -268] },
   { id: 'middle', at: [0.035, -0.023, 0.009], tilt: 0, r: 0.0092, len: [0.04, 0.025, 0.021],
     open: [-112, -128, -145], closed: [-172, -232, -276] },
@@ -132,21 +133,218 @@ function buildController() {
   return { group: g, a, b, trigger, squeeze, stick, stick0, trigger0: P_TRIGGER.clone(), squeeze0: P_SQUEEZE.clone() };
 }
 
-function buildFinger(def, handGeo) {
-  const root = new THREE.Group();
-  root.position.fromArray(def.at);
-  root.rotation.y = def.tilt * DEG;
-  const joints = [];
-  let parent = root;
-  def.len.forEach((len, i) => {
-    const j = new THREE.Group();
-    if (i > 0) j.position.y = def.len[i - 1];
-    j.add(piece(handGeo(def.r * (1 - i * 0.07), len + def.r * 0.5), COLORS.hand));
-    parent.add(j);
-    joints.push(j);
-    parent = j;
+// ---------- La mano: una sola pieza ----------
+// Se modela una vez como campo de distancias (como las esculturas), con uniones suaves entre
+// dedos y palma; luego se le ponen huesos y los dedos se doblan sin separarse nunca.
+const smin = (a, b, k) => {
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+};
+function segDist(p, s) {
+  const ax = p[0] - s.a[0], ay = p[1] - s.a[1], az = p[2] - s.a[2];
+  const bx = s.b[0] - s.a[0], by = s.b[1] - s.a[1], bz = s.b[2] - s.a[2];
+  const k = Math.max(0, Math.min(1, (ax * bx + ay * by + az * bz) / (bx * bx + by * by + bz * bz || 1)));
+  return Math.hypot(ax - bx * k, ay - by * k, az - bz * k) - s.r;
+}
+function ellDist(p, c, r) {
+  const x = (p[0] - c[0]) / r[0], y = (p[1] - c[1]) / r[1], z = (p[2] - c[2]) / r[2];
+  return (Math.hypot(x, y, z) - 1) * Math.min(r[0], r[1], r[2]);
+}
+
+// Superficie de un campo de distancias: un vértice por celda que cruza, unidos en quads.
+function surfaceNets(sdf, lo, hi, h) {
+  const nx = Math.ceil((hi[0] - lo[0]) / h) + 1, ny = Math.ceil((hi[1] - lo[1]) / h) + 1, nz = Math.ceil((hi[2] - lo[2]) / h) + 1;
+  const at = (i, j, k) => i + nx * (j + ny * k);
+  const f = new Float32Array(nx * ny * nz), id = new Int32Array(nx * ny * nz).fill(-1);
+  const p = [0, 0, 0];
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    p[0] = lo[0] + i * h; p[1] = lo[1] + j * h; p[2] = lo[2] + k * h;
+    f[at(i, j, k)] = sdf(p);
+  }
+  const EDGES = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]];
+  const pos = [], tris = [];
+  const c = new Array(8);
+  for (let k = 0; k < nz - 1; k++) for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    let mask = 0;
+    for (let b = 0; b < 8; b++) {
+      c[b] = f[at(i + (b & 1), j + ((b >> 1) & 1), k + ((b >> 2) & 1))];
+      if (c[b] < 0) mask |= 1 << b;
+    }
+    if (mask === 0 || mask === 255) continue;
+    let x = 0, y = 0, z = 0, n = 0;
+    for (const [u, v] of EDGES) {
+      if (c[u] < 0 === c[v] < 0) continue;
+      const t = c[u] / (c[u] - c[v]);
+      x += (u & 1) + ((v & 1) - (u & 1)) * t;
+      y += ((u >> 1) & 1) + (((v >> 1) & 1) - ((u >> 1) & 1)) * t;
+      z += ((u >> 2) & 1) + (((v >> 2) & 1) - ((u >> 2) & 1)) * t;
+      n++;
+    }
+    id[at(i, j, k)] = pos.length / 3;
+    pos.push(lo[0] + (i + x / n) * h, lo[1] + (j + y / n) * h, lo[2] + (k + z / n) * h);
+  }
+  const quad = (a, b, c2, d) => {
+    if (a < 0 || b < 0 || c2 < 0 || d < 0) return;
+    tris.push(a, b, c2, a, c2, d);
+  };
+  for (let k = 1; k < nz - 1; k++) for (let j = 1; j < ny - 1; j++) for (let i = 1; i < nx - 1; i++) {
+    const v = f[at(i, j, k)] < 0;
+    if (v !== (f[at(i + 1, j, k)] < 0)) quad(id[at(i, j - 1, k - 1)], id[at(i, j, k - 1)], id[at(i, j, k)], id[at(i, j - 1, k)]);
+    if (v !== (f[at(i, j + 1, k)] < 0)) quad(id[at(i - 1, j, k - 1)], id[at(i, j, k - 1)], id[at(i, j, k)], id[at(i - 1, j, k)]);
+    if (v !== (f[at(i, j, k + 1)] < 0)) quad(id[at(i - 1, j - 1, k)], id[at(i, j - 1, k)], id[at(i, j, k)], id[at(i - 1, j, k)]);
+  }
+  // Normales del propio campo (lisas) y triángulos mirando hacia fuera.
+  const normals = new Float32Array(pos.length), e = h * 0.5;
+  const g = (x, y, z) => { p[0] = x; p[1] = y; p[2] = z; return sdf(p); };
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i], y = pos[i + 1], z = pos[i + 2];
+    const a = g(x + e, y, z) - g(x - e, y, z), b = g(x, y + e, z) - g(x, y - e, z), d = g(x, y, z + e) - g(x, y, z - e);
+    const l = Math.hypot(a, b, d) || 1;
+    normals[i] = a / l; normals[i + 1] = b / l; normals[i + 2] = d / l;
+  }
+  for (let i = 0; i < tris.length; i += 3) {
+    const A = tris[i] * 3, B = tris[i + 1] * 3, C = tris[i + 2] * 3;
+    const ux = pos[B] - pos[A], uy = pos[B + 1] - pos[A + 1], uz = pos[B + 2] - pos[A + 2];
+    const vx = pos[C] - pos[A], vy = pos[C + 1] - pos[A + 1], vz = pos[C + 2] - pos[A + 2];
+    const dot = (uy * vz - uz * vy) * normals[A] + (uz * vx - ux * vz) * normals[A + 1] + (ux * vy - uy * vx) * normals[A + 2];
+    if (dot < 0) { const q = tris[i + 1]; tris[i + 1] = tris[i + 2]; tris[i + 2] = q; }
+  }
+  return { positions: new Float32Array(pos), normals, indices: tris };
+}
+
+// Silueta negra que se dobla con los huesos.
+const OUTLINE_SKIN = new THREE.ShaderMaterial({
+  uniforms: { w: { value: 0.0017 }, c: { value: new THREE.Color(INK) } },
+  side: THREE.BackSide,
+  vertexShader: `
+    #include <common>
+    #include <skinning_pars_vertex>
+    uniform float w;
+    void main() {
+      #include <skinbase_vertex>
+      #include <beginnormal_vertex>
+      #include <skinnormal_vertex>
+      #include <begin_vertex>
+      #include <skinning_vertex>
+      transformed += normalize(objectNormal) * w;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+    }`,
+  fragmentShader: 'uniform vec3 c; void main(){ gl_FragColor = vec4(c, 1.0); }',
+});
+
+const PALM_C = [0.044, 0.014, 0.022], PALM_R = [0.0145, 0.04, 0.037];
+const HEEL_C = [0.034, 0.03, -0.004], HEEL_R = [0.012, 0.018, 0.016];
+const WRIST = { a: [0.046, 0.04, 0.03], b: [0.05, 0.08, 0.03], r: 0.019 };
+const T0 = new THREE.Vector3(0.033, 0.029, -0.013);
+const L1 = 0.031, L2 = 0.03;
+const THUMB_REST = new THREE.Vector3(0.012, 0.03, -0.045); // pulgar levantado, al modelar
+const FAN = [9, 3, -3, -9]; // al modelar, dedos abiertos en abanico para que no se peguen
+
+function solveThumb(target, elbow) {
+  vA.copy(target).sub(T0);
+  const d = Math.min(vA.length(), L1 + L2 - 0.0005);
+  vA.normalize();
+  const along = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, L1 * L1 - along * along));
+  vT.copy(FACE).addScaledVector(SIDE, 0.5);
+  vB.copy(vT).addScaledVector(vA, -vT.dot(vA)).normalize();
+  elbow.copy(T0).addScaledVector(vA, along).addScaledVector(vB, h);
+  return d;
+}
+
+let handData = null;
+// Malla compartida por las dos manos. Grupos: 0 palma, 1-4 dedos, 5 pulgar.
+function buildHandGeometry(boneOf) {
+  const groups = boneOf.groups; // [{ segs:[{a,b,r,bone}] }]
+  const fingerD = (p, g) => {
+    let d = 1;
+    for (const s of g.segs) d = smin(d, segDist(p, s), 0.004);
+    return d;
+  };
+  const palmD = (p) => smin(smin(ellDist(p, PALM_C, PALM_R), ellDist(p, HEEL_C, HEEL_R), 0.012), segDist(p, WRIST), 0.014);
+  const sdf = (p) => {
+    let f = 1;
+    for (const g of groups) f = Math.min(f, fingerD(p, g));
+    return smin(palmD(p), f, 0.009);
+  };
+  const m = 0.012;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  const grow = (q, r) => { for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], q[i] - r - m); hi[i] = Math.max(hi[i], q[i] + r + m); } };
+  groups.forEach((g) => g.segs.forEach((s) => { grow(s.a, s.r); grow(s.b, s.r); }));
+  grow(WRIST.a, WRIST.r); grow(WRIST.b, WRIST.r);
+  grow(PALM_C, Math.max(...PALM_R)); grow(HEEL_C, Math.max(...HEEL_R));
+  const net = surfaceNets(sdf, lo, hi, 0.003);
+
+  // Pesos: cada vértice sigue a los huesos de su dedo y, cerca de la base, a la palma.
+  const n = net.positions.length / 3;
+  const skinIndex = new Uint16Array(n * 4), skinWeight = new Float32Array(n * 4);
+  const p = [0, 0, 0];
+  const W = (d) => 1 / (Math.max(d, 0) + 0.002) ** 4;
+  for (let v = 0; v < n; v++) {
+    p[0] = net.positions[v * 3]; p[1] = net.positions[v * 3 + 1]; p[2] = net.positions[v * 3 + 2];
+    let best = null, bd = Infinity;
+    for (const g of groups) {
+      const d = fingerD(p, g);
+      if (d < bd) { bd = d; best = g; }
+    }
+    const list = best.segs.map((s) => [s.bone, W(segDist(p, s))]);
+    list.push([0, W(palmD(p))]);
+    list.sort((a, b) => b[1] - a[1]);
+    const top = list.slice(0, 4);
+    const sum = top.reduce((t, x) => t + x[1], 0);
+    top.forEach((x, i) => { skinIndex[v * 4 + i] = x[0]; skinWeight[v * 4 + i] = x[1] / sum; });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(net.positions, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(net.normals, 3));
+  geo.setAttribute('skinIndex', new THREE.BufferAttribute(skinIndex, 4));
+  geo.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeight, 4));
+  geo.setIndex(net.indices);
+  return geo;
+}
+
+function buildHand() {
+  const root = new THREE.Bone();
+  const bones = [root];
+  const groups = [];
+  const fingers = FINGERS.map((def, fi) => {
+    const base = new THREE.Bone();
+    base.position.fromArray(def.at);
+    base.rotation.set(FAN[fi] * DEG, def.tilt * DEG, 0);
+    root.add(base);
+    const joints = [];
+    let parent = base;
+    def.len.forEach((len, i) => {
+      const j = new THREE.Bone();
+      if (i > 0) j.position.y = def.len[i - 1];
+      parent.add(j);
+      bones.push(j);
+      joints.push(j);
+      parent = j;
+    });
+    return { base, joints, def };
   });
-  return { root, joints, def, curl: 0.6 };
+  const th1 = new THREE.Bone(), th2 = new THREE.Bone();
+  root.add(th1, th2);
+  bones.push(th1, th2);
+  return { root, bones, groups, fingers, th1, th2 };
+}
+
+function poseFinger(f, c) {
+  const a = f.def.open, b = f.def.closed;
+  let prev = 0;
+  f.joints.forEach((j, i) => {
+    const ang = (a[i] + (b[i] - a[i]) * c) * DEG;
+    j.rotation.z = i === 0 ? ang - Math.PI / 2 : ang - prev;
+    prev = ang;
+  });
+}
+function poseThumb(h, target, elbow) {
+  const d = solveThumb(target, elbow);
+  h.th1.position.copy(T0);
+  aimY(h.th1, vT.copy(elbow).sub(T0));
+  h.th2.position.copy(elbow);
+  aimY(h.th2, vB.copy(T0).addScaledVector(vA, d).sub(elbow));
 }
 
 export function createControllerRig(handedness) {
@@ -157,51 +355,47 @@ export function createControllerRig(handedness) {
   const ctl = buildController();
   inner.add(ctl.group);
 
-  const hand = new THREE.Group();
-  inner.add(hand);
-  const geoCache = new Map();
-  const handGeo = (r, len) => {
-    const k = r.toFixed(5) + '/' + len.toFixed(5);
-    if (!geoCache.has(k)) geoCache.set(k, lumps(capsule(r, len, 9), 0.00035));
-    return geoCache.get(k);
-  };
-  const palm = piece(lumps(ellipsoid(0.0145, 0.04, 0.037)), COLORS.hand);
-  palm.position.set(0.044, 0.014, 0.022);
-  palm.rotation.x = 0.08;
-  palm.rotation.z = -0.1;
-  const wrist = piece(lumps(capsule(0.019, 0.042, 18)), COLORS.hand);
-  wrist.position.set(0.046, 0.04, 0.03);
-  wrist.rotation.z = -0.08;
-  const heel = piece(lumps(ellipsoid(0.012, 0.018, 0.016)), COLORS.hand);
-  heel.position.set(0.034, 0.03, -0.004);
-  hand.add(palm, wrist, heel);
-  const fingers = FINGERS.map((d) => {
-    const f = buildFinger(d, handGeo);
-    hand.add(f.root);
-    return f;
-  });
+  // Postura de modelado: dedos abiertos, pulgar levantado.
+  const hand = buildHand();
+  const elbow = new THREE.Vector3();
+  hand.fingers.forEach((f) => poseFinger(f, 0));
+  poseThumb(hand, THUMB_REST, elbow);
+  hand.root.updateMatrixWorld(true);
+  if (!handData) {
+    const wp = (o) => o.getWorldPosition(new THREE.Vector3()).toArray();
+    const groups = hand.fingers.map((f) => ({
+      segs: f.joints.map((j, i) => ({
+        a: wp(j),
+        b: j.localToWorld(new THREE.Vector3(0, f.def.len[i], 0)).toArray(),
+        r: f.def.r * (1 - i * 0.07),
+        bone: hand.bones.indexOf(j),
+      })),
+    }));
+    groups.push({ segs: [
+      { a: T0.toArray(), b: elbow.toArray(), r: 0.0102, bone: hand.bones.indexOf(hand.th1) },
+      { a: elbow.toArray(), b: hand.th2.localToWorld(new THREE.Vector3(0, L2, 0)).toArray(), r: 0.0094, bone: hand.bones.indexOf(hand.th2) },
+    ] });
+    handData = buildHandGeometry({ groups });
+  }
+  const skel = new THREE.Skeleton(hand.bones);
+  const skin = new THREE.SkinnedMesh(handData, clay(COLORS.hand));
+  const line = new THREE.SkinnedMesh(handData, OUTLINE_SKIN);
+  skin.frustumCulled = line.frustumCulled = false;
+  skin.add(hand.root);
+  skin.updateMatrixWorld(true);
+  skin.bind(skel);
+  line.bind(skel, skin.bindMatrix);
+  inner.add(skin, line);
+  // Ya modelada: los dedos vuelven a su sitio sobre el mando.
+  hand.fingers.forEach((f) => f.base.rotation.set(0, f.def.tilt * DEG, 0));
 
-  // Pulgar: dos huesos que buscan su objetivo.
-  const T0 = new THREE.Vector3(0.033, 0.029, -0.013);
-  const L1 = 0.031, L2 = 0.03;
-  const th1 = piece(handGeo(0.0102, L1 + 0.004), COLORS.hand);
-  const th2 = piece(handGeo(0.0094, L2 + 0.002), COLORS.hand);
-  hand.add(th1, th2);
+  group.traverse((o) => { if (o.isMesh) o.renderOrder = RIG_ORDER; });
+
+  // El pulgar busca lo que el mando diga que toca.
   const thumb = new THREE.Vector3().copy(P_REST).addScaledVector(FACE, 0.014);
-  const elbow = new THREE.Vector3(), goal = new THREE.Vector3(), capTop = new THREE.Vector3();
+  const goal = new THREE.Vector3(), capTop = new THREE.Vector3();
   const qTilt = new THREE.Quaternion(), e = new THREE.Euler();
   const smooth = { trigger: 0.3, squeeze: 0.3, stickX: 0, stickY: 0 };
-
-  function poseFinger(f, c) {
-    const a = f.def.open, b = f.def.closed;
-    let prev = 0;
-    f.joints.forEach((j, i) => {
-      const ang = (a[i] + (b[i] - a[i]) * c) * DEG;
-      if (i === 0) j.rotation.z = ang - Math.PI / 2;
-      else j.rotation.z = ang - prev;
-      prev = ang;
-    });
-  }
 
   function update(gp, dt = 1 / 72) {
     const k = 1 - Math.exp(-dt * 20);
@@ -214,8 +408,8 @@ export function createControllerRig(handedness) {
     smooth.squeeze += ((0.68 + 0.32 * grip) - smooth.squeeze) * k;
     smooth.stickX += (ax - smooth.stickX) * k;
     smooth.stickY += (ay - smooth.stickY) * k;
-    poseFinger(fingers[0], smooth.trigger);
-    for (let i = 1; i < 4; i++) poseFinger(fingers[i], smooth.squeeze);
+    poseFinger(hand.fingers[0], smooth.trigger);
+    for (let i = 1; i < 4; i++) poseFinger(hand.fingers[i], smooth.squeeze);
 
     // Piezas del mando que se hunden o se inclinan.
     ctl.trigger.position.copy(ctl.trigger0);
@@ -237,112 +431,189 @@ export function createControllerRig(handedness) {
     else goal.copy(P_STICK).addScaledVector(SIDE, 0.012).addScaledVector(FWD, 0.012).addScaledVector(FACE, 0.024);
     thumb.lerp(goal, k);
 
-    vA.copy(thumb).sub(T0);
-    const d = Math.min(vA.length(), L1 + L2 - 0.0005);
-    vA.normalize();
-    const along = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
-    const h = Math.sqrt(Math.max(0, L1 * L1 - along * along));
-    vB.copy(FACE).addScaledVector(SIDE, 0.5).addScaledVector(vA, -vT.copy(FACE).addScaledVector(SIDE, 0.5).dot(vA)).normalize();
-    elbow.copy(T0).addScaledVector(vA, along).addScaledVector(vB, h);
-    th1.position.copy(T0);
-    aimY(th1, vT.copy(elbow).sub(T0));
-    th2.position.copy(elbow);
-    aimY(th2, vB.copy(T0).addScaledVector(vA, d).sub(elbow));
+    poseThumb(hand, thumb, elbow);
   }
   update(null);
   return { group, update };
 }
 
 // ---------- La flor ----------
-const R0 = 0.034, LEN = 0.14, WID = 0.098;
+// Plana, de color liso. Se pinta por encima de la escultura y por debajo del mando y la mano.
+const R0 = 0.034, LEN = 0.135, WID = 0.094;
+const OUTER = R0 + LEN * 1.45;
+const DEAD = 0.03;
+const INK_W = 0.0032, HALO_W = 0.0062;
 
-function petalGeometry(grow = 0, z = 0) {
+function petalPoints(len, wid, grow = 0) {
   const s = new THREE.Shape();
   s.moveTo(0, 0);
-  s.bezierCurveTo(-WID * 0.34, LEN * 0.28, -WID * 0.72, LEN * 1.0, 0, LEN);
-  s.bezierCurveTo(WID * 0.72, LEN * 1.0, WID * 0.34, LEN * 0.28, 0, 0);
-  return new THREE.ExtrudeGeometry(s, { depth: 0.004, bevelEnabled: true, bevelThickness: 0.0055, bevelSize: 0.0045 + grow, bevelSegments: 3, curveSegments: 14 }).translate(0, 0, z);
+  s.bezierCurveTo(-wid * 0.34, len * 0.28, -wid * 0.72, len, 0, len);
+  s.bezierCurveTo(wid * 0.72, len, wid * 0.34, len * 0.28, 0, 0);
+  const pts = s.getPoints(16);
+  pts.pop();
+  if (!grow) return pts;
+  // Contorno: cada punto hacia fuera por su normal. El sentido de giro decide cuál es "fuera".
+  const sign = THREE.ShapeUtils.isClockWise(pts) ? 1 : -1;
+  return pts.map((p, i) => {
+    const a = pts[(i + pts.length - 1) % pts.length], b = pts[(i + 1) % pts.length];
+    const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1;
+    return new THREE.Vector2(p.x - (dy / l) * grow * sign, p.y + (dx / l) * grow * sign);
+  });
 }
 
-// Iconos de plastilina (centrados, unos 5 cm de ancho, mirando hacia +Z).
-function blob(rx, ry, rz, hex, x, y, z = 0, outline = OUTLINE) {
-  const m = piece(lumps(ellipsoid(rx, ry, rz, 12, 10)), hex, outline);
-  m.position.set(x, y, z);
-  return m;
+// Formas planas juntas en una sola malla: se pintan en el orden en que se añaden.
+class Flat {
+  constructor() { this.pos = []; this.col = []; this.idx = []; }
+  shape(shape, hex) {
+    const g = new THREE.ShapeGeometry(shape, 10);
+    const base = this.pos.length / 3, c = new THREE.Color(hex), p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      this.pos.push(p.getX(i), p.getY(i), 0);
+      this.col.push(c.r, c.g, c.b);
+    }
+    for (let i = 0; i < g.index.count; i++) this.idx.push(base + g.index.getX(i));
+    g.dispose();
+  }
+  poly(pts, hex) { this.shape(new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y))), hex); }
+  circle(x, y, rx, ry, hex) {
+    const s = new THREE.Shape();
+    s.absellipse(x, y, rx, ry, 0, Math.PI * 2);
+    this.shape(s, hex);
+  }
+  geometry() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setIndex(this.idx);
+    return g;
+  }
 }
+
+// Piezas de un icono: círculos [x, y, rx, ry, color] o polígonos { p: [[x, y]…], c: color }.
+// Primero una pasada negra algo más gorda; así los trozos se unen en una sola silueta.
+function drawIcon(flat, parts, ink = 0.0018) {
+  const grown = (p) => {
+    const cx = p.reduce((t, q) => t + q[0], 0) / p.length, cy = p.reduce((t, q) => t + q[1], 0) / p.length;
+    return p.map(([x, y]) => {
+      const dx = x - cx, dy = y - cy, l = Math.hypot(dx, dy) || 1;
+      return [x + (dx / l) * ink * 1.3, y + (dy / l) * ink * 1.3];
+    });
+  };
+  for (const a of parts) {
+    if (a.noInk) continue;
+    if (Array.isArray(a)) flat.circle(a[0], a[1], a[2] + ink, a[3] + ink, INK);
+    else flat.poly(grown(a.p), INK);
+  }
+  for (const a of parts) {
+    if (Array.isArray(a)) flat.circle(a[0], a[1], a[2], a[3], a[4]);
+    else flat.poly(a.p, a.c);
+  }
+}
+const rect = (x, y, w, h, c, rot = 0) => {
+  const co = Math.cos(rot), si = Math.sin(rot);
+  return { c, p: [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([a, b]) => [x + a * co - b * si, y + a * si + b * co]) };
+};
+const dots = (list, c) => list.map(([x, y, r]) => Object.assign([x, y, r, r, c], { noInk: true }));
+const { white: WHITE, pink: PINK, blue: BLUE, yellow: YELLOW, hand: HAND } = COLORS;
 const ICONS = {
-  inflate() { // nube
-    const g = new THREE.Group();
-    g.add(blob(0.015, 0.014, 0.01, COLORS.white, -0.016, -0.004), blob(0.018, 0.017, 0.012, COLORS.white, 0.001, 0.006),
-      blob(0.014, 0.013, 0.01, COLORS.white, 0.018, -0.003), blob(0.02, 0.011, 0.01, COLORS.white, 0.001, -0.009));
-    return g;
-  },
-  move() { // puño empujando una pirámide
-    const g = new THREE.Group();
-    const pyr = piece(new THREE.ConeGeometry(0.019, 0.03, 4).rotateY(Math.PI / 4), COLORS.yellow, OUTLINE_HARD);
-    pyr.position.set(-0.016, 0.001, 0);
-    // Manopla: sin dedos sueltos, que con dedos pequeños parece un pie.
-    const thumb = piece(capsule(0.0048, 0.017), COLORS.hand);
-    thumb.position.set(0.012, 0.006, 0.002);
-    thumb.rotation.z = 0.75;
-    const cuff = piece(capsule(0.0078, 0.016), COLORS.white);
-    cuff.position.set(0.021, -0.001, 0);
-    cuff.rotation.z = -Math.PI / 2;
-    g.add(pyr, cuff, blob(0.0135, 0.0105, 0.009, COLORS.hand, 0.009, -0.001), thumb);
-    return g;
-  },
-  paint() { // bote de spray
-    const g = new THREE.Group();
-    const can = piece(new THREE.CylinderGeometry(0.0115, 0.0115, 0.032, 14), COLORS.white, OUTLINE_HARD);
-    can.position.set(0.007, -0.01, 0);
-    const top = blob(0.0115, 0.006, 0.0115, COLORS.white, 0.007, 0.006);
-    const noz = piece(new THREE.CylinderGeometry(0.0045, 0.0045, 0.009, 10), COLORS.blue, OUTLINE_HARD);
-    noz.position.set(0.007, 0.014, 0);
-    g.add(can, top, noz);
-    [[-0.008, 0.015, 0.0028], [-0.016, 0.022, 0.0034], [-0.018, 0.012, 0.0034], [-0.026, 0.026, 0.0028], [-0.028, 0.015, 0.0034], [-0.026, 0.005, 0.0028]]
-      .forEach(([x, y, r]) => g.add(blob(r, r, r, COLORS.white, x, y, 0, null)));
-    return g;
-  },
-  add() { // chorro de espuma
-    const g = new THREE.Group();
-    g.add(blob(0.022, 0.0088, 0.012, COLORS.white, 0, -0.018), blob(0.017, 0.008, 0.011, COLORS.white, 0.002, -0.007),
-      blob(0.012, 0.0072, 0.01, COLORS.white, -0.001, 0.004), blob(0.0075, 0.007, 0.008, COLORS.white, 0.001, 0.014));
-    const tip = piece(new THREE.ConeGeometry(0.0048, 0.012, 10), COLORS.white, OUTLINE_HARD);
-    tip.position.set(0, 0.024, 0);
-    g.add(tip);
-    return g;
-  },
-  remove() { // goma con migas
-    const g = new THREE.Group();
-    const a = piece(new THREE.BoxGeometry(0.03, 0.021, 0.014), COLORS.pink, OUTLINE_HARD);
-    a.position.set(-0.009, -0.002, 0);
-    const b = piece(new THREE.BoxGeometry(0.02, 0.021, 0.014), COLORS.blue, OUTLINE_HARD);
-    b.position.set(0.016, -0.002, 0);
-    const pair = new THREE.Group();
-    pair.add(a, b);
-    pair.rotation.z = 0.32;
-    g.add(pair);
-    [[0.024, 0.019], [0.012, 0.024], [0.03, 0.009]].forEach(([x, y]) => g.add(blob(0.0026, 0.0026, 0.0026, COLORS.pink, x, y, 0, null)));
-    return g;
-  },
+  inflate: () => [[-0.017, -0.004, 0.015, 0.014, WHITE], [0.001, 0.007, 0.018, 0.017, WHITE], [0.018, -0.004, 0.014, 0.013, WHITE], [0.001, -0.009, 0.021, 0.011, WHITE]],
+  move: () => [
+    { c: YELLOW, p: [[-0.036, -0.015], [-0.006, -0.015], [-0.021, 0.018]] },
+    rect(0.026, -0.002, 0.016, 0.016, WHITE),
+    [0.011, -0.002, 0.014, 0.012, HAND],
+    rect(0.012, 0.012, 0.018, 0.009, HAND, 1),
+  ],
+  paint: () => [
+    rect(0.009, -0.011, 0.024, 0.034, WHITE),
+    { c: WHITE, p: [[-0.003, 0.006], [0.021, 0.006], [0.016, 0.014], [0.002, 0.014]] },
+    rect(0.009, 0.018, 0.009, 0.009, BLUE),
+    ...dots([[-0.008, 0.02, 0.0028], [-0.016, 0.026, 0.0032], [-0.017, 0.015, 0.0032], [-0.027, 0.03, 0.0028], [-0.028, 0.02, 0.0032], [-0.026, 0.008, 0.0028]], WHITE),
+  ],
+  add: () => [
+    [0, -0.019, 0.023, 0.0085, WHITE], [0.002, -0.008, 0.017, 0.0075, WHITE], [-0.001, 0.003, 0.012, 0.0068, WHITE], [0.001, 0.012, 0.0072, 0.0058, WHITE],
+    { c: WHITE, p: [[-0.005, 0.015], [0.006, 0.015], [0.002, 0.03]] },
+  ],
+  remove: () => [
+    rect(-0.009, -0.004, 0.03, 0.021, PINK, 0.32),
+    rect(0.015, 0.004, 0.019, 0.021, BLUE, 0.32),
+    ...dots([[0.025, 0.021, 0.0028], [0.012, 0.027, 0.0028], [0.032, 0.012, 0.0024]], PINK),
+  ],
+  flatten: () => [
+    [0, -0.015, 0.028, 0.008, WHITE],
+    rect(0, -0.003, 0.046, 0.009, BLUE),
+    rect(0, 0.012, 0.009, 0.022, BLUE),
+  ],
+  grab: () => [
+    [-0.015, -0.01, 0.017, 0.016, WHITE],
+    { c: WHITE, p: [[-0.018, 0.005], [-0.003, -0.018], [0.027, 0.023]] },
+    { c: INK, noInk: true, p: [[0.018, 0.012], [0.03, 0.026], [0.033, 0.009]] },
+  ],
+  sym: () => [
+    { c: INK, p: [[-0.006, -0.018], [-0.006, 0.018], [-0.03, 0]] },
+    { c: WHITE, p: [[0.006, -0.018], [0.006, 0.018], [0.03, 0]] },
+    ...[-0.024, -0.012, 0, 0.012, 0.024].map((y) => Object.assign(rect(0, y, 0.0034, 0.0075, INK), { noInk: true })),
+  ],
+  'shape:sphere': () => [[0, 0, 0.015, 0.015, WHITE]],
+  'shape:cube': () => [rect(0, 0, 0.027, 0.027, WHITE)],
+  'shape:pyramid': () => [{ c: WHITE, p: [[-0.017, -0.013], [0.017, -0.013], [0, 0.017]] }],
 };
 
-// De izquierda a derecha, como en el dibujo.
+// El reloj de la flor: arriba las de siempre, abajo las demás.
 export const FLOWER = [
-  { id: 'inflate', angle: -100, color: COLORS.blue },
-  { id: 'move', angle: -50, color: COLORS.green },
+  { id: 'inflate', angle: -90, color: COLORS.blue },
+  { id: 'move', angle: -45, color: COLORS.green },
   { id: 'paint', angle: 0, color: COLORS.red },
-  { id: 'add', angle: 50, color: COLORS.yellow },
-  { id: 'remove', angle: 100, color: COLORS.paper },
+  { id: 'add', angle: 45, color: COLORS.yellow },
+  { id: 'remove', angle: 90, color: COLORS.paper },
+  { id: 'flatten', angle: 135, color: COLORS.red },
+  { id: 'grab', angle: 180, color: COLORS.yellow },
+  { id: 'sym', angle: -135, color: COLORS.pink },
 ];
-const STEP = 50;
+const SHAPES3 = [
+  { id: 'shape:sphere', off: -34 },
+  { id: 'shape:cube', off: 0 },
+  { id: 'shape:pyramid', off: 34 },
+];
+const SUB_LEN = 0.078, SUB_WID = 0.066, SUB_R = R0 + LEN * 1.12;
+const DWELL = 0.42;
+const wrap = (a) => ((a + 540) % 360) - 180;
+// Muelle con rebote: lo que hace que se sienta vivo.
+const STIFF = 520, DAMP = 24;
+function spring(o, key, target, dt) {
+  const v = key + 'V';
+  o[v] += ((target - o[key]) * STIFF - o[v] * DAMP) * dt;
+  o[key] += o[v] * dt;
+}
 
-const backOut = (x) => {
-  if (x <= 0) return 0.0001;
-  if (x >= 1) return 1;
-  const c = 1.9;
-  return 1 + (c + 1) * (x - 1) ** 3 + c * (x - 1) ** 2;
-};
+function makePetal(def, len, wid, order) {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  const flatMat = () => new THREE.MeshBasicMaterial({ vertexColors: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+  const lineMat = new THREE.MeshBasicMaterial({ color: INK, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+  const ink = new THREE.ShapeGeometry(new THREE.Shape(petalPoints(len, wid, INK_W)));
+  const halo = new THREE.ShapeGeometry(new THREE.Shape(petalPoints(len, wid, HALO_W)));
+  const line = new THREE.Mesh(ink, lineMat);
+  const fill = new Flat();
+  fill.shape(new THREE.Shape(petalPoints(len, wid)), def.color);
+  const face = new THREE.Mesh(fill.geometry(), flatMat());
+  const pic = new Flat();
+  drawIcon(pic, ICONS[def.id]());
+  const icon = new THREE.Mesh(pic.geometry(), flatMat());
+  const holder = new THREE.Group();
+  holder.position.y = len * 0.64;
+  holder.add(icon);
+  body.add(line, face, holder);
+  root.add(body);
+  const p = { ...def, root, body, holder, line, face, icon, ink, halo, len, order,
+    ang: def.angle ?? 0, angV: 0, size: 0, sizeV: 0, push: 0, pushV: 0 };
+  setOrder(p, order);
+  return p;
+}
+function setOrder(p, o) {
+  p.line.renderOrder = o;
+  p.face.renderOrder = o + 0.1;
+  p.icon.renderOrder = o + 0.2;
+}
 
 export class Flower {
   constructor(labelOf = (id) => id) {
@@ -351,31 +622,26 @@ export class Flower {
     this.group.visible = false;
     this.highlight = null;
     this.age = 0;
+    this.since = 0;
     this.zero = new THREE.Vector3();
-    const geo = lumps(petalGeometry(), 0.0005, 120);
-    const inkGeo = petalGeometry(0.0032, -0.0016), haloGeo = petalGeometry(0.0062, -0.0016);
-    this.inkGeo = inkGeo;
-    this.haloGeo = haloGeo;
-    this.petals = FLOWER.map((f) => {
-      const g = new THREE.Group();
-      g.rotation.z = -f.angle * DEG;
-      const body = new THREE.Group();
-      body.position.y = R0;
-      const face = new THREE.Mesh(geo, clay(f.color));
-      const line = new THREE.Mesh(inkGeo, new THREE.MeshBasicMaterial({ color: INK }));
-      const icon = ICONS[f.id]();
-      icon.position.set(0, LEN * 0.63, 0.021);
-      icon.scale.setScalar(1.1);
-      // El icono siempre de pie, aunque el pétalo esté tumbado.
-      const up = new THREE.Group();
-      up.position.copy(icon.position);
-      up.rotation.z = f.angle * DEG;
-      icon.position.set(0, 0, 0);
-      up.add(icon);
-      body.add(face, line, up);
-      g.add(body);
-      this.group.add(g);
-      return { ...f, root: g, body, line, grow: 1 };
+    this.sub = false;
+    this.pAngle = 0;
+    this.pStrength = 0;
+    this.pStrengthV = 0;
+    this.petals = FLOWER.map((f, i) => {
+      const p = makePetal(f, LEN, WID, 900 + i * 2);
+      p.body.position.y = R0;
+      this.group.add(p.root);
+      return p;
+    });
+    const parent = this.petals.find((p) => p.id === 'add');
+    this.subPetals = SHAPES3.map((f, i) => {
+      const p = makePetal({ ...f, color: COLORS.blue }, SUB_LEN, SUB_WID, 950 + i * 2);
+      p.ang = parent.angle + f.off;
+      p.body.position.y = SUB_R;
+      p.root.visible = false;
+      this.group.add(p.root);
+      return p;
     });
     // Nombre de lo que señalas.
     this.canvas = document.createElement('canvas');
@@ -385,7 +651,7 @@ export class Flower {
     this.tex.colorSpace = THREE.SRGBColorSpace;
     this.label = new THREE.Mesh(
       new THREE.PlaneGeometry(0.128, 0.03),
-      new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, depthTest: false }),
+      new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
     );
     this.label.renderOrder = 1000;
     this.label.visible = false;
@@ -393,7 +659,8 @@ export class Flower {
   }
 
   // position: centro de la flor. pointer: dónde está la punta al abrir; eliges moviéndola desde ahí.
-  open(position, lookAt, active, pointer = position) {
+  // isActive(id): si esa herramienta u opción es la que llevas puesta (lleva el borde blanco).
+  open(position, lookAt, isActive = () => false, pointer = position) {
     this.group.position.copy(position);
     this.group.lookAt(lookAt);
     this.group.updateMatrixWorld();
@@ -401,11 +668,16 @@ export class Flower {
     this.group.worldToLocal(this.zero);
     this.group.visible = true;
     this.age = 0;
+    this.sub = false;
+    this.pStrength = this.pStrengthV = 0;
     this.setHighlight(null);
-    for (const p of this.petals) {
-      // La herramienta que llevas en la mano tiene el borde blanco.
-      p.line.material.color.set(p.id === active ? COLORS.white : INK);
-      p.line.geometry = p.id === active ? this.haloGeo : this.inkGeo;
+    for (const p of [...this.petals, ...this.subPetals]) {
+      const on = isActive(p.id);
+      p.line.material.color.set(on ? COLORS.white : INK);
+      p.line.geometry = on ? p.halo : p.ink;
+      p.ang = p.angle ?? p.ang;
+      p.angV = p.size = p.sizeV = p.push = p.pushV = 0;
+      p.root.visible = !p.off && p.off !== 0;
     }
     this.update(0);
   }
@@ -415,30 +687,64 @@ export class Flower {
     this.label.visible = false;
   }
 
-  // (x, y) en dirección de pantalla (y hacia abajo). Devuelve el pétalo o null.
-  itemAt(x, y) {
+  // (x, y) desde el centro, con y hacia abajo. Devuelve true si ha cambiado lo señalado.
+  hover(x, y) {
+    const d = Math.hypot(x, y);
     const a = Math.atan2(x, -y) / DEG;
-    let best = null, bd = STEP * 0.5 + 16; // los de los lados perdonan un poco más
-    for (const p of this.petals) {
-      const d = Math.abs(a - p.angle);
-      if (d < bd) { bd = d; best = p.id; }
+    this.pAngle = a;
+    this.pStrength = Math.max(0, Math.min(1, (d - DEAD) / 0.035));
+    let id = null;
+    if (d >= DEAD) {
+      const rel = wrap(a - 45);
+      if (this.sub && d > SUB_R - 0.012 && Math.abs(rel) < 58 && d < SUB_R + SUB_LEN * 1.8) {
+        id = SHAPES3.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
+      } else if (d <= OUTER) {
+        id = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b)).id;
+      }
     }
-    return best;
+    // El submenú se cierra en cuanto te vas a otro pétalo o sales de la flor.
+    if (this.sub && id !== 'add' && !id?.startsWith('shape:')) this.setSub(false);
+    return this.setHighlight(id);
   }
 
-  // Dónde cae un punto del mundo respecto a la flor: el pétalo, o null si estás en el centro o fuera.
-  itemAtWorld(world) {
-    const p = this.group.worldToLocal(vT.copy(world)).sub(this.zero);
+  // El stick señala una dirección: como una mano que estuviera ya sobre el pétalo.
+  hoverDir(ax, ay) {
+    const r = this.sub ? SUB_R + 0.02 : R0 + LEN * 0.7, l = Math.hypot(ax, ay) || 1;
+    return this.hover((ax / l) * r, (ay / l) * r);
+  }
+
+  // Punto del mundo. relative: medido desde donde estaba la punta al abrir (la mano que abre);
+  // si no, tal cual cae sobre la flor (la otra mano, por encima de los pétalos).
+  hoverWorld(world, relative = true) {
+    const p = this.group.worldToLocal(vT.copy(world));
+    if (relative) p.sub(this.zero);
+    return this.hover(p.x, -p.y);
+  }
+
+  // ¿Esta mano está por encima de los pétalos?
+  isOver(world) {
+    const p = this.group.worldToLocal(vT.copy(world));
     const d = Math.hypot(p.x, p.y);
-    if (d < 0.03 || d > (R0 + LEN) * 1.25) return null;
-    return this.itemAt(p.x, -p.y);
+    return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.sub ? SUB_R + SUB_LEN * 1.8 : OUTER);
+  }
+
+  setSub(on) {
+    if (on === this.sub) return;
+    this.sub = on;
+    this.subAge = 0;
+    for (const p of this.subPetals) {
+      p.root.visible = on;
+      p.size = p.sizeV = 0;
+    }
   }
 
   setHighlight(id) {
     if (id === this.highlight) return false;
     this.highlight = id;
-    const p = this.petals.find((q) => q.id === id);
+    this.since = this.age;
+    const p = this.find(id);
     this.label.visible = !!p;
+    this.petals.forEach((q) => setOrder(q, q.id === id ? 940 : q.order));
     if (p) {
       const g = this.canvas.getContext('2d'), W = this.canvas.width, H = this.canvas.height;
       const text = this.labelOf(id);
@@ -452,20 +758,58 @@ export class Flower {
       g.textBaseline = 'middle';
       g.fillText(text, W / 2, H / 2 + 4, W - 60);
       this.tex.needsUpdate = true;
-      const a = p.angle * DEG, r = R0 + LEN + 0.04;
-      this.label.position.set(Math.sin(a) * r + (Math.abs(p.angle) > 60 ? Math.sign(p.angle) * 0.03 : 0), Math.cos(a) * r, 0.03);
     }
     return true;
   }
 
+  find(id) {
+    return this.petals.find((q) => q.id === id) || this.subPetals.find((q) => q.id === id) || null;
+  }
+
   update(dt) {
+    const step = Math.min(dt, 1 / 40);
     this.age += dt;
-    const k = 1 - Math.exp(-dt * 18);
-    this.petals.forEach((p, i) => {
-      const pop = backOut((this.age - i * 0.025) / 0.2);
-      p.grow += ((p.id === this.highlight ? 1.17 : 1) - p.grow) * k;
-      p.root.scale.setScalar(pop * p.grow);
-      p.body.position.z = (p.grow - 1) * 0.07;
-    });
+    if (this.highlight === 'add' && !this.sub && this.age - this.since > DWELL) this.setSub(true);
+    this.subAge = (this.subAge || 0) + dt;
+    const opening = Math.min(1, this.age / 0.16);
+    const s = this.pStrength;
+    for (const p of this.petals) {
+      // Efecto Dock: los pétalos reaccionan a la distancia a la mano, no a un sí o no.
+      const delta = wrap(p.angle - this.pAngle);
+      const near = Math.exp(-((delta / 30) ** 2)) * s;
+      const hot = p.id === this.highlight;
+      const sizeTarget = opening * (1 + 0.1 * near + (hot ? 0.12 : 0));
+      // Los vecinos se apartan, y el señalado se inclina un poco hacia la mano.
+      const away = 24 * (delta / 55) * Math.exp(-((delta / 55) ** 2));
+      const angTarget = p.angle + (away - delta * 0.28 * near) * s;
+      if (dt > 0) {
+        spring(p, 'ang', angTarget, step);
+        spring(p, 'size', sizeTarget, step);
+      } else p.size = sizeTarget;
+      p.root.rotation.z = -p.ang * DEG;
+      p.body.scale.setScalar(Math.max(0.0001, p.size));
+      p.holder.rotation.z = p.ang * DEG; // el icono siempre de pie
+    }
+    if (this.sub) {
+      const parent = this.petals.find((q) => q.id === 'add');
+      this.subPetals.forEach((p) => {
+        const hot = p.id === this.highlight;
+        const sizeTarget = Math.min(1, this.subAge / 0.1) * (hot ? 1.18 : 1);
+        spring(p, 'size', sizeTarget, step);
+        spring(p, 'ang', parent.ang + p.off, step);
+        p.root.rotation.z = -p.ang * DEG;
+        p.body.scale.setScalar(Math.max(0.0001, p.size));
+        p.holder.rotation.z = p.ang * DEG;
+      });
+    }
+    const hot = this.find(this.highlight);
+    this.label.visible = !!hot && !(this.sub && hot.id === 'add'); // no tapar las formas
+    if (hot) {
+      const a = hot.ang * DEG;
+      const base = hot.off !== undefined ? SUB_R : R0;
+      const r = base + hot.len * hot.size + 0.024;
+      const side = Math.abs(Math.sin(a)) > 0.85 ? Math.sign(Math.sin(a)) * 0.03 : 0;
+      this.label.position.set(Math.sin(a) * r + side, Math.cos(a) * r, 0);
+    }
   }
 }
