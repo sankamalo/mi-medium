@@ -36,7 +36,7 @@ const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
-  look: { rough: 0.55, wax: 0, shine: 0 },
+  look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
   color: '#cfc6bb', bakeSize: 2048,
 };
 
@@ -94,7 +94,73 @@ const symGuides = {
   symZ: guidePlane([1, 0, 0], [0, 1, 0]),
   radial: new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, -0.4, 0, 0, 0.4, 0], 3)), guideMat),
 };
-Object.values(symGuides).forEach((g) => { g.visible = false; model.add(g); });
+// Todo lo de la simetría cuelga de symFrame: moverlo o girarlo es mover el eje. La bola amarilla es
+// por donde se agarra; se ve siempre, aunque quede dentro de la plastilina.
+const symFrame = new THREE.Group();
+model.add(symFrame);
+Object.values(symGuides).forEach((g) => { g.visible = false; symFrame.add(g); });
+const symBall = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 20, 14),
+  new THREE.MeshBasicMaterial({ color: 0xffd21f, transparent: true, depthTest: false, depthWrite: false }),
+);
+symBall.renderOrder = 880;
+const symStick = new THREE.LineSegments(
+  new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 1, 0], 3)),
+  new THREE.LineBasicMaterial({ color: 0xffd21f, transparent: true, opacity: 0.7, depthTest: false, depthWrite: false }),
+);
+symStick.renderOrder = 880;
+symBall.visible = symStick.visible = false;
+symFrame.add(symBall, symStick);
+// Mide lo mismo de verdad aunque el modelo esté grande o pequeño, para poder cogerla siempre.
+function syncSymBall() {
+  const k = 1 / model.scale.x, far = (renderer.xr.isPresenting ? 0.42 : 0.27) * k;
+  symBall.visible = symStick.visible = symOn();
+  symBall.position.y = far;
+  symBall.scale.setScalar(0.022 * k);
+  symStick.scale.y = far;
+}
+function setSymBallHot(on) {
+  symBall.material.color.set(on ? 0xffffff : 0xffd21f);
+}
+
+// Suelo: una rejilla muy tenue a la altura del suelo real. No es parte de la obra ni se exporta.
+const floorU = { uCell: { value: 0.1 }, uRadius: { value: 1.6 } };
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2),
+  new THREE.ShaderMaterial({
+    uniforms: floorU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexShader: `
+      varying vec2 vP; varying vec2 vC;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vP = w.xz; vC = position.xz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `
+      uniform float uCell, uRadius;
+      varying vec2 vP; varying vec2 vC;
+      float lines(vec2 p) {
+        vec2 fw = fwidth(p);
+        vec2 g = abs(fract(p - 0.5) - 0.5) / fw;
+        return (1.0 - min(min(g.x, g.y), 1.0)) * (1.0 - smoothstep(0.25, 0.8, max(fw.x, fw.y)));
+      }
+      void main() {
+        float a = max(lines(vP / uCell) * 0.1, lines(vP / (uCell * 4.0)) * 0.22);
+        a *= 1.0 - smoothstep(uRadius * 0.3, uRadius, length(vC));
+        if (a < 0.003) discard;
+        gl_FragColor = vec4(1.0, 1.0, 1.0, a);
+      }`,
+  }),
+);
+floor.renderOrder = -1;
+floor.frustumCulled = false;
+scene.add(floor);
+function placeFloor(inXR) {
+  floorU.uCell.value = inXR ? 0.25 : 0.1;
+  floorU.uRadius.value = inXR ? 4.5 : 1.6;
+  floor.position.set(0, inXR ? 0 : -0.35, 0);
+}
+placeFloor(false);
 
 // Material de la plastilina. La refracción de verdad no cabe en las gafas: "translucidez" es un
 // truco de cera (la luz parece entrar y salir por los bordes) y "brillo" un reflejo barato del cielo.
@@ -622,11 +688,45 @@ function rebuildSym() {
   mirror(state.sym, [-1, 0, 0, 0, 1, 0, 0, 0, 1]);
   mirror(state.symY, [1, 0, 0, 0, -1, 0, 0, 0, 1]);
   mirror(state.symZ, [1, 0, 0, 0, 1, 0, 0, 0, -1]);
-  symCopies = list.slice(1);
-  for (const k in symGuides) symGuides[k].visible = state[k];
-  symCopies.forEach((m, i) => {
-    symM4[i] = (symM4[i] || new THREE.Matrix4()).set(m[0], m[3], m[6], 0, m[1], m[4], m[7], 0, m[2], m[5], m[8], 0, 0, 0, 0, 1);
+  // La simetría se hace alrededor de symFrame: se lleva el punto a su sistema, se copia y se devuelve.
+  const e = new THREE.Matrix4().makeRotationFromQuaternion(symFrame.quaternion).elements;
+  const F = [e[0], e[1], e[2], e[4], e[5], e[6], e[8], e[9], e[10]];
+  const Ft = [F[0], F[3], F[6], F[1], F[4], F[7], F[2], F[5], F[8]];
+  const c = symFrame.position.toArray();
+  symCopies = list.slice(1).map((s) => {
+    const m = mul3(mul3(F, s), Ft), q = xf3(m, c);
+    return { m, t: [c[0] - q[0], c[1] - q[1], c[2] - q[2]] };
   });
+  for (const k in symGuides) symGuides[k].visible = state[k];
+  symCopies.forEach(({ m, t: v }, i) => {
+    symM4[i] = (symM4[i] || new THREE.Matrix4()).set(m[0], m[3], m[6], v[0], m[1], m[4], m[7], v[1], m[2], m[5], m[8], v[2], 0, 0, 0, 1);
+  });
+  if (symOn() && !symHinted) {
+    symHinted = true;
+    toast(renderer.xr.isPresenting ? 'Coge la bola amarilla con el gatillo para colocar la simetría' : 'Arrastra la bola amarilla para colocar la simetría (Shift = girar)', 5000);
+  }
+}
+let symHinted = false;
+const copyPoint = (c, p) => {
+  const q = xf3(c.m, p);
+  return [q[0] + c.t[0], q[1] + c.t[1], q[2] + c.t[2]];
+};
+
+// Cerca de vertical u horizontal, el eje se queda recto: a mano es casi imposible clavarlo.
+const SNAP_COS = Math.cos((4 * Math.PI) / 180);
+const snapV = new THREE.Vector3(), snapT = new THREE.Vector3(), snapQ = new THREE.Quaternion();
+function snapSymFrame() {
+  let snapped = false;
+  for (let a = 0; a < 3; a++) {
+    snapV.set(+(a === 0), +(a === 1), +(a === 2)).applyQuaternion(symFrame.quaternion);
+    const best = [0, 1, 2].reduce((b, i) => (Math.abs(snapV.getComponent(i)) > Math.abs(snapV.getComponent(b)) ? i : b), 0);
+    if (Math.abs(snapV.getComponent(best)) < SNAP_COS) continue;
+    snapT.set(0, 0, 0).setComponent(best, Math.sign(snapV.getComponent(best)));
+    symFrame.quaternion.premultiply(snapQ.setFromUnitVectors(snapV, snapT)).normalize();
+    snapped = true;
+  }
+  if (symFrame.position.length() < 0.012) { symFrame.position.set(0, 0, 0); snapped = true; }
+  return snapped;
 }
 const symOn = () => state.sym || state.symY || state.symZ || state.radial;
 
@@ -636,11 +736,11 @@ function forCopies(a, b, fn) {
   fn(a, b, null);
   if (!symCopies.length) return;
   const seen = [b], lim = active.grid.h * 0.5;
-  for (const m of symCopies) {
-    const qb = xf3(m, b);
+  for (const c of symCopies) {
+    const qb = copyPoint(c, b);
     if (seen.some((q) => Math.hypot(q[0] - qb[0], q[1] - qb[1], q[2] - qb[2]) < lim)) continue;
     seen.push(qb);
-    fn(xf3(m, a), qb, m);
+    fn(copyPoint(c, a), qb, c);
   }
 }
 function syncCursorCopies() {
@@ -657,6 +757,7 @@ function syncCursorCopies() {
 // Lo que se puede elegir del pincel, para pintar qué botón está encendido en cualquier sitio.
 function optionOn(id) {
   const [k, v] = id.split(':');
+  if (id === 'floor') return state.floor;
   if (k === 'edge') return state.edge === v;
   if (k === 'tex') return state.texture === v;
   if (k === 'stroke') return state.line === (v === 'line');
@@ -671,13 +772,13 @@ function optionOn(id) {
 }
 
 // Opciones de la pincelada (null si no hay ninguna: el mensaje al espejo sigue siendo pequeño).
-function brushOpts(tool, rot, m) {
+function brushOpts(tool, rot, c) {
   const o = {};
-  if (rot) { o.shape = state.shape; o.rot = m ? mul3(m, rot) : rot; }
+  if (rot) { o.shape = state.shape; o.rot = c ? mul3(c.m, rot) : rot; }
   if (state.edge !== 'even') o.edge = state.edge;
   if (state.texture !== 'plain' && TEXTURED.has(tool)) {
     o.texture = state.texture;
-    if (m) o.frame = m;
+    if (c) { o.frame = c.m; o.shift = c.t; }
   }
   return Object.keys(o).length ? o : null;
 }
@@ -746,8 +847,8 @@ function brushStep(tool, a, p, dt, pressure) {
   const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
   const rot = (tool === 'add' || tool === 'remove') && state.shape !== 'sphere' ? brushRot() : null;
   if (state.edge === 'soft' && (tool === 'add' || tool === 'remove')) (meltPath ||= [[a[0], a[1], a[2]]]).push([p[0], p[1], p[2]]);
-  forCopies(a, p, (qa, qb, m) => {
-    brushCall(active, tool, qa, qb, state.radius, s, state.invert, dt, usePaint, brushOpts(tool, rot, m));
+  forCopies(a, p, (qa, qb, c) => {
+    brushCall(active, tool, qa, qb, state.radius, s, state.invert, dt, usePaint, brushOpts(tool, rot, c));
   });
 }
 
@@ -814,8 +915,8 @@ function choose(id) {
       const on = !symOn();
       state.symY = state.symZ = state.radial = false;
       state.sym = on;
-      rebuildSym();
       toast(on ? 'Simetría ON' : 'Simetría OFF');
+      rebuildSym();
       break;
     }
     // Radial con espejos X o Z saldrían demasiadas copias: son excluyentes. Radial + Y sí se puede.
@@ -833,6 +934,12 @@ function choose(id) {
       state.sym = state.symZ = false;
       rebuildSym();
       break;
+    case 'sym:reset':
+      symFrame.position.set(0, 0, 0);
+      symFrame.quaternion.identity();
+      rebuildSym();
+      break;
+    case 'floor': state.floor = !state.floor; break;
     case 'edge:soft': case 'edge:even': case 'edge:hard': state.edge = id.slice(5); break;
     case 'tex:plain': case 'tex:rough': case 'tex:dots': case 'tex:stripes': case 'tex:scales': state.texture = id.slice(4); break;
     case 'stroke:free': state.line = false; break;
@@ -1528,6 +1635,12 @@ if (!SPECTATOR) {
       if (hit) { pickColor(hit); e.stopPropagation(); }
       return;
     }
+    if (symBallUnderMouse(e)) {
+      symDrag = { x: e.clientX, y: e.clientY, pos: symFrame.position.clone(), q: symFrame.quaternion.clone(), rotate: e.shiftKey };
+      controls.enabled = false;
+      e.stopPropagation();
+      return;
+    }
     if (state.tool === 'move') {
       if (moveOp.mode === 'wheel' && moveOp.L) { clearTimeout(wheelMoveTimer); endMove(); }
       const hit = pickLocal(false);
@@ -1554,8 +1667,33 @@ if (!SPECTATOR) {
     }
   }, true);
 }
+// La bola de la simetría con el ratón: arrastrar la mueve, con Shift la gira.
+let symDrag = null;
+const ballV = new THREE.Vector3();
+function symBallUnderMouse(e) {
+  if (!symOn()) return false;
+  symBall.getWorldPosition(ballV).project(camera);
+  const px = ((ballV.x + 1) / 2) * innerWidth, py = ((1 - ballV.y) / 2) * innerHeight;
+  return ballV.z < 1 && Math.hypot(e.clientX - px, e.clientY - py) < 16;
+}
+function dragSym(e) {
+  const dx = e.clientX - symDrag.x, dy = e.clientY - symDrag.y;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  symFrame.position.copy(symDrag.pos);
+  symFrame.quaternion.copy(symDrag.q);
+  if (symDrag.rotate) {
+    symFrame.quaternion.premultiply(tmpQ.setFromAxisAngle(up, dx * 0.008));
+    symFrame.quaternion.premultiply(tmpQ.setFromAxisAngle(right, dy * 0.008));
+  } else {
+    const perPx = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.position.distanceTo(symFrame.getWorldPosition(ballV))) / innerHeight;
+    symFrame.position.addScaledVector(right, dx * perPx).addScaledVector(up, -dy * perPx);
+  }
+  snapSymFrame();
+  rebuildSym();
+}
 addEventListener('pointermove', (e) => {
   setMouse(e);
+  if (symDrag) dragSym(e);
   if (!renderer.xr.isPresenting && !SPECTATOR) setModifiers(e);
   mouse.inside = e.target === renderer.domElement;
   if (radialOpen && radialMode === 'hold') hoverMenu(e.clientX, e.clientY, e.buttons);
@@ -1588,6 +1726,10 @@ if (!SPECTATOR) {
 }
 addEventListener('pointerup', (e) => {
   radialDrag = -1;
+  if (symDrag) {
+    symDrag = null;
+    controls.enabled = true;
+  }
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
   if (e.button === 2 && radialOpen && radialMode === 'hold') {
@@ -1679,6 +1821,7 @@ async function startXR(mode) {
     model.position.set(0, 1.1, -0.6);
     model.quaternion.identity();
     model.scale.setScalar(WS.scale);
+    placeFloor(true);
     xr.follow = true; // el espacio te sigue con la vista hasta que empiezas a esculpir
     xr.followSnap = true;
     hud3d.visible = true;
@@ -1688,6 +1831,7 @@ async function startXR(mode) {
       model.position.set(0, 0, 0);
       model.quaternion.identity();
       model.scale.setScalar(1);
+      placeFloor(false);
       flower.close();
       hud3d.visible = false;
       panel3d.visible = false;
@@ -1868,10 +2012,10 @@ function buildPanel() {
     get: () => (state.quads - 1000) / 59000, set: (t) => (state.quads = Math.round((1000 + t * 59000) / 1000) * 1000),
     text: () => state.quads.toLocaleString(),
   });
-  const bw = (IW - 5 * 8) / 6;
-  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Remesh', 'remesh'], ['A Blender', 'export']]
+  const bw = (IW - 6 * 8) / 7;
+  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], ['Remesh', 'remesh'], ['A Blender', 'export']]
     .forEach(([l, id], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: yb + 56, w: bw, h: 64, label: l, size: 19,
-      active: () => (id === 'sym' && state.sym) || (id === 'wire' && state.wire), onClick: () => choose(id) }));
+      active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => choose(id) }));
   // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
   const yi = yb + 150;
   W.push({ type: 'label', x: M, y: yi, text: 'Idiomas', size: 28, color: '#ffffff' });
@@ -1920,10 +2064,11 @@ function buildBrushPage() {
   row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
   row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
   row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
-  row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial']]);
+  row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial'], ['sym:reset', 'Centrar']]);
   row('COPIAS DE LA RADIAL', [3, 4, 5, 6, 8].map((n) => ['radial:' + n, String(n)]));
   W.push({ type: 'label', x: M, y: y + 6, size: 22, weight: 500, text: 'Textura: en Añadir, Quitar, Inflar y Pintar.' });
   W.push({ type: 'label', x: M, y: y + 42, size: 22, weight: 500, text: 'Trazo recto: aprieta en el inicio, suelta en el final.' });
+  W.push({ type: 'label', x: M, y: y + 78, size: 22, weight: 500, text: 'Simetría: coge la bola amarilla con el gatillo para moverla y girarla.' });
   return W;
 }
 function buildObrasPage() {
@@ -2033,6 +2178,9 @@ function xrFrame(dt) {
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
 
   if (xr.follow) placeWorkspace(false, dt);
+  // El suelo va contigo para que no se acabe, pero sus líneas se quedan quietas en la habitación.
+  renderer.xr.getCamera().getWorldPosition(vA);
+  floor.position.set(vA.x, 0, vA.z);
 
   // Grips: uno agarra y mueve el modelo (palanca adelante/atrás = más grande/más pequeño);
   // los dos a la vez lo escalan (separando las manos), lo giran y lo mueven.
@@ -2174,6 +2322,23 @@ function xrFrame(dt) {
   updateCursorShape();
   cursor.visible = true;
   if (trig > 0.08) xr.follow = false;
+  // La bola de la simetría: si aprietas el gatillo sobre ella, la llevas tú en vez de esculpir.
+  if (xr.symGrab) {
+    if (trig > 0.08) moveSymWithHand(right, gpR);
+    else { xr.symGrab = false; setSymBallHot(false); }
+    cursor.visible = false;
+    return;
+  }
+  const overBall = symOn() && !xr.stroking && !moveOp.L && tipW.distanceTo(symBall.getWorldPosition(vT0)) < 0.05;
+  setSymBallHot(overBall);
+  if (overBall && trig > 0.08) {
+    xr.symGrab = true;
+    symFrame.updateMatrix();
+    symGrabOff.copy(ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld)).invert().multiply(symFrame.matrix);
+    gpR.hapticActuators?.[0]?.pulse?.(0.5, 25);
+    cursor.visible = false;
+    return;
+  }
   if (state.tool === 'move') {
     xrMove(right, gpR, tipL, trigDown);
     return;
@@ -2196,6 +2361,15 @@ function xrFrame(dt) {
 
 // Gatillo con Mover: agarra la capa que toca el cursor y la lleva con la mano (posición y giro).
 const ctrlLocal = new THREE.Matrix4();
+const symGrabOff = new THREE.Matrix4();
+function moveSymWithHand(right, gp) {
+  ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
+  tmpM.multiplyMatrices(ctrlLocal, symGrabOff).decompose(symFrame.position, symFrame.quaternion, tmpS);
+  const snapped = snapSymFrame();
+  if (snapped && !xr.symSnapped) gp.hapticActuators?.[0]?.pulse?.(0.35, 18);
+  xr.symSnapped = snapped;
+  rebuildSym();
+}
 function xrMove(right, gp, tipL, down) {
   ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
   if (down && !moveOp.L && !xr.moveHeld) {
@@ -2636,6 +2810,8 @@ renderer.setAnimationLoop(() => {
     }
   }
   syncCursorCopies();
+  syncSymBall();
+  floor.visible = state.floor;
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.

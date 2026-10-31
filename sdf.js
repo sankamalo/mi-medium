@@ -393,8 +393,8 @@ export class SDFGrid {
   // Devuelve la caja de muestras modificadas {lo, hi} o null.
   // opts: { shape: 'sphere' | 'cube' | 'pyramid', rot: matriz 3x3 (9 números, por columnas) } para
   // añadir/quitar con forma. 'grab' (arrastrar) lleva el barro de a hasta b con caída suave.
-  // También en opts: edge ('soft' | 'hard'), texture (nombre en TEXTURES) y frame (matriz 3x3 de la
-  // copia de simetría, para que la textura salga reflejada igual que la forma).
+  // También en opts: edge ('soft' | 'hard'), texture (nombre en TEXTURES), y frame + shift (giro 3x3 y
+  // desplazamiento de la copia de simetría, para que la textura salga reflejada igual que la forma).
   // 'pinch' junta el barro hacia la línea del trazo; 'crease' además hunde un surco.
   applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
     const { n, h, o, band, nb, bricks, colors, fill } = this;
@@ -402,10 +402,12 @@ export class SDFGrid {
     const tex = opts?.texture ? TEXTURES[opts.texture] : null;
     const period = Math.max(r * 0.7, 6 * h);
     const amp = tex ? Math.min(r * 0.22, band * 0.7) : 0;
-    const F = opts?.frame;
-    const texAt = (px, py, pz) => (F
-      ? tex((px * F[0] + py * F[1] + pz * F[2]) / period, (px * F[3] + py * F[4] + pz * F[5]) / period, (px * F[6] + py * F[7] + pz * F[8]) / period)
-      : tex(px / period, py / period, pz / period));
+    const F = opts?.frame, T = opts?.shift;
+    const texAt = (px, py, pz) => {
+      if (!F) return tex(px / period, py / period, pz / period);
+      const x = px - T[0], y = py - T[1], z = pz - T[2];
+      return tex((x * F[0] + y * F[1] + z * F[2]) / period, (x * F[3] + y * F[4] + z * F[5]) / period, (x * F[6] + y * F[7] + z * F[8]) / period);
+    };
     const falloff = EDGE[opts?.edge] || smooth;
     const puff = opts?.edge === 'hard' ? EDGE.hard : opts?.edge === 'soft' ? smooth : plateau;
     const reach = (shape ? r * SHAPE_REACH[shape] : r) + amp;
