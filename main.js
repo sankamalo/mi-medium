@@ -1941,8 +1941,12 @@ const live = {
     clearTimeout(this.structTimer);
     this.structTimer = setTimeout(() => this.snapshot(), 250);
   },
-  snapshot() {
-    this.hub.sendBlob('snap', packScene());
+  async snapshot() {
+    if (this.snapBusy) { this.snapAgain = true; return; }
+    this.snapBusy = true;
+    await this.hub.sendBlob('snap', packScene());
+    this.snapBusy = false;
+    if (this.snapAgain) { this.snapAgain = false; this.snapshot(); }
   },
   pose() {
     if (!this.emitting) return;
@@ -1968,7 +1972,12 @@ const inbox = [];
 let inboxBusy = false;
 async function onLiveMessage(m) {
   if (!SPECTATOR) {
-    if (m.t === 'hello' && live.emitting) live.snapshot();
+    if (m.t === 'hello' && live.emitting && !live.snapBusy) live.snapshot();
+    // La calibración de la webcam se sigue desde dentro de las gafas.
+    if (m.t === 'cal' && live.emitting) {
+      if (m.key) toast(t(m.key, ...(m.args || [])), 6000);
+      if (m.buzz) ctrls.forEach((c) => c.userData.src?.gamepad?.hapticActuators?.[0]?.pulse?.(0.8, 150));
+    }
     return;
   }
   if (m.t === 'p') { spectatorPose(m); return; }
@@ -2077,7 +2086,8 @@ const spec = { view: 'gafas', bg: 'oscuro', smooth: 0.2, orbitT: 0, lastPose: nu
 const BGS = { oscuro: 0x15171c, croma: 0x00ff00, blanco: 0xf4f4f2, negro: 0x000000 };
 
 // Cámara externa (webcam o iPhone) con la escultura encima; ver camara.js.
-const webcam = SPECTATOR ? createWebcam({ renderer, scene, camera, toast, api: API, onLayoutReset: fitWindow }) : null;
+const webcam = SPECTATOR ? createWebcam({ renderer, scene, camera, toast, api: API, onLayoutReset: fitWindow,
+  notify: (key, args, buzz) => live.hub.send({ t: 'cal', key, args, buzz }) }) : null;
 
 function spectatorPose(m) {
   spec.lastPose = m;
@@ -2224,8 +2234,17 @@ if (SPECTATOR) {
 }
 
 live.hub = new Live(onLiveMessage);
+// Al (re)conectar se ha podido perder algo: el espejo vuelve a pedir la escena entera.
+live.hub.onOpen = () => {
+  if (SPECTATOR) {
+    synced = false;
+    $('specStatus').textContent = t('Esperando a las gafas…');
+    live.hub.send({ t: 'hello' });
+  } else live.structure();
+};
+// Las gafas pueden entrar más tarde que el espejo: se insiste hasta tener la escena.
+if (SPECTATOR) setInterval(() => { if (server.ok && !synced && !inboxBusy) live.hub.send({ t: 'hello' }); }, 3000);
 server.listeners.push((ok) => {
-  if (ok && SPECTATOR) setTimeout(() => live.hub.send({ t: 'hello' }), 300);
   if (!SPECTATOR && !ok) toast('Sin conexión con el Mac: sigues trabajando y se guarda en las gafas');
 });
 checkServer();
@@ -2426,6 +2445,9 @@ if (!SPECTATOR) {
 // App instalable que funciona sin internet (ver sw.js).
 if ('serviceWorker' in navigator && window.isSecureContext && !SPECTATOR) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('sin modo offline:', e.message));
+} else if (SPECTATOR && 'serviceWorker' in navigator) {
+  // El espejo vive en el Mac junto al servidor: siempre el código recién servido, nunca una copia guardada.
+  navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
 }
 
 updateHud();

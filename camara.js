@@ -104,7 +104,7 @@ export function calibrate(pts, w, h) {
   const N = 48;
   for (let i = 0; i < N; i++) {
     const y = 1 - (2 * (i + 0.5)) / N, rr = Math.sqrt(1 - y * y), a = i * 2.39996;
-    for (const D of [0.8, 1.6, 3]) {
+    for (const D of [0.4, 0.8, 1.6, 3]) {
       const eye = new THREE.Vector3(Math.cos(a) * rr, y * 0.6, Math.sin(a) * rr).normalize().multiplyScalar(D).add(gv);
       m.lookAt(eye, gv, new THREE.Vector3(0, 1, 0));
       q.setFromRotationMatrix(m);
@@ -285,14 +285,14 @@ export function createWebcam(ctx) {
   };
   rig.delayed = () => rig.poseAt(performance.now() - rig.delay);
 
-  // ¿Están quietos los mandos (últimos 500 ms)?
+  // ¿Están quietos los mandos (últimos 600 ms)?
   const still = () => {
-    const now = performance.now() - rig.delay, P = rig.poses.filter((s) => s.t > now - 500 && s.t <= now);
+    const now = performance.now() - rig.delay, P = rig.poses.filter((s) => s.t > now - 600 && s.t <= now);
     if (P.length < 3) return false;
     for (let i = 0; i < 2; i++) {
       const pos = P.map((s) => s.m.hands[i]).filter(Boolean);
       if (!pos.length) continue;
-      for (const q of pos) if (Math.hypot(q[0] - pos[0][0], q[1] - pos[0][1], q[2] - pos[0][2]) > 0.008) return false;
+      for (const q of pos) if (Math.hypot(q[0] - pos[0][0], q[1] - pos[0][1], q[2] - pos[0][2]) > 0.012) return false;
     }
     return true;
   };
@@ -317,28 +317,53 @@ export function createWebcam(ctx) {
     if (!rig.active) return;
     const [w, h] = rig.size();
     const samples = [];
+    const notify = ctx.notify || (() => {});
     ui.open();
+    ui.live(true);
     ui.say(t('Ponte las gafas y coge <b>un solo mando</b> (deja el otro quieto).<br>' +
-      'En cada foto pon la punta del mando en un sitio <b>que se vea en la webcam</b> y quédate quieto.<br>' +
-      'Cambia de sitio en cada una: cerca, lejos, arriba, abajo, a los lados.'), t('Empezamos en 5 s…'));
+      'Llévalo a un sitio <b>que se vea en la webcam</b> y páralo: al estar quieto un momento suena un pitido y se hace la foto.<br>' +
+      'Repite en sitios distintos: cerca, lejos, arriba, abajo, a los lados.'), '');
     beep(440, 0.2);
-    for (let s = 5; s > 0 && !ui.cancelled; s--) { ui.big(s); await sleep(1000); }
-    for (let i = 0; i < shots && !ui.cancelled; i++) {
-      for (let s = 3; s > 0 && !ui.cancelled; s--) { ui.big(s); ui.sub(t('Foto {0} de {1}: muévete a otro sitio', i + 1, shots)); beep(520); await sleep(900); }
-      // Espera a que esté quieto (hasta 4 s).
+    // Sin cuenta atrás: cada foto espera a que el mando se mueva de verdad y se pare. Con las
+    // gafas en la frente no llega movimiento y simplemente no pasa nada hasta que te las pones.
+    const moved = (m, ref, d) => m.hands.some((q, k) => q && ref.hands[k] && Math.hypot(q[0] - ref.hands[k][0], q[1] - ref.hands[k][1], q[2] - ref.hands[k][2]) > d);
+    let ref = null;
+    for (let i = 0; i < shots && !ui.cancelled;) {
+      ui.big(`${i + 1} / ${shots}`);
+      const key = 'Foto {0} de {1}: mueve el mando a otro sitio y páralo';
+      ui.sub(t(key, i + 1, shots));
+      notify(key, [i + 1, shots]);
+      for (;;) {
+        if (ui.cancelled) break;
+        const last = rig.poses[rig.poses.length - 1], pose = rig.delayed();
+        if (!last || performance.now() - last.t > 1500 || !pose || !pose.hands.some(Boolean)) ui.sub(t('No llegan los mandos de las gafas'));
+        else {
+          ui.sub(t(key, i + 1, shots));
+          if (!ref) ref = pose;
+          else if (moved(pose, ref, 0.1)) break;
+        }
+        await sleep(60);
+      }
+      if (ui.cancelled) break;
+      ui.sub(t('Quieto…'));
       const t0 = performance.now();
-      while (!still() && performance.now() - t0 < 4000 && !ui.cancelled) { ui.big('…'); ui.sub(t('Quieto…')); await sleep(100); }
+      while (!still() && performance.now() - t0 < 4000 && !ui.cancelled) await sleep(60);
       if (ui.cancelled) break;
       const pose = rig.delayed();
-      if (!pose || !pose.hands.some(Boolean)) { ui.sub(t('No llegan los mandos de las gafas')); await sleep(1200); i--; if (performance.now() - t0 > 30000) break; continue; }
+      if (!moved(pose, ref, 0.06)) continue; // ha vuelto al sitio de antes
       const cv = document.createElement('canvas');
       cv.width = w; cv.height = h;
       cv.getContext('2d').drawImage(video, 0, 0, w, h);
       samples.push({ img: cv, hands: pose.hands.map((x) => (x ? x.slice(0, 3) : null)) });
+      ref = pose;
+      i++;
       ui.big('📸');
       beep(880, 0.25);
-      await sleep(600);
+      notify(null, null, true);
+      await sleep(500);
     }
+    ui.live(false);
+    if (!ui.cancelled) notify('Fotos listas: quítate las gafas y haz clic en el Mac');
     if (ui.cancelled || samples.length < 5) { ui.close(); if (!ui.cancelled) toast('Hacen falta al menos 5 fotos'); return; }
     // El mando que se ha movido (el otro está quieto en la mesa).
     let hand = 0, bestSpread = -1;
@@ -360,10 +385,24 @@ export function createWebcam(ctx) {
     if (pts.length < 5) { ui.close(); toast('Hacen falta al menos 5 clics'); return; }
     ui.say(t('Calculando…'), '');
     await sleep(30);
-    const c = calibrate(pts, w, h);
-    const ok = c.rms < Math.max(12, h * 0.02);
-    const msg = t('Error medio: {0} px · lente {1}° · cámara a {2} m', c.rms.toFixed(1), c.fov.toFixed(1), new THREE.Vector3(...c.pos).distanceTo(new THREE.Vector3(...pts[0].p)).toFixed(2));
-    const accept = await ui.result(samples[pts[0].i].img, pts, c.reproj,
+    const limit = Math.max(12, h * 0.02);
+    let used = pts, c = calibrate(used, w, h);
+    // Un clic fuera de sitio estropea todo: se prueba a calcular sin cada uno.
+    while (c.rms > limit && used.length > 5) {
+      let best = null, without = null;
+      for (let k = 0; k < used.length; k++) {
+        const rest = used.filter((_, j) => j !== k), r = calibrate(rest, w, h);
+        if (!best || r.rms < best.rms) { best = r; without = rest; }
+      }
+      if (best.rms > c.rms * 0.6) break;
+      c = best;
+      used = without;
+    }
+    const ok = c.rms < limit;
+    const dropped = pts.length - used.length;
+    const msg = (dropped ? t('Descartados {0} clics fuera de sitio. ', dropped) : '') +
+      t('Error medio: {0} px · lente {1}° · cámara a {2} m', c.rms.toFixed(1), c.fov.toFixed(1), new THREE.Vector3(...c.pos).distanceTo(new THREE.Vector3(...used[0].p)).toFixed(2));
+    const accept = await ui.result(samples[used[0].i].img, used, c.reproj,
       t(ok ? 'Calibrada ✔ ' : 'Algo no cuadra (¿algún clic fuera de sitio?). ') + msg);
     ui.close();
     if (!accept) return;
@@ -454,7 +493,8 @@ export function calibUI() {
   };
   const show = (...xs) => [bSkip, bOk, bRedo].forEach((b) => (b.style.display = xs.includes(b) ? '' : 'none'));
   ui.open = () => { ui.cancelled = false; el.classList.add('on'); cv.style.display = 'none'; show(); };
-  ui.close = () => el.classList.remove('on');
+  ui.close = () => el.classList.remove('on', 'live');
+  ui.live = (v) => el.classList.toggle('live', v); // mientras se hacen las fotos se ve la webcam detrás
   ui.say = (html, s = '') => { msg.innerHTML = html; sub.textContent = s; big.textContent = ''; };
   ui.big = (t) => (big.textContent = t);
   ui.sub = (t) => (sub.textContent = t);

@@ -51,6 +51,7 @@ export class Live {
   connect() {
     if (this.es) return;
     this.es = new EventSource(API + '/api/live/stream');
+    this.es.onopen = () => this.onOpen && this.onOpen(); // también al reconectarse solo
     // Cada evento es un lote: { from, msgs: [...] }
     this.es.onmessage = (e) => {
       const batch = JSON.parse(e.data);
