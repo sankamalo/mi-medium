@@ -301,6 +301,7 @@ export function createWebcam(ctx) {
     calibrating: false,
     cropX: store.get('plastilinaCrop', 0.5), // qué parte del vídeo se queda en vertical (0 = izquierda)
     follow: store.get('plastilinaFollow', true), // en vertical, el recorte sigue al casco
+    followHands: store.get('plastilinaFollowHands', true), // ...y a los mandos en uso
   };
 
   rig.devices = async () => {
@@ -389,22 +390,44 @@ export function createWebcam(ctx) {
   rig.setCrop = (v) => { rig.cropX = v; store.set('plastilinaCrop', v); rig.frame(); };
   rig.setFollow = (v) => { rig.follow = v; followGoal = null; store.set('plastilinaFollow', v); };
 
-  // El recorte sigue al casco. No hace falta buscarlo en la imagen: las gafas dicen dónde están y
-  // la calibración dónde cae eso en el vídeo. Con margen (cabecear no mueve el plano) y con suavidad.
+  rig.setFollowHands = (v) => { rig.followHands = v; followGoal = null; store.set('plastilinaFollowHands', v); };
+
+  // El recorte sigue al casco (y a los mandos que estés usando). No hace falta buscarlos en la
+  // imagen: las gafas dicen dónde están y la calibración dónde cae eso en el vídeo. Con margen
+  // (cabecear no mueve el plano) y con suavidad.
   const FOLLOW_ZONE = 0.06, FOLLOW_TIME = 0.5; // fracción del ancho del recorte, segundos
-  const headV = new THREE.Vector3();
+  const HAND_MOVE = 0.05, HAND_IDLE = 4000; // un mando cuenta si se ha movido 5 cm en los últimos 4 s
+  const HEAD_MARGIN = 0.35; // el casco nunca a más de esto del centro (fracción del recorte)
+  const pv = new THREE.Vector3();
+  const handState = [{ at: null, t: -Infinity }, { at: null, t: -Infinity }];
   let followGoal = null;
-  rig.followHead = (head, dt) => {
-    if (!rig.follow || !rig.vertical || rig.calibrating || !rig.calib || !head) return;
+  rig.followPose = (pose, dt) => {
+    if (!rig.follow || !rig.vertical || rig.calibrating || !rig.calib || !pose) return;
     const [w, h] = rig.size(), cw = (h * 9) / 16;
     camera.updateMatrixWorld();
-    headV.fromArray(head, 0).applyMatrix4(camera.matrixWorldInverse);
-    if (headV.z > -0.05) return;
-    const f = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))), u = w / 2 + (f * headV.x) / -headV.z;
+    const f = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    const column = (a) => { // columna del vídeo donde cae un punto
+      pv.fromArray(a, 0).applyMatrix4(camera.matrixWorldInverse);
+      return pv.z > -0.05 ? null : w / 2 + (f * pv.x) / -pv.z;
+    };
+    const head = column(pose.head);
+    if (head === null) return;
+    let sum = head, n = 1;
+    const now = performance.now();
+    pose.hands.forEach((q, k) => {
+      const st = handState[k];
+      if (!q) { st.at = null; return; }
+      if (!st.at) st.at = q.slice(0, 3);
+      if (Math.hypot(q[0] - st.at[0], q[1] - st.at[1], q[2] - st.at[2]) > HAND_MOVE) { st.at = q.slice(0, 3); st.t = now; }
+      if (!rig.followHands || now - st.t > HAND_IDLE) return;
+      const u = column(q);
+      if (u !== null) { sum += u; n++; }
+    });
+    const target = THREE.MathUtils.clamp(sum / n, head - cw * HEAD_MARGIN, head + cw * HEAD_MARGIN);
     const center = (w - cw) * rig.cropX + cw / 2, zone = cw * FOLLOW_ZONE;
     if (followGoal === null) followGoal = center;
-    if (u > followGoal + zone) followGoal = u - zone;
-    else if (u < followGoal - zone) followGoal = u + zone;
+    if (target > followGoal + zone) followGoal = target - zone;
+    else if (target < followGoal - zone) followGoal = target + zone;
     const next = center + (followGoal - center) * (1 - Math.exp(-dt / FOLLOW_TIME));
     rig.cropX = THREE.MathUtils.clamp((next - cw / 2) / (w - cw), 0, 1);
     rig.frame();

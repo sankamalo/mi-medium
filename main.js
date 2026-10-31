@@ -2213,7 +2213,7 @@ function spectatorFrame(dt) {
     const d = webcam.delayed();
     if (d) applyPose(d);
     webcam.applyCamera();
-    webcam.followHead(d?.head, dt);
+    webcam.followPose(d, dt);
     handMeshes.forEach((h, i) => (h.visible = webcam.showCtrls && !!d?.hands[i]));
     return;
   }
@@ -2266,10 +2266,13 @@ if (SPECTATOR) {
   $('camCrop').oninput = (e) => webcam.setCrop(e.target.value / 100);
   const showFollow = () => {
     $('camFollow').classList.toggle('on', webcam.follow);
+    $('camFollowHands').classList.toggle('on', webcam.followHands);
+    $('camFollowHands').disabled = !webcam.follow;
     $('cropManual').classList.toggle('hidden', webcam.follow);
     $('camCrop').value = webcam.cropX * 100;
   };
   $('camFollow').onclick = () => { webcam.setFollow(!webcam.follow); showFollow(); warnFollow(); };
+  $('camFollowHands').onclick = () => { webcam.setFollowHands(!webcam.followHands); showFollow(); };
   showFollow();
   let savedFormat = 'h';
   try { savedFormat = localStorage.getItem('plastilinaFormato') || 'h'; } catch {}
