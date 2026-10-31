@@ -111,6 +111,7 @@ const D = {
   'Mira los mandos virtuales: ¿caen sobre los reales?': ['Look at the virtual controllers: do they land on the real ones?', 'ดูคอนโทรลเลอร์เสมือน: ตรงกับของจริงไหม?'],
   'Error: {0} px · lente {1}° · cámara a {2} m · retraso {3} ms': ['Error: {0} px · lens {1}° · camera at {2} m · delay {3} ms', 'คลาดเคลื่อน: {0} px · เลนส์ {1}° · กล้องห่าง {2} ม. · หน่วง {3} ms'],
   'No cuadra: hace falta más luz y mover más las manos delante de la cámara.': ['It does not fit: it needs more light and more hand movement in front of the camera.', 'ยังไม่ตรง: ต้องการแสงมากขึ้นและขยับมือตรงหน้ากล้องมากขึ้น'],
+  'Puedes quedarte con la anterior, que es la que ves ahora.': ['You can keep the previous one, which is what you see now.', 'คุณเลือกใช้อันก่อนหน้าได้ ซึ่งคืออันที่เห็นอยู่ตอนนี้'],
   'Cámara calibrada. Retoca con las flechas si hace falta': ['Camera calibrated. Fine-tune with the arrow keys if needed', 'ปรับเทียบกล้องแล้ว ใช้ปุ่มลูกศรปรับละเอียดได้ถ้าจำเป็น'],
   'No llegan los mandos de las gafas': ['The headset controllers are not arriving', 'ไม่ได้รับข้อมูลคอนโทรลเลอร์จากแว่น'], 'Calculando…': ['Calculating…', 'กำลังคำนวณ…'], 'Sin micro: se graba sin sonido': ['No mic: recording without sound', 'ไม่มีไมค์: บันทึกแบบไม่มีเสียง'], 'Grabación descargada: {0}': ['Recording downloaded: {0}', 'ดาวน์โหลดวิดีโอแล้ว: {0}'], 'Grabación guardada en {0}': ['Recording saved in {0}', 'บันทึกวิดีโอไว้ที่ {0}'],
 };

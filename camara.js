@@ -31,10 +31,11 @@ function rotMat(rx, ry, rz) {
   ];
 }
 
-// Lente de webcam normal: unos 45° en vertical, y nunca fuera de 25°–75° (con pocos datos buenos
+// Lente de webcam normal: unos 45° en vertical, y nunca fuera de 25°–65° (con pocos datos buenos
 // el ajuste se iría a un gran angular absurdo con los mandos al fondo).
+const FOV_MAX = 65;
 const LF0 = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(22.5)));
-const LF_MIN = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(37.5)));
+const LF_MIN = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(FOV_MAX / 2)));
 const LF_MAX = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(12.5)));
 
 // Error en píxeles de una observación { x, y, z, m, k, u, v }. Devuelve en err[0], err[1].
@@ -181,17 +182,19 @@ export function solveCamera(samples, poses, w, h, delay0 = 120) {
     return out;
   };
 
-  let delay = delay0;
-  let list = handsAt(delay);
-  if (list.length < 30) return null;
+  const cache = new Map();
+  const handsCached = (d) => { if (!cache.has(d)) cache.set(d, handsAt(d)); return cache.get(d); };
+  const list0 = handsCached(delay0);
+  if (list0.length < 30) return null;
+  const score = (p, list) => median(nearest(p, list).map((n) => n.e));
 
   // 1) Arranques desde muchas posiciones alrededor de los puntos, mirándolos. Se prueban las dos
-  //    formas de emparejar izquierda/derecha.
+  //    formas de emparejar izquierda/derecha; se puntúa sin fiarse de esas etiquetas.
   const gv = new THREE.Vector3(), m = new THREE.Matrix4(), q = new THREE.Quaternion();
-  const c = 0.04 * h;
-  let best = null, bestE = Infinity;
+  const c = 0.04 * h, some = every(list0, 150);
+  const starts = [];
   for (const map of [{ Left: 0, Right: 1 }, { Left: 1, Right: 0 }]) {
-    const obs = every(list.map((e) => (e.H[map[e.s.label] ?? 0] ? obsOf(e, map[e.s.label] ?? 0) : null)).filter(Boolean), 60);
+    const obs = every(list0.map((e) => (e.H[map[e.s.label] ?? 0] ? obsOf(e, map[e.s.label] ?? 0) : null)).filter(Boolean), 60);
     if (obs.length < 10) continue;
     gv.set(0, 0, 0);
     obs.forEach((o) => gv.add(new THREE.Vector3(o.x, o.y, o.z).divideScalar(obs.length)));
@@ -204,32 +207,47 @@ export function solveCamera(samples, poses, w, h, delay0 = 120) {
         q.setFromRotationMatrix(m);
         const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))), sgn = q.w < 0 ? -1 : 1, sn = Math.sin(ang / 2) || 1;
         const p = refine([q.x * sgn / sn * ang, q.y * sgn / sn * ang, q.z * sgn / sn * ang, eye.x, eye.y, eye.z, LF0], obs, w, h, c, 15);
-        const e = median(pixelErrors(p, obs, w, h));
-        if (e < bestE) { bestE = e; best = p; }
+        starts.push({ p, e: score(p, some) });
       }
     }
   }
-  if (!best) return null;
+  if (!starts.length) return null;
+  // Las mejores que sean de verdad distintas.
+  starts.sort((a, b) => a.e - b.e);
+  const distinct = [];
+  for (const s of starts) {
+    if (distinct.length >= 8) break;
+    if (!distinct.some((o) => Math.hypot(o.p[3] - s.p[3], o.p[4] - s.p[4], o.p[5] - s.p[5]) < 0.05 && Math.abs(o.p[6] - s.p[6]) < 0.05)) distinct.push(s);
+  }
 
   // 2) Afinar con todos: reparto mano ↔ mando, fuera los que no cuadran, y otra vez.
-  let p = [...best, 0, 0, 0, 0, 0, 0], kept = [];
-  for (let round = 0; round < 5; round++) {
-    const near = nearest(p, list);
-    const limit = Math.max(0.035 * h, 2.5 * median(near.map((n) => n.e)));
-    kept = near.filter((n) => n.e < limit).map((n) => n.o);
-    if (kept.length < 10) return null;
-    p = refine(p, every(kept, 300), w, h, 0.03 * h, 20);
-    // 3) El retraso que mejor casa vídeo y gafas (a partir de que la cámara ya esté cerca).
-    if (round === 1 || round === 3) {
-      let bestD = delay, bestM = Infinity;
-      for (let d = 0; d <= 400; d += 20) {
-        const e = median(nearest(p, handsAt(d)).map((n) => n.e));
-        if (e < bestM) { bestM = e; bestD = d; }
+  const polish = (start) => {
+    let p = [...start, 0, 0, 0, 0, 0, 0], kept = [], delay = delay0, list = list0;
+    for (let round = 0; round < 5; round++) {
+      const near = nearest(p, list);
+      const limit = Math.max(0.035 * h, 2.5 * median(near.map((n) => n.e)));
+      kept = near.filter((n) => n.e < limit).map((n) => n.o);
+      if (kept.length < 10) return null;
+      p = refine(p, every(kept, 300), w, h, 0.03 * h, 20);
+      // 3) El retraso que mejor casa vídeo y gafas (a partir de que la cámara ya esté cerca).
+      if (round === 1 || round === 3) {
+        let bestD = delay, bestM = Infinity;
+        for (let d = 0; d <= 400; d += 20) {
+          const e = score(p, every(handsCached(d), 300));
+          if (e < bestM) { bestM = e; bestD = d; }
+        }
+        delay = bestD;
+        list = handsCached(delay);
       }
-      delay = bestD;
-      list = handsAt(delay);
     }
-  }
+    return { p, kept, delay, list, e: score(p, list) };
+  };
+  const done = distinct.map((s) => polish(s.p)).filter(Boolean);
+  if (!done.length) return null;
+  // Varias soluciones pueden encajar casi igual (lente abierta y cerca, o cerrada y lejos):
+  // entre las que casi empatan, la de lente más normal. Así repetir no da saltos de ángulo.
+  const top = Math.min(...done.map((o) => o.e)) * 1.2 + h / 1080;
+  const { p, kept, delay, list } = done.filter((o) => o.e <= top).sort((a, b) => Math.abs(a.p[6] - LF0) - Math.abs(b.p[6] - LF0))[0];
 
   const near = nearest(p, list), errors = near.map((n) => n.e);
   const [rx, ry, rz, cx, cy, cz, lf] = p;
@@ -308,7 +326,7 @@ export function createWebcam(ctx) {
     rig.texture.colorSpace = THREE.SRGBColorSpace;
     rig.active = true;
     rig.calib = store.get('plastilinaCam', {})[rig.label] || null;
-    if (rig.calib && (rig.calib.w !== video.videoWidth || rig.calib.h !== video.videoHeight)) rig.calib = null;
+    if (rig.calib && (rig.calib.w !== video.videoWidth || rig.calib.h !== video.videoHeight || rig.calib.fov > FOV_MAX)) rig.calib = null; // la última condición: calibraciones antiguas absurdas
     if (!rig.calib) toast('Cámara lista. Pulsa "Calibrar" para encajar la escultura con el vídeo', 5000);
     rig.layout();
     return true;
@@ -372,7 +390,7 @@ export function createWebcam(ctx) {
       const axis = dir[0] ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
       q.multiply(new THREE.Quaternion().setFromAxisAngle(axis, step * dir[1]));
     } else if (e.key === '+' || e.key === '=') c.fov = Math.max(10, c.fov - 0.3);
-    else if (e.key === '-') c.fov = Math.min(120, c.fov + 0.3);
+    else if (e.key === '-') c.fov = Math.min(FOV_MAX, c.fov + 0.3);
     else return false;
     c.pos = p.toArray();
     c.quat = q.toArray();
@@ -480,6 +498,7 @@ export function createWebcam(ctx) {
         return;
       }
     }
+    let good = null; // la última que ha cuadrado: se queda puesta mientras repites
     while (!ui.cancelled) {
       rig.history = [];
       const samples = await rig.capture(ui, w, h);
@@ -495,6 +514,7 @@ export function createWebcam(ctx) {
       const fine = c && c.error < 0.04 * h && c.good > 0.5;
       console.info('calibración', { muestras: samples.length, poses: poses.length, ...(c || {}) });
       if (fine) {
+        good = c;
         rig.calib = { pos: c.pos, quat: c.quat, fov: c.fov, w, h, rms: c.error, date: Date.now() };
         rig.showCtrls = true;
         rig.delay = c.delay;
@@ -502,17 +522,15 @@ export function createWebcam(ctx) {
       }
       const use = await ui.ask(fine
         ? t('Mira los mandos virtuales: ¿caen sobre los reales?') + `<br><small>${t('Error: {0} px · lente {1}° · cámara a {2} m · retraso {3} ms', c.error.toFixed(0), c.fov.toFixed(0), c.distance.toFixed(2), c.delay)}</small>`
-        : t('No cuadra: hace falta más luz y mover más las manos delante de la cámara.'), fine);
+        : t('No cuadra: hace falta más luz y mover más las manos delante de la cámara.') +
+          (good ? `<br><small>${t('Puedes quedarte con la anterior, que es la que ves ahora.')}</small>` : ''), !!good);
       if (use) {
-        rig.setDelay(c.delay);
+        rig.setDelay(good.delay);
         rig.save();
         ui.close();
         toast('Cámara calibrada. Retoca con las flechas si hace falta', 6000);
         return true;
       }
-      rig.calib = before;
-      rig.delay = beforeDelay;
-      rig.applyCamera();
     }
     rig.history = null;
     rig.calib = before;
