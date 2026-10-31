@@ -6,6 +6,7 @@ import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, sr
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { createControllerRig, Flower, surfaceNets } from './flor.js';
 import { CanvasPanel, CERA } from './panel.js';
+import { parseModel, refType, REF_TYPES } from './referencia.js';
 import { STAMPS, addOwnStamp, removeOwnStamp, stampFromGrid, stampThumb } from './sellos.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
@@ -38,7 +39,7 @@ const state = {
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
-  color: '#cfc6bb', bakeSize: 2048,
+  color: '#cfc6bb', bakeSize: 2048, lathe: false, latheSpeed: 0.5,
 };
 
 // Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
@@ -99,6 +100,30 @@ const symGuides = {
 // por donde se agarra; se ve siempre, aunque quede dentro de la plastilina.
 const symFrame = new THREE.Group();
 model.add(symFrame);
+// El torno: todas las capas cuelgan de spinner, que gira alrededor del eje Y de symFrame.
+// La rejilla no se entera: al esculpir, el punto de la mano se pasa al sistema de la pieza que gira.
+const spinner = new THREE.Group();
+spinner.matrixAutoUpdate = false;
+model.add(spinner);
+const spin = { angle: 0, inv: new THREE.Matrix4() };
+const toSpin = (p) => (spin.angle ? new THREE.Vector3(p[0], p[1], p[2]).applyMatrix4(spin.inv).toArray() : p);
+const wheelMat = (hex) => new THREE.MeshBasicMaterial({ color: hex });
+const latheWheel = new THREE.Group();
+const latheDisc = new THREE.Group();
+{
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 0.006, 56), wheelMat(0x141210));
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(0.965, 0.965, 0.007, 56), wheelMat(0xfff8e3));
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.008, 0.035), wheelMat(0x141210));
+  const bar2 = bar.clone();
+  bar2.rotation.y = Math.PI / 2;
+  const mark = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.009, 0.14), wheelMat(0xe3242b));
+  mark.position.x = 0.8;
+  latheDisc.add(rim, top, bar, bar2, mark);
+  const axis = new THREE.Mesh(new THREE.CylinderGeometry(0.0016, 0.0016, 0.6, 8).translate(0, 0.3, 0), wheelMat(0xffd21f));
+  latheWheel.add(latheDisc, axis);
+  latheWheel.visible = false;
+  symFrame.add(latheWheel);
+}
 Object.values(symGuides).forEach((g) => { g.visible = false; symFrame.add(g); });
 const symBall = new THREE.Mesh(
   new THREE.SphereGeometry(1, 20, 14),
@@ -240,7 +265,7 @@ function updateCursorShape() {
     cursor.quaternion.identity();
     return;
   }
-  const e = brushRot();
+  const e = brushRot(model);
   if (!e) return;
   rotM.set(e[0], e[3], e[6], 0, e[1], e[4], e[7], 0, e[2], e[5], e[8], 0, 0, 0, 0, 1);
   cursor.quaternion.setFromRotationMatrix(rotM);
@@ -317,7 +342,7 @@ class Layer {
     this.group = new THREE.Group();
     this.voxels = new THREE.Group();
     this.group.add(this.voxels);
-    model.add(this.group);
+    spinner.add(this.group);
     this.chunks = [];
     this.dirty = new Set();
     this.remesh = null;
@@ -495,7 +520,7 @@ class Layer {
   dispose() {
     this.chunks.forEach((ch) => ch && disposeMesh(this.voxels, ch));
     this.clearRemesh();
-    model.remove(this.group);
+    spinner.remove(this.group);
   }
 }
 
@@ -613,6 +638,7 @@ let strokeRec = null;
 let strokePrev = null;
 
 function beginStroke() {
+  latheDepth = null;
   strokeRec = pushStroke(active);
   strokePrev = null;
   lazy = null;
@@ -665,11 +691,11 @@ function brushCall(L, tool, a, b, r, s, inv, dt, paint, opts) {
 // en el Mac mira a la cámara; en las gafas sigue al mando derecho.
 let brushObj = null;
 const rotM = new THREE.Matrix4(), rot3 = new THREE.Matrix3();
-function brushRot() {
+function brushRot(frame = spinner) {
   if (!brushObj) return null;
   model.updateMatrixWorld();
   brushObj.updateMatrixWorld();
-  rotM.copy(model.matrixWorld).invert().multiply(brushObj.matrixWorld);
+  rotM.copy(frame.matrixWorld).invert().multiply(brushObj.matrixWorld);
   rot3.setFromMatrix4(rotM);
   const e = rot3.elements;
   for (let c = 0; c < 3; c++) {
@@ -745,7 +771,7 @@ function snapSymFrame() {
   if (symFrame.position.length() < 0.012) { symFrame.position.set(0, 0, 0); snapped = true; }
   return snapped;
 }
-const symOn = () => state.sym || state.symY || state.symZ || state.radial;
+const symOn = () => state.sym || state.symY || state.symZ || state.radial || state.lathe;
 
 // Llama a fn con el tramo original y con el de cada copia. Las que caen encima de otra (sobre el
 // plano del espejo o en el eje) se saltan: si no, ese punto recibiría el pincel dos veces.
@@ -801,6 +827,7 @@ function optionOn(id) {
   if (id === 'sym:y') return state.symY;
   if (id === 'sym:z') return state.symZ;
   if (id === 'sym:radial') return state.radial;
+  if (id === 'sym:lathe') return state.lathe;
   if (id === 'shape:more') return state.shape === 'stamp';
   if (k === 'stamp') return state.shape === 'stamp' && state.stamp === id;
   if (k === 'shape') return state.shape === v;
@@ -833,6 +860,7 @@ function trackLine(p, pressure, tool) {
   rope.visible = true;
 }
 function endStroke() {
+  if (state.lathe) placeWheel();
   commitLine();
   meltStroke();
 }
@@ -889,6 +917,7 @@ function brushStep(tool, a, p, dt, pressure) {
 }
 
 function applyAt(p, dt, pressure = 1) {
+  p = toSpin(p);
   const tool = activeTool();
   const a = strokePrev || p;
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
@@ -899,7 +928,7 @@ function applyAt(p, dt, pressure = 1) {
     strokePrev = [p[0], p[1], p[2]];
     return;
   }
-  if (state.line && tool !== 'grab') return trackLine(p, pressure, lineStroke?.tool || tool);
+  if (state.line && tool !== 'grab' && !state.lathe) return trackLine(p, pressure, lineStroke?.tool || tool);
   if (strokePrev && moved < state.radius * 0.05 && (tool === 'add' || tool === 'remove')) return;
   if (tool === 'grab') {
     // Arrastrar: lleva el barro con la mano en pasos pequeños (elástico, sin romperse).
@@ -941,6 +970,8 @@ function resetLayer(shape) {
 }
 
 function choose(id) {
+  // La simetría y el torno se excluyen: el torno ya da la vuelta entera.
+  if (/^(sym$|sym:[xyz]$|sym:radial$|radial:)/.test(id) || id === 'move') state.lathe = false;
   switch (id) {
     case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': case 'grab': case 'pinch': case 'crease':
       leaveClayTool();
@@ -995,6 +1026,15 @@ function choose(id) {
       state.sym = state.symZ = false;
       rebuildSym();
       break;
+    case 'sym:lathe':
+      state.lathe = !state.lathe;
+      if (state.lathe) {
+        state.sym = state.symY = state.symZ = state.radial = false;
+        placeWheel();
+      }
+      rebuildSym();
+      break;
+    case 'import': $('fileRef').click(); break;
     case 'sym:reset':
       symFrame.position.set(0, 0, 0);
       symFrame.quaternion.identity();
@@ -1018,6 +1058,173 @@ function choose(id) {
     case 'layerNext': nextLayer(); break;
   }
   updateHud();
+}
+
+// ---------- Torno ----------
+// El disco se coloca bajo la pieza y un poco más ancho que ella.
+function placeWheel() {
+  symFrame.updateMatrix();
+  const inv = new THREE.Matrix4().copy(symFrame.matrix).invert(), v = new THREE.Vector3();
+  const { bricks, fill, nb, h, o } = active.grid;
+  let low = Infinity, wide = 0;
+  for (let bz = 0; bz < nb; bz++) for (let by = 0; by < nb; by++) for (let bx = 0; bx < nb; bx++) {
+    const bi = bx + nb * (by + nb * bz), bk = bricks[bi];
+    if (!(fill[bi] < 0) && !(bk && bk.some((d) => d < 0))) continue;
+    v.set(o + (bx * 8 + 4) * h, o + (by * 8 + 4) * h, o + (bz * 8 + 4) * h).applyMatrix4(inv);
+    low = Math.min(low, v.y - 4 * h);
+    wide = Math.max(wide, Math.hypot(v.x, v.z) + 6 * h);
+  }
+  if (low === Infinity) { low = -0.1; wide = 0.1; }
+  latheWheel.position.y = low - 0.012;
+  latheDisc.scale.set(Math.max(0.09, wide * 1.15), 1, Math.max(0.09, wide * 1.15));
+}
+const spinA = new THREE.Matrix4(), spinB = new THREE.Matrix4();
+function updateLathe(dt) {
+  const held = xr.symGrab || symDrag;
+  if (held && state.lathe) placeWheel();
+  if (state.lathe && !held) spin.angle = (spin.angle + state.latheSpeed * 2 * Math.PI * dt) % (2 * Math.PI) || 1e-6;
+  else if (spin.angle) {
+    // Al parar, vuelve despacio a como estaba: la rejilla nunca ha girado.
+    const a = spin.angle > Math.PI ? spin.angle - 2 * Math.PI : spin.angle;
+    const b = a * Math.exp(-dt * 7);
+    spin.angle = Math.abs(b) < 0.002 ? 0 : (b + 2 * Math.PI) % (2 * Math.PI);
+  }
+  latheWheel.visible = state.lathe;
+  latheDisc.rotation.y = spin.angle;
+  symFrame.updateMatrix();
+  spinA.makeRotationY(spin.angle).premultiply(symFrame.matrix);
+  spinB.copy(symFrame.matrix).invert();
+  spinner.matrix.multiplyMatrices(spinA, spinB);
+  spin.inv.copy(spinner.matrix).invert();
+  spinner.matrixWorldNeedsUpdate = true;
+}
+
+// ---------- Referencia ----------
+// Un modelo de fuera para mirarlo mientras trabajas. Cuelga del modelo, pero no gira con el torno,
+// no se esculpe y no se exporta. El archivo se queda guardado aquí; lo que haya en la carpeta
+// referencias del Mac también se puede traer.
+const refMat = new THREE.MeshStandardMaterial({ color: 0x8fb0e0, roughness: 0.7, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
+const refRoot = new THREE.Group();
+refRoot.visible = false;
+model.add(refRoot);
+const refBall = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0x1b4fd8 }));
+refBall.scale.setScalar(0.02);
+refRoot.add(refBall);
+const REF_FIT = 0.35; // lo que mide lo más largo del modelo, con el tamaño a 1
+const ref = { name: null, obj: null, list: [], mac: [], size: 1, opacity: 0.4, height: 0 };
+const refSizeToT = (s) => (Math.log2(s) + 3) / 6;
+const tToRefSize = (v) => 2 ** (v * 6 - 3);
+function layoutRef() {
+  if (!ref.obj) return;
+  ref.obj.scale.setScalar(ref.size * ref.fit);
+  refBall.position.y = (ref.height * ref.size * ref.fit) / 2 + 0.03;
+}
+const saveRefState = () => idbSet('refActiva', ref.name ? { name: ref.name, size: ref.size, opacity: ref.opacity, shown: refRoot.visible, pos: refRoot.position.toArray(), q: refRoot.quaternion.toArray() } : null).catch(() => {});
+function clearRef() {
+  if (ref.obj) {
+    ref.obj.traverse((o) => o.geometry?.dispose());
+    refRoot.remove(ref.obj);
+  }
+  ref.obj = ref.name = null;
+  refRoot.visible = false;
+}
+async function refBytes(name) {
+  const here = await idbGet('ref:' + name).catch(() => null);
+  if (here) return here;
+  const r = await fetch(API + '/api/ref?name=' + encodeURIComponent(name));
+  if (!r.ok) throw new Error('mac');
+  const buf = await r.arrayBuffer();
+  await addRefToList(name, buf);
+  return buf;
+}
+async function addRefToList(name, buf) {
+  await idbSet('ref:' + name, buf);
+  if (!ref.list.includes(name)) ref.list.push(name);
+  await idbSet('refs', ref.list);
+}
+async function showRef(name, saved) {
+  try {
+    const buf = await refBytes(name);
+    const obj = await parseModel(name, buf);
+    clearRef();
+    let tris = 0;
+    obj.traverse((o) => { if (o.isMesh) { o.material = refMat; tris += (o.geometry.index?.count ?? o.geometry.attributes.position.count) / 3; } });
+    if (tris > 600000) toast(t('Este modelo es muy pesado: puede ir lento en las gafas'), 5000);
+    const box = new THREE.Box3().setFromObject(obj), c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
+    const big = Math.max(sz.x, sz.y, sz.z) || 1;
+    ref.fit = REF_FIT / big;
+    ref.height = sz.y;
+    obj.children.forEach((m) => m.geometry.translate(-c.x, -c.y, -c.z));
+    ref.obj = obj;
+    ref.name = name;
+    ref.size = saved?.size ?? 1;
+    ref.opacity = saved?.opacity ?? 0.4;
+    refMat.opacity = 1 - ref.opacity;
+    refRoot.add(obj);
+    refRoot.position.fromArray(saved?.pos ?? [0, 0, 0]);
+    refRoot.quaternion.fromArray(saved?.q ?? [0, 0, 0, 1]);
+    refRoot.visible = saved?.shown ?? true;
+    layoutRef();
+    saveRefState();
+  } catch (e) {
+    console.warn('Referencia', name, e);
+    toast(t('No he podido abrir {0}', name), 5000);
+  }
+  refUi();
+}
+async function importRef(file) {
+  if (!REF_TYPES.includes(refType(file.name))) return toast(t('Solo FBX, OBJ o GLB'), 4000);
+  const name = file.name.replace(/[^\w .-]/g, '_');
+  const buf = await file.arrayBuffer();
+  // Antes de guardarlo: si no se puede abrir, no entra en la lista.
+  try { await parseModel(name, buf); } catch (e) {
+    console.warn('Referencia', name, e);
+    return toast(t('No he podido abrir {0}', name), 5000);
+  }
+  await addRefToList(name, buf);
+  if (server.ok) fetch(API + '/api/ref?name=' + encodeURIComponent(name), { method: 'POST', body: buf }).catch(() => {});
+  await showRef(name);
+}
+async function dropRef(name) {
+  if (ref.name === name) { clearRef(); saveRefState(); }
+  ref.list = ref.list.filter((n) => n !== name);
+  await idbDel('ref:' + name).catch(() => {});
+  await idbSet('refs', ref.list).catch(() => {});
+  refUi();
+}
+async function refreshMacRefs() {
+  if (!server.ok) { ref.mac = []; return; }
+  try { ref.mac = await (await fetch(API + '/api/refs')).json(); } catch { ref.mac = []; }
+  refUi();
+}
+const refNames = () => [...new Set([...ref.list, ...ref.mac])];
+function refUi() {
+  const names = refNames();
+  $('refBox').hidden = !names.length && !ref.name;
+  $('refList').replaceChildren(...names.map((n) => {
+    const b = document.createElement('button');
+    b.textContent = n;
+    b.style.textTransform = 'none';
+    b.classList.toggle('on', n === ref.name);
+    b.onclick = () => showRef(n);
+    return b;
+  }));
+  $('refHide').textContent = t(refRoot.visible ? 'Ocultar' : 'Mostrar');
+  $('refSize').value = refSizeToT(ref.size);
+  $('refOpacity').value = ref.opacity;
+  if (panel3d.visible) drawPanel();
+}
+function setRefShown(on) { refRoot.visible = on && !!ref.obj; saveRefState(); refUi(); }
+function setRefSize(s) { ref.size = s; layoutRef(); saveRefState(); }
+function setRefOpacity(v) { ref.opacity = v; refMat.opacity = 1 - v; saveRefState(); }
+async function loadRefs() {
+  try {
+    ref.list = (await idbGet('refs')) || [];
+    const saved = await idbGet('refActiva');
+    if (saved?.name) await showRef(saved.name, saved);
+  } catch {}
+  refUi();
+  refreshMacRefs();
 }
 
 // ---------- Sellos ----------
@@ -1328,6 +1535,12 @@ strIn.oninput = () => { state.strength = +strIn.value; updateHud(); };
 quadsIn.oninput = () => { state.quads = +quadsIn.value; updateHud(); };
 colorIn.oninput = () => setColor(colorIn.value);
 $('btnPaint').onclick = () => choose('paint');
+$('btnImport').onclick = () => choose('import');
+$('fileRef').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importRef(f); };
+$('refHide').onclick = () => setRefShown(!refRoot.visible);
+$('refSize').oninput = (e) => setRefSize(tToRefSize(+e.target.value));
+$('refOpacity').oninput = (e) => setRefOpacity(+e.target.value);
+$('latheSpeed').oninput = (e) => { state.latheSpeed = +e.target.value; };
 $('btnBase').onclick = () => setLayerBase(active, state.color);
 $('btnUndo').onclick = undo;
 $('btnExport').onclick = exportModel;
@@ -1437,6 +1650,7 @@ function updateHud() {
   $('btnPaint').classList.toggle('on', state.tool === 'paint');
   $('btnSym').classList.toggle('on', symOn());
   document.querySelectorAll('#hud [data-opt]').forEach((b) => b.classList.toggle('on', optionOn(b.dataset.opt)));
+  $('latheSpeed').value = state.latheSpeed;
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
@@ -1699,15 +1913,21 @@ function pickLocal(allowAir) {
   const d = raycaster.ray.direction.clone().transformDirection(invM).toArray();
   lastRay.o = o;
   lastRay.d = d;
+  // Con el torno en marcha, la pieza está girada: el rayo se pasa a su sistema y el punto se devuelve.
+  const so = toSpin(o), sd = spin.angle ? new THREE.Vector3(d[0], d[1], d[2]).transformDirection(spin.inv).toArray() : d;
   let best = null, bestLayer = null;
   // Durante un trazo de Añadir/Quitar, la capa activa se lee tal como estaba al empezar.
   const frozen = sculpting && (activeTool() === 'add' || activeTool() === 'remove');
   for (const L of layers) {
     if (!L.visible) continue;
     if (frozen && L === active) L.grid.view = strokeRec;
-    const hit = L.grid.raymarch(o, d);
+    const hit = L.grid.raymarch(so, sd);
     L.grid.view = null;
     if (hit && (!best || hit[3] < best[3])) { best = hit; bestLayer = L; }
+  }
+  if (best && spin.angle) {
+    const v = new THREE.Vector3(best[0], best[1], best[2]).applyMatrix4(spinner.matrix);
+    best[0] = v.x; best[1] = v.y; best[2] = v.z;
   }
   if (!best && allowAir) {
     const t = -(o[0] * d[0] + o[1] * d[1] + o[2] * d[2]);
@@ -1721,6 +1941,12 @@ function pickLocal(allowAir) {
 // o el corte excava sin fin). Fuera del modelo, mantienen la última profundidad.
 function strokePoint(hit) {
   const tool = activeTool();
+  // Con el torno, lo que pasa girando bajo el ratón no debe mover la mano: se queda a la misma profundidad.
+  if (state.lathe) {
+    const { o, d } = lastRay;
+    if (!strokePrev || latheDepth === null) latheDepth = hit ? hit[3] : latheDepth;
+    if (latheDepth !== null) return [o[0] + d[0] * latheDepth, o[1] + d[1] * latheDepth, o[2] + d[2] * latheDepth, latheDepth];
+  }
   if (tool === 'grab') {
     // Arrastrar: el punto agarrado sigue al ratón a la misma profundidad.
     const { o, d } = lastRay;
@@ -1735,7 +1961,8 @@ function strokePoint(hit) {
 // Cuentagotas (Alt + clic): coge el color del punto.
 function pickColor(hit) {
   const L = hit.layer || active;
-  const c = L.grid.sampleColor(hit[0], hit[1], hit[2]);
+  const q = toSpin(hit);
+  const c = L.grid.sampleColor(q[0], q[1], q[2]);
   setColor(c ? rgbToHex(c) : L.color);
   toast(t('Color cogido: {0}', state.color), 1200);
 }
@@ -2030,6 +2257,7 @@ ray.visible = false;
 const flower = new Flower((id) => label(id));
 scene.add(flower.group);
 loadStamps();
+loadRefs();
 
 // HUD en el mando izquierdo
 const hudCanvas = document.createElement('canvas');
@@ -2093,6 +2321,7 @@ function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
   if (panelPage === 'pincel') return buildBrushPage();
   if (panelPage === 'sellos') return buildStampsPage();
+  if (panelPage === 'refs') return buildRefPage();
   if (panelPage === 'material') return buildMaterialPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
@@ -2162,9 +2391,9 @@ function buildPanel() {
     text: () => state.quads.toLocaleString(),
   });
   const bw = (IW - 3 * 8) / 4;
-  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], ['Remesh', 'remesh'], ['A Blender', 'export']]
+  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], ['Remesh', 'remesh'], ['A Blender', 'export'], ['Importar ▸', 'refs']]
     .forEach(([l, id], i) => W.push({ type: 'button', x: M + (i % 4) * (bw + 8), y: yb + 44 + Math.floor(i / 4) * 66, w: bw, h: 58, label: l, size: 24, group: 'tech',
-      active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => choose(id) }));
+      active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => (id === 'refs' ? openRefPage() : choose(id)) }));
   // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
   const yi = yb + 190;
   W.push({ type: 'label', x: M, y: yi, head: true, text: 'Idiomas', size: 24 });
@@ -2219,10 +2448,14 @@ function buildBrushPage() {
   row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
   row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
   row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
-  W.push(panelBlock(yEnd + 8, 548, CERA.paper));
+  W.push(panelBlock(yEnd + 8, 848, CERA.paper));
   y = yEnd + 44;
   row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial'], ['sym:reset', 'Centrar']]);
   row('COPIAS DE LA RADIAL', [3, 4, 5, 6, 8].map((n) => ['radial:' + n, String(n)]));
+  row('TORNO', [['sym:lathe', 'Girar']]);
+  W.push({ type: 'slider', x: M, y: y + 32, w: IW, h: 30, label: 'Velocidad', get: () => state.latheSpeed / 1.5, set: (v) => (state.latheSpeed = Math.max(0.05, v * 1.5)), text: () => Math.round(state.latheSpeed * 60) + ' rpm' });
+  W.push({ type: 'label', x: M, y: y + 88, size: 22, wrap: IW, text: 'Torno: deja la mano quieta y la pieza se forma al girar. Mueve el eje con la bola amarilla.' });
+  y += 170;
   ['Textura: en Añadir, Quitar, Inflar y Pintar.', 'Trazo recto: aprieta en el inicio, suelta en el final.',
     'Simetría: coge la bola amarilla con el gatillo para moverla y girarla.']
     .forEach((text, i) => W.push({ type: 'label', x: M, y: y + 10 + i * 66, size: 24, wrap: IW, text }));
@@ -2242,6 +2475,26 @@ function buildStampsPage() {
     img: stampThumbs.get(s.id), active: () => optionOn(s.id), onClick: () => choose(s.id) }));
   W.push({ type: 'label', x: M, y: yText, size: 22, wrap: IW, text: 'Sellos: pulsa una vez y queda puesto. El tamaño es el del pincel.' });
   if (ownStamps.length) W.push({ type: 'button', x: M, y: yText + 64, w: IW, h: 66, size: 24, label: 'Borrar mi último sello', onClick: () => choose('stamp:delete') });
+  return W;
+}
+function openRefPage() { panelPage = 'refs'; drawPanel(); refreshMacRefs(); }
+// Página de la referencia: dentro de las gafas no se pueden elegir archivos, así que se elige de la lista.
+function buildRefPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, names = refNames().slice(0, 8);
+  const yList = 108, yCtl = yList + Math.max(1, names.length) * 72 + 76;
+  W.push(panelBlock(8, yCtl + 330, CERA.ink));
+  pageHead(W, 'Referencia');
+  if (!names.length) W.push({ type: 'label', x: M, y: yList + 22, size: 24, wrap: IW, text: 'Aún no hay modelos. Importa uno fuera de VR, o déjalo en la carpeta referencias del Mac.' });
+  names.forEach((n, i) => W.push({ type: 'button', x: M, y: yList + i * 72, w: IW, h: 60, size: 26, plain: true, label: n,
+    active: () => ref.name === n, onClick: () => showRef(n) }));
+  W.push({ type: 'slider', x: M, y: yCtl, w: IW, h: 30, label: 'Tamaño de la referencia', get: () => refSizeToT(ref.size), set: (v) => setRefSize(tToRefSize(v)), text: () => '×' + ref.size.toFixed(2) });
+  W.push({ type: 'slider', x: M, y: yCtl + 88, w: IW, h: 30, label: 'Transparencia', get: () => ref.opacity / 0.9, set: (v) => setRefOpacity(v * 0.9), text: () => Math.round(ref.opacity * 100) + '%' });
+  const bw = (IW - 10) / 2;
+  W.push({ type: 'button', x: M, y: yCtl + 140, w: bw, h: 58, size: 24, group: 'rf', label: refRoot.visible ? 'Ocultar' : 'Mostrar', onClick: () => setRefShown(!refRoot.visible) });
+  W.push({ type: 'button', x: M + bw + 10, y: yCtl + 140, w: bw, h: 58, size: 24, group: 'rf', label: 'Quitar de la lista', onClick: () => { if (ref.name) dropRef(ref.name); } });
+  ['Coge la bola azul con el gatillo para colocarla.', 'Solo se usa para mirar: no se esculpe ni se exporta.'].forEach((text, i) =>
+    W.push({ type: 'label', x: M, y: yCtl + 228 + i * 44, size: 22, max: IW, text }));
   return W;
 }
 function buildObrasPage() {
@@ -2509,6 +2762,25 @@ function xrFrame(dt) {
     cursor.visible = false;
     return;
   }
+  // La bola azul de la referencia se coge igual.
+  if (xr.refGrab) {
+    if (trig > 0.08) {
+      ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
+      tmpM.multiplyMatrices(ctrlLocal, refGrabOff).decompose(refRoot.position, refRoot.quaternion, tmpS);
+    } else { xr.refGrab = false; saveRefState(); }
+    cursor.visible = false;
+    return;
+  }
+  if (refRoot.visible && !xr.stroking && !moveOp.L && trig > 0.08 && tipW.distanceTo(refBall.getWorldPosition(vT0)) < 0.05) {
+    xr.refGrab = true;
+    refRoot.updateMatrix();
+    refGrabOff.copy(ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld)).invert().multiply(refRoot.matrix);
+    gpR.hapticActuators?.[0]?.pulse?.(0.5, 25);
+    cursor.visible = false;
+    return;
+  }
+  // Con el torno, el stick derecho a los lados cambia la velocidad.
+  if (state.lathe && Math.abs(ax) > 0.3 && Math.abs(ax) > Math.abs(ay)) state.latheSpeed = THREE.MathUtils.clamp(state.latheSpeed + ax * dt * 0.6, 0.05, 1.5);
   const overBall = symOn() && !xr.stroking && !moveOp.L && tipW.distanceTo(symBall.getWorldPosition(vT0)) < 0.05;
   setSymBallHot(overBall);
   if (overBall && trig > 0.08) {
@@ -2541,7 +2813,8 @@ function xrFrame(dt) {
 
 // Gatillo con Mover: agarra la capa que toca el cursor y la lleva con la mano (posición y giro).
 const ctrlLocal = new THREE.Matrix4();
-const symGrabOff = new THREE.Matrix4();
+let latheDepth = null;
+const symGrabOff = new THREE.Matrix4(), refGrabOff = new THREE.Matrix4();
 function moveSymWithHand(right, gp) {
   ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
   tmpM.multiplyMatrices(ctrlLocal, symGrabOff).decompose(symFrame.position, symFrame.quaternion, tmpS);
@@ -2963,6 +3236,7 @@ const clock = new THREE.Clock();
 let poseT = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
+  updateLathe(dt);
   if (SPECTATOR) {
     spectatorFrame(dt);
   } else if (renderer.xr.isPresenting) {
@@ -3267,4 +3541,4 @@ document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => chang
 changeLang(getLang());
 
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, stamps: STAMPS, camera, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

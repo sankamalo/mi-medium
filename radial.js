@@ -54,7 +54,7 @@ export const LABELS = {
   'tool:palillo': 'Palillo', 'tool:cuter': 'Cúter', 'tool:cuchara': 'Cuchara',
   'tool:dedo': 'Dedo mojado', 'tool:rodillo': 'Rodillo', 'tool:espatula': 'Espátula',
   'tex:plain': 'Liso', 'tex:rough': 'Rugoso', 'tex:dots': 'Puntos', 'tex:stripes': 'Rayas', 'tex:scales': 'Escamas',
-  'color:wheel': 'Rueda de color', 'shape:more': 'Sellos', 'stamp:save': 'Guardar mi capa como sello',
+  'color:wheel': 'Rueda de color', 'sym:lathe': 'Torno', 'shape:more': 'Sellos', 'stamp:save': 'Guardar mi capa como sello',
 };
 
 const DWELL_MS = 450;

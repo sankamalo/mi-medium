@@ -179,6 +179,8 @@
     <div class="row opts">
       <button data-opt="radial:3">3</button><button data-opt="radial:4">4</button><button data-opt="radial:5">5</button><button data-opt="radial:6">6</button><button data-opt="radial:8">8</button>
     </div>
+    <div class="row"><button data-opt="sym:lathe" title="Torno">Torno</button></div>
+    <label><span>Velocidad</span> <input type="range" id="latheSpeed" min="0.05" max="1.5" step="0.05"></label>
     <div class="row">
       <button id="btnSym" title="X">Simetría</button>
       <button id="btnWire" title="W">Ver malla</button>
@@ -222,6 +224,14 @@
     </div>
     <div class="row">
       <button id="btnExport" title="E">Enviar a Blender</button>
+      <button id="btnImport" title="FBX, OBJ, GLB">Importar</button>
+      <input id="fileRef" type="file" accept=".fbx,.obj,.glb" hidden>
+    </div>
+    <div id="refBox" hidden>
+      <div class="sec">Referencia <button class="mini" id="refHide">Ocultar</button></div>
+      <div id="refList" class="row"></div>
+      <label><span>Tamaño de la referencia</span> <input type="range" id="refSize" min="0" max="1" step="0.01"></label>
+      <label><span>Transparencia</span> <input type="range" id="refOpacity" min="0" max="0.9" step="0.05"></label>
     </div>
     <div class="row">
       <button id="btnShare" title="Mandar el modelo por WhatsApp, correo…">Compartir (WhatsApp…)</button>

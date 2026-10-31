@@ -509,7 +509,7 @@ class Flat {
 // Iconos: un SVG de relleno por cada pétalo, en app/iconos/. Para cambiar uno, se cambia el archivo.
 const ICON_FILES = {
   inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
-  pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial',
+  pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial', 'sym:lathe': 'sym-lathe',
   'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid', 'shape:more': 'shape-more',
   'tool:palillo': 'tool-palillo', 'tool:cuter': 'tool-cuter', 'tool:cuchara': 'tool-cuchara',
   'tool:dedo': 'tool-dedo', 'tool:rodillo': 'tool-rodillo', 'tool:espatula': 'tool-espatula',
@@ -556,7 +556,7 @@ export const FLOWER = [
 const fan = (ids, step) => ids.map((id, i) => ({ id, off: (i - (ids.length - 1) / 2) * step }));
 const SUBS = {
   add: fan(['shape:sphere', 'shape:cube', 'shape:pyramid', 'shape:more'], 54),
-  sym: fan(['sym:x', 'sym:y', 'sym:z', 'sym:radial'], 54),
+  sym: fan(['sym:x', 'sym:y', 'sym:z', 'sym:radial', 'sym:lathe'], 46),
   paint: [{ id: 'color:wheel', off: 0, wheel: true }],
   remove: fan(['tool:palillo', 'tool:cuter', 'tool:cuchara'], 58),
   flatten: fan(['tool:dedo', 'tool:rodillo', 'tool:espatula'], 58),
