@@ -2224,7 +2224,12 @@ if (SPECTATOR) {
   $('specHide').onclick = () => $('spec').classList.add('hidden');
   const cal = calibUI();
   $('camSel').onchange = async () => { if (webcam.active) { await webcam.start($('camSel').value); webcam.layout(); } };
-  $('camCal').onclick = () => webcam.calibrate(cal);
+  $('camCal').onclick = async () => {
+    await webcam.calibrate(cal);
+    $('camCtrl').classList.toggle('on', webcam.showCtrls);
+    $('camDelay').value = webcam.delay;
+    $('camDelayV').textContent = webcam.delay + ' ms';
+  };
   $('camCtrl').onclick = () => { webcam.showCtrls = !webcam.showCtrls; $('camCtrl').classList.toggle('on', webcam.showCtrls); };
   $('camDelay').value = webcam.delay;
   $('camDelayV').textContent = webcam.delay + ' ms';

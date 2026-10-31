@@ -1,9 +1,9 @@
 // Modo sin internet: guarda la app en las gafas la primera vez y luego la sirve desde ahí.
 // Se usa la copia guardada al instante y se actualiza por detrás cuando hay conexión.
-const CACHE = 'mi-medium-v16';
+const CACHE = 'mi-medium-v17';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
-  './main.js', './sdf.js', './mesher.js', './radial.js', './panel.js', './live.js', './store.js', './remesh.js', './camara.js', './i18n.js',
+  './main.js', './sdf.js', './mesher.js', './radial.js', './panel.js', './live.js', './store.js', './remesh.js', './camara.js', './manos.js', './i18n.js',
   './vendor/fonts/NotoSansThai.woff2',
   './vendor/three.module.js', './vendor/addons/controls/OrbitControls.js',
   './vendor/addons/exporters/GLTFExporter.js',

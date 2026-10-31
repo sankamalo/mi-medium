@@ -1,14 +1,15 @@
 // Cámara externa (solo en el espejo del Mac): una webcam o el iPhone te graba desde fuera y la
 // escultura se pinta encima, en su sitio, como si estuviera de verdad delante de ti.
 //
-// - Calibración: con las gafas puestas pones el mando en varios sitios (suena un pitido en cada
-//   foto). Luego, en el Mac, haces clic en la punta del mando en cada foto. Con esos pares
-//   (punto 3D de las gafas ↔ píxel de la webcam) se calcula dónde está la cámara y su lente.
+// - Calibración: con las gafas puestas mueves las manos delante de la webcam. La cámara detecta
+//   tus manos y las empareja con los mandos que mandan las gafas: con esos cientos de pares
+//   (punto 3D de las gafas ↔ píxel de la webcam) se calcula dónde está la cámara, su lente y el retraso.
 // - Retraso: la webcam suele ir por detrás de las gafas; las poses se retrasan para casar.
 // - Grabación: el lienzo (vídeo + escultura) se graba y se va guardando en el Mac a trozos
 //   (carpeta grabaciones/), así no se pierde nada si algo se cuelga.
 import * as THREE from 'three';
 import { t } from './i18n.js';
+import { loadHands, detectHands } from './manos.js';
 
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
@@ -16,7 +17,8 @@ const store = {
 };
 
 // ---------- Cámara estenopeica: proyección y ajuste (Levenberg-Marquardt) ----------
-// Parámetros: [rx, ry, rz] giro (eje·ángulo, cámara → mundo), [cx, cy, cz] posición, lf = log(f/h).
+// Parámetros: [rx, ry, rz] giro (eje·ángulo, cámara → mundo), [cx, cy, cz] posición, lf = log(f/h),
+// y opcionalmente dónde queda la palma respecto a cada mando (3 + 3, en coordenadas del mando).
 // Como en three.js, la cámara mira hacia -Z; píxeles con y hacia abajo y el centro óptico en medio.
 function rotMat(rx, ry, rz) {
   const a = Math.hypot(rx, ry, rz);
@@ -29,23 +31,51 @@ function rotMat(rx, ry, rz) {
   ];
 }
 
-function residuals(p, pts, w, h, out) {
-  const R = rotMat(p[0], p[1], p[2]), f = Math.exp(p[6]) * h;
-  for (let i = 0; i < pts.length; i++) {
-    const [X, Y, Z] = pts[i].p, dx = X - p[3], dy = Y - p[4], dz = Z - p[5];
-    // pc = Rᵀ (X - C)
-    const x = R[0] * dx + R[3] * dy + R[6] * dz, y = R[1] * dx + R[4] * dy + R[7] * dz, z = R[2] * dx + R[5] * dy + R[8] * dz;
-    if (z > -0.05) { out[i * 2] = out[i * 2 + 1] = 1e4; continue; } // detrás de la cámara
-    out[i * 2] = w / 2 + (f * x) / -z - pts[i].u;
-    out[i * 2 + 1] = h / 2 - (f * y) / -z - pts[i].v;
+// Lente de webcam normal: unos 45° en vertical, y nunca fuera de 25°–75° (con pocos datos buenos
+// el ajuste se iría a un gran angular absurdo con los mandos al fondo).
+const LF0 = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(22.5)));
+const LF_MIN = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(37.5)));
+const LF_MAX = Math.log(0.5 / Math.tan(THREE.MathUtils.degToRad(12.5)));
+
+// Error en píxeles de una observación { x, y, z, m, k, u, v }. Devuelve en err[0], err[1].
+const err = [0, 0];
+function pixelError(p, R, f, o, w, h) {
+  let X = o.x, Y = o.y, Z = o.z;
+  if (p.length > 7) {
+    const k = 7 + o.k * 3, M = o.m;
+    X += M[0] * p[k] + M[1] * p[k + 1] + M[2] * p[k + 2];
+    Y += M[3] * p[k] + M[4] * p[k + 1] + M[5] * p[k + 2];
+    Z += M[6] * p[k] + M[7] * p[k + 1] + M[8] * p[k + 2];
   }
+  const dx = X - p[3], dy = Y - p[4], dz = Z - p[5];
+  // pc = Rᵀ (X - C)
+  const x = R[0] * dx + R[3] * dy + R[6] * dz, y = R[1] * dx + R[4] * dy + R[7] * dz, z = R[2] * dx + R[5] * dy + R[8] * dz;
+  if (z > -0.05) { err[0] = err[1] = 1e4; return; } // detrás de la cámara
+  err[0] = w / 2 + (f * x) / -z - o.u;
+  err[1] = h / 2 - (f * y) / -z - o.v;
+}
+
+// Residuos: píxeles con pérdida de Cauchy (los puntos malos casi no cuentan) + condiciones suaves:
+// lente normal, cámara sin ladear y palma cerca del mando.
+function residuals(p, obs, w, h, c, out) {
+  const R = rotMat(p[0], p[1], p[2]), f = Math.exp(p[6]) * h, N = obs.length;
+  for (let i = 0; i < N; i++) {
+    pixelError(p, R, f, obs[i], w, h);
+    const e = Math.hypot(err[0], err[1]), s = e > 1e-9 ? (c * Math.sqrt(Math.log1p((e / c) * (e / c)))) / e : 1;
+    out[i * 2] = err[0] * s;
+    out[i * 2 + 1] = err[1] * s;
+  }
+  const scale = (h / 1080) * Math.sqrt(N), lf = p[6];
+  out[N * 2] = 20 * scale * (lf - LF0) + 1e4 * (Math.max(0, lf - LF_MAX) + Math.max(0, LF_MIN - lf));
+  out[N * 2 + 1] = 30 * scale * R[3];
+  for (let k = 7; k < p.length; k++) out[N * 2 + 2 + k - 7] = 20 * scale * p[k];
   return out;
 }
 
 const sq = (r) => r.reduce((a, v) => a + v * v, 0);
 
-function solve7(A, b) { // Gauss con pivote, 7×7
-  const n = 7, M = A.map((row, i) => [...row, b[i]]);
+function solveLinear(A, b) { // Gauss con pivote
+  const n = b.length, M = A.map((row, i) => [...row, b[i]]);
   for (let c = 0; c < n; c++) {
     let p = c;
     for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
@@ -65,64 +95,153 @@ function solve7(A, b) { // Gauss con pivote, 7×7
   return x;
 }
 
-function refine(p0, pts, w, h, iters = 60) {
+function refine(p0, obs, w, h, c, iters) {
   let p = p0.slice(), lam = 1e-3;
-  const m = pts.length * 2, r = new Float64Array(m), r2 = new Float64Array(m);
-  let err = sq(residuals(p, pts, w, h, r));
+  const P = p.length, m = obs.length * 2 + 2 + (P - 7), r = new Float64Array(m), r2 = new Float64Array(m);
+  let cost = sq(residuals(p, obs, w, h, c, r));
   for (let it = 0; it < iters; it++) {
     const J = [];
-    for (let k = 0; k < 7; k++) {
+    for (let k = 0; k < P; k++) {
       const q = p.slice(), e = 1e-5;
       q[k] += e;
-      residuals(q, pts, w, h, r2);
-      J.push(Array.from(r2, (v, i) => (v - r[i]) / e));
+      residuals(q, obs, w, h, c, r2);
+      J.push(Float64Array.from(r2, (v, i) => (v - r[i]) / e));
     }
-    const A = J.map((a) => J.map((b) => a.reduce((s, v, i) => s + v * b[i], 0)));
-    const g = J.map((a) => a.reduce((s, v, i) => s + v * r[i], 0));
+    const dot = (a, b) => { let s = 0; for (let i = 0; i < m; i++) s += a[i] * b[i]; return s; };
+    const A = [];
+    for (let i = 0; i < P; i++) { A.push(new Array(P)); for (let j = 0; j <= i; j++) A[i][j] = A[j][i] = dot(J[i], J[j]); }
+    const g = J.map((a) => dot(a, r));
     let improved = false;
     for (let tries = 0; tries < 8 && !improved; tries++) {
       const B = A.map((row, i) => row.map((v, j) => (i === j ? v * (1 + lam) + 1e-12 : v)));
-      const d = solve7(B, g.map((v) => -v));
+      const d = solveLinear(B, g.map((v) => -v));
       if (!d) { lam *= 10; continue; }
       const q = p.map((v, i) => v + d[i]);
-      const e2 = sq(residuals(q, pts, w, h, r2));
-      if (e2 < err) { p = q; err = e2; r.set(r2); lam = Math.max(1e-7, lam / 5); improved = true; }
+      const e2 = sq(residuals(q, obs, w, h, c, r2));
+      if (e2 < cost) { p = q; cost = e2; r.set(r2); lam = Math.max(1e-7, lam / 5); improved = true; }
       else lam *= 10;
     }
     if (!improved) break;
   }
-  return { p, rms: Math.sqrt(err / pts.length) };
+  return p;
 }
 
-// pts: [{ p: [x,y,z] (metros, mundo de las gafas), u, v (píxeles del vídeo) }]
-export function calibrate(pts, w, h) {
-  const G = [0, 0, 0];
-  pts.forEach((s) => s.p.forEach((v, k) => (G[k] += v / pts.length)));
-  const gv = new THREE.Vector3(...G), m = new THREE.Matrix4(), q = new THREE.Quaternion();
-  let best = null;
-  // Arranques desde muchas posiciones alrededor de los puntos, mirándolos.
-  const N = 48;
-  for (let i = 0; i < N; i++) {
-    const y = 1 - (2 * (i + 0.5)) / N, rr = Math.sqrt(1 - y * y), a = i * 2.39996;
-    for (const D of [0.4, 0.8, 1.6, 3]) {
-      const eye = new THREE.Vector3(Math.cos(a) * rr, y * 0.6, Math.sin(a) * rr).normalize().multiplyScalar(D).add(gv);
-      m.lookAt(eye, gv, new THREE.Vector3(0, 1, 0));
-      q.setFromRotationMatrix(m);
-      const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))), sgn = q.w < 0 ? -1 : 1, sn = Math.sin(ang / 2) || 1;
-      const p0 = [q.x * sgn / sn * ang, q.y * sgn / sn * ang, q.z * sgn / sn * ang, eye.x, eye.y, eye.z, Math.log(1.2)];
-      const r = refine(p0, pts, w, h, 25);
-      if (!best || r.rms < best.rms) best = r;
+const median = (a) => { const b = Float64Array.from(a).sort(); return b.length ? b[b.length >> 1] : Infinity; };
+const every = (a, max) => (a.length <= max ? a : Array.from({ length: max }, (_, i) => a[Math.floor((i * a.length) / max)]));
+function pixelErrors(p, obs, w, h) {
+  const R = rotMat(p[0], p[1], p[2]), f = Math.exp(p[6]) * h;
+  return obs.map((o) => { pixelError(p, R, f, o, w, h); return Math.hypot(err[0], err[1]); });
+}
+function quatMat(a) { // [_, _, _, x, y, z, w] → matriz por filas
+  const [x, y, z, q] = [a[3], a[4], a[5], a[6]];
+  return [
+    1 - 2 * (y * y + z * z), 2 * (x * y - z * q), 2 * (x * z + y * q),
+    2 * (x * y + z * q), 1 - 2 * (x * x + z * z), 2 * (y * z - x * q),
+    2 * (x * z - y * q), 2 * (y * z + x * q), 1 - 2 * (x * x + y * y),
+  ];
+}
+
+// samples: [{ t, u, v, label }] manos vistas en la webcam (hora, píxel, izquierda/derecha según la
+// detección, que no es de fiar). poses: [{ t, m }] lo que han mandado las gafas.
+export function solveCamera(samples, poses, w, h, delay0 = 120) {
+  // Mando k en el instante de cada muestra, suponiendo un retraso d.
+  const handsAt = (d) => {
+    const out = [];
+    let i = 0;
+    for (const s of samples) {
+      const T = s.t - d;
+      if (T < poses[0].t || T > poses[poses.length - 1].t) continue;
+      while (i > 0 && poses[i].t > T) i--;
+      while (i < poses.length - 2 && poses[i + 1].t <= T) i++;
+      const a = poses[i], b = poses[i + 1] || a, f = (T - a.t) / (b.t - a.t || 1);
+      if (b.t - a.t > 300) continue; // hueco en las poses
+      const H = a.m.hands.map((q, k) => {
+        const v = mixTransform(q, b.m.hands[k], f);
+        return v && { x: v[0], y: v[1], z: v[2], m: quatMat(v), k };
+      });
+      out.push({ s, H });
+    }
+    return out;
+  };
+  const obsOf = (e, k) => ({ ...e.H[k], u: e.s.u, v: e.s.v });
+  // A cada mano vista le corresponde el mando que mejor cae encima con la cámara actual.
+  const nearest = (p, list) => {
+    const R = rotMat(p[0], p[1], p[2]), f = Math.exp(p[6]) * h, out = [];
+    for (const e of list) {
+      let best = null, bestE = Infinity;
+      e.H.forEach((H, k) => {
+        if (!H) return;
+        const o = obsOf(e, k);
+        pixelError(p, R, f, o, w, h);
+        const d = Math.hypot(err[0], err[1]);
+        if (d < bestE) { bestE = d; best = o; }
+      });
+      if (best) out.push({ o: best, e: bestE });
+    }
+    return out;
+  };
+
+  let delay = delay0;
+  let list = handsAt(delay);
+  if (list.length < 30) return null;
+
+  // 1) Arranques desde muchas posiciones alrededor de los puntos, mirándolos. Se prueban las dos
+  //    formas de emparejar izquierda/derecha.
+  const gv = new THREE.Vector3(), m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  const c = 0.04 * h;
+  let best = null, bestE = Infinity;
+  for (const map of [{ Left: 0, Right: 1 }, { Left: 1, Right: 0 }]) {
+    const obs = every(list.map((e) => (e.H[map[e.s.label] ?? 0] ? obsOf(e, map[e.s.label] ?? 0) : null)).filter(Boolean), 60);
+    if (obs.length < 10) continue;
+    gv.set(0, 0, 0);
+    obs.forEach((o) => gv.add(new THREE.Vector3(o.x, o.y, o.z).divideScalar(obs.length)));
+    const N = 48;
+    for (let i = 0; i < N; i++) {
+      const y = 1 - (2 * (i + 0.5)) / N, rr = Math.sqrt(1 - y * y), a = i * 2.39996;
+      for (const D of [0.4, 0.8, 1.6, 3]) {
+        const eye = new THREE.Vector3(Math.cos(a) * rr, y * 0.6, Math.sin(a) * rr).normalize().multiplyScalar(D).add(gv);
+        m.lookAt(eye, gv, new THREE.Vector3(0, 1, 0));
+        q.setFromRotationMatrix(m);
+        const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))), sgn = q.w < 0 ? -1 : 1, sn = Math.sin(ang / 2) || 1;
+        const p = refine([q.x * sgn / sn * ang, q.y * sgn / sn * ang, q.z * sgn / sn * ang, eye.x, eye.y, eye.z, LF0], obs, w, h, c, 15);
+        const e = median(pixelErrors(p, obs, w, h));
+        if (e < bestE) { bestE = e; best = p; }
+      }
     }
   }
-  best = refine(best.p, pts, w, h, 100);
-  const [rx, ry, rz, cx, cy, cz, lf] = best.p;
+  if (!best) return null;
+
+  // 2) Afinar con todos: reparto mano ↔ mando, fuera los que no cuadran, y otra vez.
+  let p = [...best, 0, 0, 0, 0, 0, 0], kept = [];
+  for (let round = 0; round < 5; round++) {
+    const near = nearest(p, list);
+    const limit = Math.max(0.035 * h, 2.5 * median(near.map((n) => n.e)));
+    kept = near.filter((n) => n.e < limit).map((n) => n.o);
+    if (kept.length < 10) return null;
+    p = refine(p, every(kept, 300), w, h, 0.03 * h, 20);
+    // 3) El retraso que mejor casa vídeo y gafas (a partir de que la cámara ya esté cerca).
+    if (round === 1 || round === 3) {
+      let bestD = delay, bestM = Infinity;
+      for (let d = 0; d <= 400; d += 20) {
+        const e = median(nearest(p, handsAt(d)).map((n) => n.e));
+        if (e < bestM) { bestM = e; bestD = d; }
+      }
+      delay = bestD;
+      list = handsAt(delay);
+    }
+  }
+
+  const near = nearest(p, list), errors = near.map((n) => n.e);
+  const [rx, ry, rz, cx, cy, cz, lf] = p;
   const ang = Math.hypot(rx, ry, rz);
   const quat = ang < 1e-12 ? new THREE.Quaternion() : new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(rx / ang, ry / ang, rz / ang), ang);
-  const f = Math.exp(lf) * h;
+  const f = Math.exp(lf) * h, G = new THREE.Vector3();
+  kept.forEach((o) => G.add(new THREE.Vector3(o.x, o.y, o.z).divideScalar(kept.length)));
   return {
-    pos: [cx, cy, cz], quat: quat.toArray(), fov: THREE.MathUtils.radToDeg(2 * Math.atan(h / 2 / f)),
-    w, h, rms: best.rms,
-    reproj: pts.map((s) => { const r = residuals(best.p, [s], w, h, [0, 0]); return [s.u + r[0], s.v + r[1]]; }),
+    pos: [cx, cy, cz], quat: quat.toArray(), fov: THREE.MathUtils.radToDeg(2 * Math.atan(h / 2 / f)), w, h,
+    error: median(errors), good: errors.filter((e) => e < 0.04 * h).length / errors.length, delay,
+    distance: G.distanceTo(new THREE.Vector3(cx, cy, cz)),
+    offsets: [p.slice(7, 10), p.slice(10, 13)],
   };
 }
 
@@ -268,6 +387,7 @@ export function createWebcam(ctx) {
   rig.push = (m) => {
     const t = performance.now();
     rig.poses.push({ t, m });
+    if (rig.history) rig.history.push({ t, m }); // calibrando: se guardan todas
     while (rig.poses.length > 2 && rig.poses[0].t < t - 2000) rig.poses.shift();
   };
   rig.poseAt = (t) => {
@@ -285,18 +405,6 @@ export function createWebcam(ctx) {
   };
   rig.delayed = () => rig.poseAt(performance.now() - rig.delay);
 
-  // ¿Están quietos los mandos (últimos 600 ms)?
-  const still = () => {
-    const now = performance.now() - rig.delay, P = rig.poses.filter((s) => s.t > now - 600 && s.t <= now);
-    if (P.length < 3) return false;
-    for (let i = 0; i < 2; i++) {
-      const pos = P.map((s) => s.m.hands[i]).filter(Boolean);
-      if (!pos.length) continue;
-      for (const q of pos) if (Math.hypot(q[0] - pos[0][0], q[1] - pos[0][1], q[2] - pos[0][2]) > 0.012) return false;
-    }
-    return true;
-  };
-
   // ---------- Calibración ----------
   let audio = null;
   const beep = (freq = 660, dur = 0.12) => {
@@ -313,105 +421,105 @@ export function createWebcam(ctx) {
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  rig.calibrate = async (ui, shots = 8) => {
+  // Una mano detectada por fotograma cuenta; rig.detector solo existe para las pruebas.
+  const nextFrame = () => new Promise((r) => {
+    const timer = setTimeout(r, 200);
+    video.requestVideoFrameCallback?.(() => { clearTimeout(timer); r(); });
+  });
+
+  // Mueves las manos, se recogen muestras hasta cubrir bastante espacio, y se calcula.
+  rig.capture = async (ui, w, h) => {
+    const notify = ctx.notify || (() => {});
+    const detect = rig.detector || detectHands;
+    const samples = [], cells = new Set();
+    const T0 = performance.now(), NEED_CELLS = 45, NEED_SAMPLES = 400, MAX_MS = 60000;
+    ui.say(t('Ponte las gafas (bien puestas, no en la frente) y coge los dos mandos.<br>' +
+      'Mueve las manos <b>despacio y delante de la webcam</b>: arriba, abajo, cerca, lejos, a los lados.<br>' +
+      'Los puntos verdes son tus manos detectadas.'), '');
+    notify('Mueve las manos despacio delante de la webcam');
+    beep(440, 0.2);
+    let lastSeen = T0;
+    while (!ui.cancelled) {
+      await nextFrame();
+      if (ui.cancelled) break;
+      const now = performance.now();
+      const seen = detect(video);
+      ui.dots(seen);
+      const last = rig.poses[rig.poses.length - 1];
+      const flowing = last && now - last.t < 1500 && last.m.hands.some(Boolean);
+      if (flowing) for (const s of seen) samples.push({ t: now, u: s.x * w, v: s.y * h, label: s.label });
+      if (seen.length) lastSeen = now;
+      if (flowing && seen.length) {
+        const pose = rig.poseAt(now - rig.delay);
+        pose?.hands.forEach((q, k) => { if (q) cells.add(k + ':' + q.slice(0, 3).map((v) => Math.floor(v / 0.06)).join()); });
+      }
+      const done = Math.min(1, Math.min(cells.size / NEED_CELLS, samples.length / NEED_SAMPLES));
+      ui.big(`${Math.round(done * 100)}%`);
+      ui.sub(!flowing ? t('No llegan los mandos de las gafas')
+        : now - lastSeen > 1500 ? t('No veo tus manos: ponlas delante de la webcam y con más luz')
+          : t('Sigue moviendo las manos'));
+      if (done >= 1) break;
+      if (now - T0 > MAX_MS) break;
+    }
+    ui.dots([]);
+    return samples;
+  };
+
+  rig.calibrate = async (ui) => {
     if (!rig.active) return;
     const [w, h] = rig.size();
-    const samples = [];
     const notify = ctx.notify || (() => {});
+    const before = rig.calib, beforeCtrls = rig.showCtrls, beforeDelay = rig.delay;
     ui.open();
     ui.live(true);
-    ui.say(t('Ponte las gafas y coge <b>un solo mando</b> (deja el otro quieto).<br>' +
-      'Llévalo a un sitio <b>que se vea en la webcam</b> y páralo: al estar quieto un momento suena un pitido y se hace la foto.<br>' +
-      'Repite en sitios distintos: cerca, lejos, arriba, abajo, a los lados.'), '');
-    beep(440, 0.2);
-    // Sin cuenta atrás: cada foto espera a que el mando se mueva de verdad y se pare. Con las
-    // gafas en la frente no llega movimiento y simplemente no pasa nada hasta que te las pones.
-    const moved = (m, ref, d) => m.hands.some((q, k) => q && ref.hands[k] && Math.hypot(q[0] - ref.hands[k][0], q[1] - ref.hands[k][1], q[2] - ref.hands[k][2]) > d);
-    let ref = null;
-    for (let i = 0; i < shots && !ui.cancelled;) {
-      ui.big(`${i + 1} / ${shots}`);
-      const key = 'Foto {0} de {1}: mueve el mando a otro sitio y páralo';
-      ui.sub(t(key, i + 1, shots));
-      notify(key, [i + 1, shots]);
-      for (;;) {
-        if (ui.cancelled) break;
-        const last = rig.poses[rig.poses.length - 1], pose = rig.delayed();
-        if (!last || performance.now() - last.t > 1500 || !pose || !pose.hands.some(Boolean)) ui.sub(t('No llegan los mandos de las gafas'));
-        else {
-          ui.sub(t(key, i + 1, shots));
-          if (!ref) ref = pose;
-          else if (moved(pose, ref, 0.1)) break;
-        }
-        await sleep(60);
+    if (!rig.detector) {
+      ui.say(t('Preparando la detección de manos…'), '');
+      try { await loadHands(); } catch (e) {
+        ui.close();
+        toast(t('No se ha podido cargar la detección de manos: {0}', e.message), 6000);
+        return;
       }
+    }
+    while (!ui.cancelled) {
+      rig.history = [];
+      const samples = await rig.capture(ui, w, h);
+      const poses = rig.history;
+      rig.history = null;
       if (ui.cancelled) break;
-      ui.sub(t('Quieto…'));
-      const t0 = performance.now();
-      while (!still() && performance.now() - t0 < 4000 && !ui.cancelled) await sleep(60);
-      if (ui.cancelled) break;
-      const pose = rig.delayed();
-      if (!moved(pose, ref, 0.06)) continue; // ha vuelto al sitio de antes
-      const cv = document.createElement('canvas');
-      cv.width = w; cv.height = h;
-      cv.getContext('2d').drawImage(video, 0, 0, w, h);
-      samples.push({ img: cv, hands: pose.hands.map((x) => (x ? x.slice(0, 3) : null)) });
-      ref = pose;
-      i++;
-      ui.big('📸');
+      ui.say(t('Calculando…'), '');
+      ui.big('');
+      await sleep(30);
+      const c = samples.length >= 60 && poses.length >= 2 ? solveCamera(samples, poses, w, h, rig.delay) : null;
       beep(880, 0.25);
-      notify(null, null, true);
-      await sleep(500);
-    }
-    ui.live(false);
-    if (!ui.cancelled) notify('Fotos listas: quítate las gafas y haz clic en el Mac');
-    if (ui.cancelled || samples.length < 5) { ui.close(); if (!ui.cancelled) toast('Hacen falta al menos 5 fotos'); return; }
-    // El mando que se ha movido (el otro está quieto en la mesa).
-    let hand = 0, bestSpread = -1;
-    for (let k = 0; k < 2; k++) {
-      const P = samples.map((s) => s.hands[k]).filter(Boolean);
-      if (P.length < samples.length) continue;
-      const c = [0, 1, 2].map((j) => P.reduce((a, p) => a + p[j], 0) / P.length);
-      const spread = P.reduce((a, p) => a + Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]), 0);
-      if (spread > bestSpread) { bestSpread = spread; hand = k; }
-    }
-    // Clics en el Mac.
-    beep(440, 0.3);
-    const pts = [];
-    for (let i = 0; i < samples.length && !ui.cancelled; i++) {
-      const uv = await ui.pick(samples[i].img, t('Foto {0} de {1}: haz clic en la <b>punta delantera del mando</b>. Si no se ve, pulsa "Saltar".', i + 1, samples.length));
-      if (uv) pts.push({ p: samples[i].hands[hand], u: uv[0], v: uv[1], i });
-    }
-    if (ui.cancelled) { ui.close(); return; }
-    if (pts.length < 5) { ui.close(); toast('Hacen falta al menos 5 clics'); return; }
-    ui.say(t('Calculando…'), '');
-    await sleep(30);
-    const limit = Math.max(12, h * 0.02);
-    let used = pts, c = calibrate(used, w, h);
-    // Un clic fuera de sitio estropea todo: se prueba a calcular sin cada uno.
-    while (c.rms > limit && used.length > 5) {
-      let best = null, without = null;
-      for (let k = 0; k < used.length; k++) {
-        const rest = used.filter((_, j) => j !== k), r = calibrate(rest, w, h);
-        if (!best || r.rms < best.rms) { best = r; without = rest; }
+      notify('Listo: mira el Mac', null, true);
+      const fine = c && c.error < 0.04 * h && c.good > 0.5;
+      console.info('calibración', { muestras: samples.length, poses: poses.length, ...(c || {}) });
+      if (fine) {
+        rig.calib = { pos: c.pos, quat: c.quat, fov: c.fov, w, h, rms: c.error, date: Date.now() };
+        rig.showCtrls = true;
+        rig.delay = c.delay;
+        rig.applyCamera();
       }
-      if (best.rms > c.rms * 0.6) break;
-      c = best;
-      used = without;
+      const use = await ui.ask(fine
+        ? t('Mira los mandos virtuales: ¿caen sobre los reales?') + `<br><small>${t('Error: {0} px · lente {1}° · cámara a {2} m · retraso {3} ms', c.error.toFixed(0), c.fov.toFixed(0), c.distance.toFixed(2), c.delay)}</small>`
+        : t('No cuadra: hace falta más luz y mover más las manos delante de la cámara.'), fine);
+      if (use) {
+        rig.setDelay(c.delay);
+        rig.save();
+        ui.close();
+        toast('Cámara calibrada. Retoca con las flechas si hace falta', 6000);
+        return true;
+      }
+      rig.calib = before;
+      rig.delay = beforeDelay;
+      rig.applyCamera();
     }
-    const ok = c.rms < limit;
-    const dropped = pts.length - used.length;
-    const msg = (dropped ? t('Descartados {0} clics fuera de sitio. ', dropped) : '') +
-      t('Error medio: {0} px · lente {1}° · cámara a {2} m', c.rms.toFixed(1), c.fov.toFixed(1), new THREE.Vector3(...c.pos).distanceTo(new THREE.Vector3(...used[0].p)).toFixed(2));
-    const accept = await ui.result(samples[used[0].i].img, used, c.reproj,
-      t(ok ? 'Calibrada ✔ ' : 'Algo no cuadra (¿algún clic fuera de sitio?). ') + msg);
-    ui.close();
-    if (!accept) return;
-    rig.calib = { pos: c.pos, quat: c.quat, fov: c.fov, w, h, rms: c.rms, date: Date.now() };
-    rig.save();
+    rig.history = null;
+    rig.calib = before;
+    rig.delay = beforeDelay;
+    rig.showCtrls = beforeCtrls;
     rig.applyCamera();
-    rig.showCtrls = true;
-    toast('Cámara calibrada: los mandos virtuales deberían caer encima de los reales. Retoca con las flechas si hace falta', 6000);
-    return true;
+    ui.close();
   };
 
   // ---------- Grabación ----------
@@ -481,53 +589,35 @@ export function createWebcam(ctx) {
 export function calibUI() {
   const el = document.getElementById('calib');
   const msg = el.querySelector('.msg'), big = el.querySelector('.big'), sub = el.querySelector('.sub');
-  const cv = el.querySelector('canvas'), ctx2 = cv.getContext('2d');
-  const bSkip = el.querySelector('[data-a=skip]'), bOk = el.querySelector('[data-a=ok]'), bRedo = el.querySelector('[data-a=redo]');
+  const bOk = el.querySelector('[data-a=ok]'), bRedo = el.querySelector('[data-a=redo]');
   const bCancel = el.querySelector('[data-a=cancel]');
   const ui = { cancelled: false };
-  const fit = (img) => {
-    const s = Math.min((innerWidth - 40) / img.width, (innerHeight - 200) / img.height);
-    cv.width = img.width; cv.height = img.height;
-    cv.style.width = img.width * s + 'px'; cv.style.height = img.height * s + 'px';
-    ctx2.drawImage(img, 0, 0);
-  };
-  const show = (...xs) => [bSkip, bOk, bRedo].forEach((b) => (b.style.display = xs.includes(b) ? '' : 'none'));
-  ui.open = () => { ui.cancelled = false; el.classList.add('on'); cv.style.display = 'none'; show(); };
-  ui.close = () => el.classList.remove('on', 'live');
-  ui.live = (v) => el.classList.toggle('live', v); // mientras se hacen las fotos se ve la webcam detrás
+  const show = (...xs) => [bOk, bRedo].forEach((b) => (b.style.display = xs.includes(b) ? '' : 'none'));
+  const marks = [];
+  ui.open = () => { ui.cancelled = false; el.classList.add('on'); show(); };
+  ui.close = () => { ui.dots([]); el.classList.remove('on', 'live'); };
+  ui.live = (v) => el.classList.toggle('live', v); // mientras se calibra se ve la webcam detrás
   ui.say = (html, s = '') => { msg.innerHTML = html; sub.textContent = s; big.textContent = ''; };
-  ui.big = (t) => (big.textContent = t);
-  ui.sub = (t) => (sub.textContent = t);
-  bCancel.onclick = () => { ui.cancelled = true; ui.close(); };
-  ui.pick = (img, html) => new Promise((resolve) => {
-    ui.say(html);
-    cv.style.display = '';
-    fit(img);
-    show(bSkip);
-    const done = (v) => { cv.onclick = bSkip.onclick = null; resolve(v); };
-    cv.onclick = (e) => {
-      const r = cv.getBoundingClientRect();
-      const u = ((e.clientX - r.left) / r.width) * cv.width, v = ((e.clientY - r.top) / r.height) * cv.height;
-      ctx2.strokeStyle = '#ff3b6b'; ctx2.lineWidth = Math.max(2, cv.width / 400);
-      ctx2.beginPath(); ctx2.arc(u, v, cv.width / 80, 0, 7); ctx2.stroke();
-      setTimeout(() => done([u, v]), 250);
-    };
-    bSkip.onclick = () => done(null);
-    if (ui.cancelled) done(null);
-  });
-  ui.result = (img, pts, reproj, text) => new Promise((resolve) => {
-    ui.say(text + `<br><small>${t('Rosa = tus clics · verde = donde cae el mando con la calibración.')}</small>`);
-    cv.style.display = '';
-    fit(img);
-    const r = cv.width / 90;
-    pts.forEach((p, i) => {
-      ctx2.lineWidth = Math.max(2, cv.width / 500);
-      ctx2.strokeStyle = '#ff3b6b'; ctx2.beginPath(); ctx2.arc(p.u, p.v, r, 0, 7); ctx2.stroke();
-      ctx2.strokeStyle = '#3bff8a'; ctx2.beginPath(); ctx2.arc(reproj[i][0], reproj[i][1], r * 0.5, 0, 7); ctx2.stroke();
+  ui.big = (v) => (big.textContent = v);
+  ui.sub = (v) => (sub.textContent = v);
+  // Puntos sobre las manos detectadas (x, y en fracción del vídeo).
+  ui.dots = (seen) => {
+    const r = document.querySelector('#app canvas')?.getBoundingClientRect();
+    while (marks.length < seen.length) { const d = document.createElement('i'); el.appendChild(d); marks.push(d); }
+    marks.forEach((d, i) => {
+      d.style.display = i < seen.length && r ? 'block' : 'none';
+      if (i < seen.length && r) { d.style.left = r.left + seen[i].x * r.width + 'px'; d.style.top = r.top + seen[i].y * r.height + 'px'; }
     });
-    show(bOk, bRedo);
-    bOk.onclick = () => resolve(true);
-    bRedo.onclick = () => resolve(false);
+  };
+  let answer = null;
+  bCancel.onclick = () => { ui.cancelled = true; if (answer) answer(false); else ui.close(); };
+  // ¿Se usa esta calibración? (Repetir o Cancelar: no.)
+  ui.ask = (html, canUse) => new Promise((resolve) => {
+    ui.say(html);
+    show(...(canUse ? [bOk, bRedo] : [bRedo]));
+    answer = (v) => { answer = null; show(); resolve(v); };
+    bOk.onclick = () => answer(true);
+    bRedo.onclick = () => answer(false);
   });
   return ui;
 }

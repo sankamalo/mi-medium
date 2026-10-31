@@ -70,7 +70,7 @@
     #calib .msg { font-size: 18px; max-width: 760px; line-height: 1.45; }
     #calib .big { font-size: 140px; font-weight: 700; line-height: 1; }
     #calib .sub { font-size: 20px; color: #ffd36b; }
-    #calib canvas { cursor: crosshair; border-radius: 8px; }
+    #calib i { position: fixed; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: #3bff8a; box-shadow: 0 0 0 3px #0008; pointer-events: none; }
     #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: var(--mute); font-size: 12px; text-align: center; pointer-events: none; }
     #radial { position: fixed; width: 380px; height: 380px; display: none; cursor: pointer; }
     #brushPreview { position: fixed; width: 160px; height: 160px; display: none; pointer-events: none; }
@@ -208,9 +208,7 @@
     <div class="msg"></div>
     <div class="big"></div>
     <div class="sub"></div>
-    <canvas></canvas>
     <div class="row">
-      <button data-a="skip">Saltar</button>
       <button data-a="redo">Repetir</button>
       <button data-a="ok" class="primary">Usar esta calibración</button>
       <button data-a="cancel">Cancelar</button>
