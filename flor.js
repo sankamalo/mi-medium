@@ -481,6 +481,20 @@ class Flat {
     s.absellipse(x, y, rx, ry, 0, Math.PI * 2);
     this.shape(s, hex);
   }
+  // La rueda de color: anillos de vértices, cada uno con el color que le toca.
+  wheel(radius, colorAt, rings = 14, segs = 72) {
+    const base = this.pos.length / 3, c = new THREE.Color();
+    for (let j = 0; j <= rings; j++) for (let i = 0; i < segs; i++) {
+      const r = j / rings, a = (i / segs) * Math.PI * 2, u = Math.cos(a) * r, v = Math.sin(a) * r;
+      c.set(colorAt(u, v));
+      this.pos.push(u * radius, v * radius, 0);
+      this.col.push(c.r, c.g, c.b);
+    }
+    for (let j = 0; j < rings; j++) for (let i = 0; i < segs; i++) {
+      const a = base + j * segs + i, b = base + j * segs + (i + 1) % segs, d = a + segs, e = b + segs;
+      this.idx.push(a, b, e, a, e, d);
+    }
+  }
   geometry() {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
@@ -495,6 +509,9 @@ const ICON_FILES = {
   inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
   pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial',
   'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid',
+  'tool:palillo': 'tool-palillo', 'tool:cuter': 'tool-cuter', 'tool:cuchara': 'tool-cuchara',
+  'tool:dedo': 'tool-dedo', 'tool:rodillo': 'tool-rodillo', 'tool:espatula': 'tool-espatula',
+  'tex:plain': 'tex-plain', 'tex:rough': 'tex-rough', 'tex:dots': 'tex-dots', 'tex:stripes': 'tex-stripes', 'tex:scales': 'tex-scales',
 };
 const ICON_SIZE = 0.058, SUB_ICON_SIZE = 0.036;
 const INK_ON = new Set([COLORS.yellow, COLORS.paper, COLORS.pink]); // en estos pétalos, el icono va en negro
@@ -533,21 +550,39 @@ export const FLOWER = [
   { id: 'grab', angle: -144, color: COLORS.yellow },
   { id: 'sym', angle: -108, color: COLORS.pink },
 ];
-// Si te quedas un momento sobre estos pétalos, salen sus opciones por fuera.
+// Si te quedas un momento sobre estos pétalos, de su parte gorda nace otra flor con sus opciones.
+const fan = (ids, step) => ids.map((id, i) => ({ id, off: (i - (ids.length - 1) / 2) * step }));
 const SUBS = {
-  add: [
-    { id: 'shape:sphere', off: -34 },
-    { id: 'shape:cube', off: 0 },
-    { id: 'shape:pyramid', off: 34 },
-  ],
-  sym: [
-    { id: 'sym:x', off: -45 },
-    { id: 'sym:y', off: -15 },
-    { id: 'sym:z', off: 15 },
-    { id: 'sym:radial', off: 45 },
-  ],
+  add: fan(['shape:sphere', 'shape:cube', 'shape:pyramid'], 58),
+  sym: fan(['sym:x', 'sym:y', 'sym:z', 'sym:radial'], 54),
+  paint: [{ id: 'color:wheel', off: 0, wheel: true }],
+  remove: fan(['tool:palillo', 'tool:cuter', 'tool:cuchara'], 58),
+  flatten: fan(['tool:dedo', 'tool:rodillo', 'tool:espatula'], 58),
+  inflate: fan(['tex:plain', 'tex:rough', 'tex:dots', 'tex:stripes', 'tex:scales'], 46),
 };
-const SUB_LEN = 0.078, SUB_WID = 0.066, SUB_R = R0 + LEN * 1.12;
+const FAT = 0.7; // dónde está la parte gorda del pétalo, a lo largo de él
+const SUB_LEN = 0.108, SUB_WID = 0.07;
+const SUB_HOLE = 0.04, SUB_REACH = SUB_LEN * 1.35; // dentro del agujero sigues sobre el pétalo padre
+// La rueda de color es un pétalo más grande, con la rueda dentro.
+const WHEEL_LEN = 0.18, WHEEL_WID = 0.165, WHEEL_AT = 0.115, WHEEL_R = 0.055, WHEEL_GRACE = 0.03;
+// Centro blanco, color puro a media altura, oscuro hacia el borde.
+const WHEEL_PURE = 0.74, WHEEL_DARK = 0.88;
+function wheelColor(u, v) {
+  const r = Math.min(1, Math.hypot(u, v));
+  const h = ((Math.atan2(v, u) / (Math.PI * 2)) + 1) % 1;
+  const sat = Math.min(1, r / WHEEL_PURE), val = r <= WHEEL_PURE ? 1 : 1 - ((r - WHEEL_PURE) / (1 - WHEEL_PURE)) * WHEEL_DARK;
+  const f = (n) => { const k = (n + h * 6) % 6; return val * (1 - sat * Math.max(0, Math.min(k, 4 - k, 1))); };
+  return '#' + [5, 3, 1].map((n) => Math.round(f(n) * 255).toString(16).padStart(2, '0')).join('');
+}
+// El punto de la rueda más parecido a un color.
+function wheelSpot(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), d = max - Math.min(r, g, b);
+  const sat = max ? d / max : 0;
+  const h = !d ? 0 : max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  const rad = max < 0.99 && sat > 0.5 ? WHEEL_PURE + ((1 - max) / WHEEL_DARK) * (1 - WHEEL_PURE) : sat * WHEEL_PURE;
+  return [Math.cos((h / 6) * Math.PI * 2) * rad, Math.sin((h / 6) * Math.PI * 2) * rad];
+}
 const DWELL = 0.42;
 const wrap = (a) => ((a + 540) % 360) - 180;
 // Muelle con rebote: lo que hace que se sienta vivo.
@@ -558,10 +593,10 @@ function spring(o, key, target, dt) {
   o[key] += o[v] * dt;
 }
 
+const flatMat = () => new THREE.MeshBasicMaterial({ vertexColors: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
 function makePetal(def, len, wid, order) {
   const root = new THREE.Group();
   const body = new THREE.Group();
-  const flatMat = () => new THREE.MeshBasicMaterial({ vertexColors: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
   const lineMat = new THREE.MeshBasicMaterial({ color: INK, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
   const ink = new THREE.ShapeGeometry(new THREE.Shape(petalPoints(len, wid, INK_W)));
   const halo = new THREE.ShapeGeometry(new THREE.Shape(petalPoints(len, wid, HALO_W)));
@@ -571,7 +606,7 @@ function makePetal(def, len, wid, order) {
   const face = new THREE.Mesh(fill.geometry(), flatMat());
   const icon = new THREE.Mesh(new THREE.BufferGeometry(), flatMat());
   const holder = new THREE.Group();
-  holder.position.y = len * 0.64;
+  holder.position.y = def.off === undefined ? len * 0.64 : len * 0.7;
   holder.add(icon);
   body.add(line, face, holder);
   root.add(body);
@@ -584,6 +619,7 @@ function setOrder(p, o) {
   p.line.renderOrder = o;
   p.face.renderOrder = o + 0.1;
   p.icon.renderOrder = o + 0.2;
+  if (p.markerRing) { p.markerRing.renderOrder = o + 0.3; p.markerDot.renderOrder = o + 0.4; }
 }
 
 export class Flower {
@@ -605,16 +641,21 @@ export class Flower {
       this.group.add(p.root);
       return p;
     });
+    // Las opciones llevan el color de su pétalo y salen por debajo de él: se ve que nacen de ahí.
     this.subPetals = Object.entries(SUBS).flatMap(([parent, list]) => list.map((f) => ({ ...f, parent }))).map((f, i) => {
-      const p = makePetal({ ...f, color: COLORS.blue }, SUB_LEN, SUB_WID, 950 + i * 2);
-      p.ang = this.petals.find((q) => q.id === f.parent).angle + f.off;
-      p.body.position.y = SUB_R;
+      const dad = this.petals.find((q) => q.id === f.parent);
+      const p = f.wheel
+        ? makePetal({ ...f, color: COLORS.paper }, WHEEL_LEN, WHEEL_WID, 920 + i * 0.5)
+        : makePetal({ ...f, color: dad.color }, SUB_LEN, SUB_WID, 920 + i * 0.5);
+      p.ang = dad.angle + f.off;
       p.root.visible = false;
+      if (f.wheel) this.buildWheel(p);
       this.group.add(p.root);
       return p;
     });
+    this.wheelHex = '#cfc6bb';
     this.petals.forEach((p) => loadIcon(p, ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
-    this.subPetals.forEach((p) => loadIcon(p, SUB_ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
+    this.subPetals.filter((p) => !p.wheel).forEach((p) => loadIcon(p, SUB_ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
     // Nombre de lo que señalas.
     this.canvas = document.createElement('canvas');
     this.canvas.width = 640;
@@ -630,9 +671,38 @@ export class Flower {
     this.group.add(this.label);
   }
 
+  buildWheel(p) {
+    const flat = new Flat();
+    flat.circle(0, 0, WHEEL_R + 0.0028, WHEEL_R + 0.0028, INK);
+    flat.wheel(WHEEL_R, wheelColor);
+    p.icon.geometry = flat.geometry();
+    p.holder.position.y = WHEEL_AT;
+    const disc = (r, hex) => {
+      const f = new Flat();
+      f.circle(0, 0, r, r, hex);
+      return new THREE.Mesh(f.geometry(), flatMat());
+    };
+    p.marker = new THREE.Group();
+    p.markerRing = disc(0.0088, INK);
+    p.markerDot = disc(0.0062, COLORS.white);
+    p.marker.add(p.markerRing, p.markerDot);
+    p.holder.add(p.marker);
+    setOrder(p, p.order);
+    this.wheelPetal = p;
+  }
+
+  // El color elegido en la rueda, con su marca encima.
+  setWheel(hex, u, v) {
+    this.wheelHex = hex;
+    const m = this.wheelPetal;
+    m.marker.position.set(u * WHEEL_R, v * WHEEL_R, 0);
+    m.markerDot.material.color.set(hex);
+  }
+
   // position: centro de la flor. pointer: dónde está la punta al abrir; eliges moviéndola desde ahí.
   // isActive(id): si esa herramienta u opción es la que llevas puesta (lleva el borde blanco).
-  open(position, lookAt, isActive = () => false, pointer = position) {
+  // color: el que llevas puesto, para marcarlo en la rueda.
+  open(position, lookAt, isActive = () => false, pointer = position, color = this.wheelHex) {
     this.group.position.copy(position);
     this.group.lookAt(lookAt);
     this.group.updateMatrixWorld();
@@ -642,6 +712,7 @@ export class Flower {
     this.age = 0;
     this.sub = false;
     this.pStrength = this.pStrengthV = 0;
+    this.setWheel(color, ...wheelSpot(color));
     this.setHighlight(null);
     for (const p of [...this.petals, ...this.subPetals]) {
       const on = isActive(p.id);
@@ -667,22 +738,57 @@ export class Flower {
     this.pStrength = Math.max(0, Math.min(1, (d - DEAD) / 0.035));
     let id = null;
     if (d >= DEAD) {
-      const subs = SUBS[this.sub];
-      const rel = subs ? wrap(a - this.petals.find((p) => p.id === this.sub).angle) : 0;
-      if (subs && d > SUB_R - 0.012 && Math.abs(rel) < Math.max(...subs.map((s) => Math.abs(s.off))) + 24 && d < SUB_R + SUB_LEN * 1.8) {
-        id = subs.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
-      } else if (d <= OUTER) {
-        id = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b)).id;
-      }
+      id = this.sub ? this.hoverSub(x, -y) : null;
+      if (id) this.pAngle = this.petals.find((p) => p.id === this.sub).angle; // los pétalos no se mueven mientras eliges
+      else if (d <= OUTER) id = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b)).id;
     }
     // El submenú se cierra en cuanto te vas a otro pétalo o sales de la flor.
     if (this.sub && id !== this.sub && !SUBS[this.sub].some((s) => s.id === id)) this.setSub(false);
     return this.setHighlight(id);
   }
 
+  // ¿Qué opción de la flor abierta hay en (x, y), con y hacia arriba?
+  hoverSub(x, y) {
+    const c = this.subCenter();
+    const list = SUBS[this.sub];
+    if (list[0].wheel) {
+      const dad = this.find(this.sub);
+      const u = (x - c.x - Math.sin(dad.ang * DEG) * WHEEL_AT) / WHEEL_R, v = (y - c.y - Math.cos(dad.ang * DEG) * WHEEL_AT) / WHEEL_R;
+      const r = Math.hypot(u, v);
+      if (r * WHEEL_R > WHEEL_R + WHEEL_GRACE) return null;
+      const k = Math.min(1, 1 / (r || 1));
+      this.setWheel(wheelColor(u * k, v * k), u * k, v * k);
+      return list[0].id;
+    }
+    const dx = x - c.x, dy = y - c.y, dist = Math.hypot(dx, dy);
+    if (dist < SUB_HOLE || dist > SUB_REACH) return null;
+    const rel = wrap(Math.atan2(dx, dy) / DEG - c.ang);
+    if (Math.abs(rel) > Math.abs(list[0].off) + 28) return null;
+    return list.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
+  }
+
+  // La parte gorda del pétalo que tiene las opciones abiertas.
+  subCenter() {
+    const dad = this.find(this.sub);
+    const r = R0 + LEN * FAT * dad.size, a = dad.ang * DEG;
+    return { x: Math.sin(a) * r, y: Math.cos(a) * r, ang: dad.ang };
+  }
+
   // El stick señala una dirección: como una mano que estuviera ya sobre el pétalo.
   hoverDir(ax, ay) {
-    const r = this.sub ? SUB_R + 0.02 : R0 + LEN * 0.7, l = Math.hypot(ax, ay) || 1;
+    const l = Math.hypot(ax, ay) || 1;
+    if (this.sub) {
+      const c = this.subCenter();
+      // Al abrirse las opciones sigues en el pétalo: hay que mover el stick para entrar en ellas.
+      if (!this.stickArmed && Math.abs(wrap(Math.atan2(ax, -ay) / DEG - c.ang)) > 14) this.stickArmed = true;
+      if (!this.stickArmed) return this.hover(c.x, -c.y);
+      if (SUBS[this.sub][0].wheel) {
+        const a = c.ang * DEG;
+        return this.hover(c.x + Math.sin(a) * WHEEL_AT + ax * WHEEL_R, -(c.y + Math.cos(a) * WHEEL_AT) + ay * WHEEL_R);
+      }
+      return this.hover(c.x + (ax / l) * 0.075, -c.y + (ay / l) * 0.075);
+    }
+    const r = R0 + LEN * FAT;
     return this.hover((ax / l) * r, (ay / l) * r);
   }
 
@@ -698,7 +804,7 @@ export class Flower {
   isOver(world) {
     const p = this.group.worldToLocal(vT.copy(world));
     const d = Math.hypot(p.x, p.y);
-    return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.sub ? SUB_R + SUB_LEN * 1.8 : OUTER);
+    return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.sub ? 0.34 : OUTER);
   }
 
   // on: el id del pétalo cuyas opciones se abren, o false para cerrarlas.
@@ -706,6 +812,7 @@ export class Flower {
     if (on === this.sub) return;
     this.sub = on;
     this.subAge = 0;
+    this.stickArmed = false;
     for (const p of this.subPetals) {
       p.root.visible = p.parent === on;
       p.size = p.sizeV = 0;
@@ -718,12 +825,13 @@ export class Flower {
     this.since = this.age;
     const p = this.find(id);
     this.label.visible = !!p;
-    this.petals.forEach((q) => setOrder(q, q.id === id ? 940 : q.order));
+    this.petals.forEach((q) => setOrder(q, q.id === id || q.id === this.sub ? 940 : q.order));
+    this.subPetals.forEach((q) => setOrder(q, q.id === id ? 935 : q.order));
     if (p) {
       const g = this.canvas.getContext('2d'), W = this.canvas.width, H = this.canvas.height;
       const text = this.labelOf(id);
       g.clearRect(0, 0, W, H);
-      g.font = '900 88px system-ui, "Noto Sans Thai", sans-serif';
+      g.font = '600 84px Kanit, "Noto Sans Thai", system-ui, sans-serif';
       const tw = Math.min(W - 24, g.measureText(text).width + 56);
       g.fillStyle = '#141210';
       g.fillRect((W - tw) / 2, 6, tw, H - 12);
@@ -752,7 +860,9 @@ export class Flower {
       const delta = wrap(p.angle - this.pAngle);
       const near = Math.exp(-((delta / 30) ** 2)) * s;
       const hot = p.id === this.highlight;
-      const sizeTarget = opening * (1 + 0.1 * near + (hot ? 0.12 : 0));
+      // Con otra flor abierta, los demás pétalos se encogen para dejarle sitio.
+      const room = this.sub && p.id !== this.sub ? 0.78 : 1;
+      const sizeTarget = opening * room * (1 + 0.1 * near + (hot ? 0.12 : 0));
       // Los vecinos se apartan, y el señalado se inclina un poco hacia la mano.
       const away = 24 * (delta / 55) * Math.exp(-((delta / 55) ** 2));
       const angTarget = p.angle + (away - delta * 0.28 * near) * s;
@@ -765,12 +875,13 @@ export class Flower {
       p.holder.rotation.z = p.ang * DEG; // el icono siempre de pie
     }
     if (this.sub) {
-      const parent = this.petals.find((q) => q.id === this.sub);
+      const c = this.subCenter();
       this.subPetals.filter((p) => p.parent === this.sub).forEach((p) => {
-        const hot = p.id === this.highlight;
-        const sizeTarget = Math.min(1, this.subAge / 0.1) * (hot ? 1.18 : 1);
+        const hot = p.id === this.highlight && !p.wheel;
+        const sizeTarget = Math.min(1, this.subAge / 0.1) * (hot ? 1.14 : 1);
         spring(p, 'size', sizeTarget, step);
-        spring(p, 'ang', parent.ang + p.off, step);
+        spring(p, 'ang', c.ang + p.off, step);
+        p.root.position.set(c.x, c.y, 0);
         p.root.rotation.z = -p.ang * DEG;
         p.body.scale.setScalar(Math.max(0.0001, p.size));
         p.holder.rotation.z = p.ang * DEG;
@@ -780,10 +891,9 @@ export class Flower {
     this.label.visible = !!hot && hot.id !== this.sub; // no tapar las opciones
     if (hot) {
       const a = hot.ang * DEG;
-      const base = hot.off !== undefined ? SUB_R : R0;
-      const r = base + hot.len * hot.size + 0.024;
+      const r = (hot.off !== undefined ? 0 : R0) + hot.len * hot.size + 0.024;
       const side = Math.abs(Math.sin(a)) > 0.85 ? Math.sign(Math.sin(a)) * 0.03 : 0;
-      this.label.position.set(Math.sin(a) * r + side, Math.cos(a) * r, 0);
+      this.label.position.set(hot.root.position.x + Math.sin(a) * r + side, hot.root.position.y + Math.cos(a) * r, 0);
     }
   }
 }

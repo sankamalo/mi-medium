@@ -10,7 +10,7 @@ import { t } from './i18n.js';
 //   label: text, size, head (letra de botón), max (encoge para caber), wrap (ancho: corta en líneas)
 
 // La caja de ceras: los bloques van en azul, rojo, papel y negro; el amarillo es siempre «esto está puesto».
-export const CERA = { red: '#E3242B', blue: '#1B4FD8', yellow: '#FFD21F', ink: '#141210', paper: '#FFF8E3', white: '#FFFFFF' };
+export const CERA = { soft: '#3a352e', red: '#E3242B', blue: '#1B4FD8', yellow: '#FFD21F', ink: '#141210', paper: '#FFF8E3', white: '#FFFFFF' };
 
 export class CanvasPanel {
   constructor(w, h, build) {
@@ -82,7 +82,7 @@ export class CanvasPanel {
         text = w.color === CERA.paper ? CERA.ink : CERA.white;
         onInk = w.color === CERA.ink;
       } else if (w.type === 'label') {
-        const font = w.head ? kanit : mali;
+        const font = w.head ? kanitHead : mali;
         const str = t(w.text);
         g.fillStyle = text;
         g.textAlign = w.align || 'left';
@@ -114,7 +114,7 @@ export class CanvasPanel {
           g.lineWidth = 3;
           g.stroke();
         }
-        g.fillStyle = CERA.ink;
+        g.fillStyle = CERA.soft;
         const room = w.w - 12 - (w.dot ? 50 : 0);
         g.font = kanit(w.group ? sizes[w.group] : fitSize(g, kanit, str, w.size || 26, room));
         g.textAlign = w.dot ? 'left' : 'center';
@@ -151,7 +151,8 @@ export class CanvasPanel {
 }
 
 const FALLBACK = '"Noto Sans Thai", system-ui, sans-serif';
-const kanit = (s) => `900 ${s}px Kanit, ${FALLBACK}`;
+const kanit = (s) => `500 ${s}px Kanit, ${FALLBACK}`;
+const kanitHead = (s) => `600 ${s}px Kanit, ${FALLBACK}`;
 const mali = (s) => `700 ${s}px Mali, ${FALLBACK}`;
 
 // La letra más grande (hasta size) con la que el texto cabe en room.

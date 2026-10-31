@@ -51,6 +51,10 @@ export const LABELS = {
   wire: 'Ver malla', remesh: 'Remesh quads', export: 'A Blender', save: 'Guardar', share: 'Compartir',
   layerNew: 'Nueva capa', layerNext: 'Capa siguiente',
   'sym:x': 'Simetría X', 'sym:y': 'Simetría Y', 'sym:z': 'Simetría Z', 'sym:radial': 'Radial',
+  'tool:palillo': 'Palillo', 'tool:cuter': 'Cúter', 'tool:cuchara': 'Cuchara',
+  'tool:dedo': 'Dedo mojado', 'tool:rodillo': 'Rodillo', 'tool:espatula': 'Espátula',
+  'tex:plain': 'Liso', 'tex:rough': 'Rugoso', 'tex:dots': 'Puntos', 'tex:stripes': 'Rayas', 'tex:scales': 'Escamas',
+  'color:wheel': 'Rueda de color',
 };
 
 const DWELL_MS = 450;

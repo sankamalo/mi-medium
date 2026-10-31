@@ -754,10 +754,27 @@ function syncCursorCopies() {
   });
 }
 
+// Herramientas de modelar: un pincel normal con su tamaño y su borde ya puestos.
+// Al volver a una herramienta normal, el tamaño y el borde vuelven a como estaban.
+const CLAY_TOOLS = {
+  'tool:palillo': { tool: 'remove', radius: 0.008, edge: 'even' },
+  'tool:cuter': { tool: 'remove', radius: 0.016, edge: 'hard' },
+  'tool:cuchara': { tool: 'remove', radius: 0.045, edge: 'soft' },
+  'tool:dedo': { tool: 'smooth', radius: 0.03, edge: 'even' },
+  'tool:rodillo': { tool: 'flatten', radius: 0.07, edge: 'even' },
+  'tool:espatula': { tool: 'flatten', radius: 0.03, edge: 'hard' },
+};
+let clayTool = null, clayBefore = null;
+function leaveClayTool() {
+  if (clayBefore) Object.assign(state, clayBefore);
+  clayTool = clayBefore = null;
+}
+
 // Lo que se puede elegir del pincel, para pintar qué botón está encendido en cualquier sitio.
 function optionOn(id) {
   const [k, v] = id.split(':');
   if (id === 'floor') return state.floor;
+  if (k === 'tool') return clayTool === id;
   if (k === 'edge') return state.edge === v;
   if (k === 'tex') return state.texture === v;
   if (k === 'stroke') return state.line === (v === 'line');
@@ -901,7 +918,15 @@ function resetLayer(shape) {
 function choose(id) {
   switch (id) {
     case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': case 'grab': case 'pinch': case 'crease':
+      leaveClayTool();
       state.tool = id;
+      break;
+    case 'tool:palillo': case 'tool:cuter': case 'tool:cuchara': case 'tool:dedo': case 'tool:rodillo': case 'tool:espatula':
+      leaveClayTool();
+      clayBefore = { radius: state.radius, edge: state.edge };
+      clayTool = id;
+      Object.assign(state, CLAY_TOOLS[id]);
+      toast(t(LABELS[id]), 1200);
       break;
     case 'shape:sphere': case 'shape:cube': case 'shape:pyramid':
       state.shape = id.slice(6);
@@ -1944,7 +1969,7 @@ panel3d.position.set(0.02, 0.19, -0.06);
 panel3d.rotation.x = -0.35;
 panel3d.visible = false;
 // Las letras van con la app; el lienzo no las coge solo, hay que pedirlas antes de dibujar.
-Promise.all(['900 30px Kanit', '700 30px Mali'].map((f) => document.fonts.load(f, 'Aก')))
+Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => document.fonts.load(f, 'Aก')))
   .then(() => { if (panel3d.visible) drawPanel(); }, () => {});
 
 // Bloque de color: agrupa lo que va junto. Azul: el pincel. Papel: color y capas. Rojo: la obra. Negro: lo técnico.
@@ -2139,13 +2164,21 @@ function openFlower(tipW, mode) {
   const head = renderer.xr.getCamera().getWorldPosition(vA);
   const at = rigs.right.group.localToWorld(vB.set(0, 0, -0.025));
   at.addScaledVector(vT0.copy(at).sub(head).normalize(), 0.04);
-  flower.open(at, head, optionOn, tipW);
+  flower.open(at, head, optionOn, tipW, state.color);
 }
 function closeFlower(pick) {
   xr.menuOpen = false;
   const h = flower.highlight;
   flower.close();
-  if (pick && h) choose(h);
+  if (!pick || !h) return;
+  if (h === 'color:wheel') {
+    choose('paint');
+    setColor(flower.wheelHex);
+    return;
+  }
+  // Las texturas se eligen en el pétalo de Inflar: es donde se ven en relieve.
+  if (h.startsWith('tex:')) choose('inflate');
+  choose(h);
 }
 
 // Espacio de trabajo: grande, a tu alrededor y delante de ti. Mientras no empiezas a esculpir te
@@ -3102,4 +3135,4 @@ document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => chang
 changeLang(getLang());
 
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), closeFlower, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };

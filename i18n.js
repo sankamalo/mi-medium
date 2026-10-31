@@ -22,6 +22,7 @@ const D = {
   'Pincel': ['Brush', 'พู่กัน'], 'Pincel ▸': ['Brush ▸', 'พู่กัน ▸'], 'FORMA': ['SHAPE', 'รูปทรง'], 'BORDE': ['EDGE', 'ขอบ'], 'TEXTURA': ['TEXTURE', 'พื้นผิว'], 'TRAZO': ['STROKE', 'เส้น'], 'SIMETRÍA': ['SYMMETRY', 'สมมาตร'], 'COPIAS DE LA RADIAL': ['RADIAL COPIES', 'จำนวนสำเนา'],
   'Borde': ['Edge', 'ขอบ'], 'Textura': ['Texture', 'พื้นผิว'], 'Trazo': ['Stroke', 'เส้น'],
   'Suave': ['Soft', 'นุ่ม'], 'Normal': ['Normal', 'ปกติ'], 'Duro': ['Hard', 'แข็ง'],
+  'Palillo': ['Toothpick', 'ไม้จิ้มฟัน'], 'Cúter': ['Cutter', 'คัตเตอร์'], 'Cuchara': ['Spoon', 'ช้อน'], 'Dedo mojado': ['Wet finger', 'นิ้วเปียก'], 'Rodillo': ['Rolling pin', 'ไม้นวด'], 'Espátula': ['Spatula', 'เกรียง'], 'Rueda de color': ['Color wheel', 'วงล้อสี'],
   'Liso': ['Plain', 'เรียบ'], 'Rugoso': ['Rough', 'ขรุขระ'], 'Puntos': ['Dots', 'จุด'], 'Rayas': ['Stripes', 'ลาย'], 'Escamas': ['Scales', 'เกล็ด'],
   'Libre': ['Free', 'อิสระ'], 'Recto': ['Straight', 'ตรง'],
   'Textura: en Añadir, Quitar, Inflar y Pintar.': ['Texture: on Add, Remove, Inflate and Paint.', 'พื้นผิว: ใช้กับ เพิ่ม ลบออก ทำให้พอง และระบายสี'],
