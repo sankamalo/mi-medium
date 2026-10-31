@@ -1360,6 +1360,14 @@ addEventListener('keyup', (e) => {
 });
 
 function fitWindow() {
+  const c = renderer.domElement;
+  c.style.marginLeft = c.style.marginTop = '';
+  if (SPECTATOR && spec.vertical) {
+    webcam.fit(1080, 1920);
+    camera.aspect = 9 / 16;
+    camera.updateProjectionMatrix();
+    return;
+  }
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -2082,7 +2090,7 @@ const headMesh = new THREE.Mesh(
 );
 const handMeshes = [controllerModel(), controllerModel()];
 avatar.add(headMesh, ...handMeshes);
-const spec = { view: 'gafas', bg: 'oscuro', smooth: 0.2, orbitT: 0, lastPose: null };
+const spec = { view: 'gafas', bg: 'oscuro', smooth: 0.2, orbitT: 0, lastPose: null, vertical: false };
 const BGS = { oscuro: 0x15171c, croma: 0x00ff00, blanco: 0xf4f4f2, negro: 0x000000 };
 
 // Cámara externa (webcam o iPhone) con la escultura encima; ver camara.js.
@@ -2124,6 +2132,7 @@ function spectatorKey(e) {
   else if (k === 'm') { state.wire = !state.wire; layers.forEach((L) => L.setWire(state.wire)); }
   else if (k === '4') setSpecView('webcam');
   else if (k === 'r') toggleRecord();
+  else if (k === 'v') setFormat(!spec.vertical);
   else if (spec.view === 'webcam' && webcam.nudge(e)) e.preventDefault();
 }
 async function setSpecView(v) {
@@ -2138,6 +2147,7 @@ async function setSpecView(v) {
   controls.enabled = v === 'libre';
   headMesh.visible = v === 'libre';
   $('camSec').classList.toggle('hidden', v !== 'webcam');
+  $('cropRow').classList.toggle('hidden', v !== 'webcam' || !spec.vertical);
   if (v === 'webcam') {
     webcam.layout();
   } else if (v !== 'gafas') {
@@ -2146,6 +2156,17 @@ async function setSpecView(v) {
   } else camera.fov = 75;
   camera.updateProjectionMatrix();
   document.querySelectorAll('#spec [data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
+}
+// Perfil de grabación: horizontal, o vertical para redes (bandas negras alrededor).
+function setFormat(vertical) {
+  if (webcam.rec) { toast('No se puede cambiar el formato mientras grabas'); return; }
+  spec.vertical = webcam.vertical = vertical;
+  try { localStorage.setItem('plastilinaFormato', vertical ? 'v' : 'h'); } catch {}
+  document.body.classList.toggle('vertical', vertical);
+  document.querySelectorAll('#spec [data-format]').forEach((b) => b.classList.toggle('on', (b.dataset.format === 'v') === vertical));
+  $('cropRow').classList.toggle('hidden', spec.view !== 'webcam' || !vertical);
+  if (webcam.active) webcam.layout();
+  else fitWindow();
 }
 function setSpecBg(name) {
   const names = Object.keys(BGS);
@@ -2235,6 +2256,12 @@ if (SPECTATOR) {
   $('camDelayV').textContent = webcam.delay + ' ms';
   $('camDelay').oninput = (e) => { webcam.setDelay(+e.target.value); $('camDelayV').textContent = e.target.value + ' ms'; };
   $('recBtn').onclick = toggleRecord;
+  document.querySelectorAll('#spec [data-format]').forEach((b) => (b.onclick = () => setFormat(b.dataset.format === 'v')));
+  $('camCrop').value = webcam.cropX * 100;
+  $('camCrop').oninput = (e) => webcam.setCrop(e.target.value / 100);
+  let savedFormat = 'h';
+  try { savedFormat = localStorage.getItem('plastilinaFormato') || 'h'; } catch {}
+  setFormat(savedFormat === 'v');
   fillCams();
 }
 
@@ -2461,4 +2488,4 @@ document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => chang
 changeLang(getLang());
 
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, renderer, setSpecView: SPECTATOR ? setSpecView : null, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };

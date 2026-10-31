@@ -297,6 +297,9 @@ export function createWebcam(ctx) {
     delay: store.get('plastilinaCamDelay', 120),
     showCtrls: false,
     poses: [],
+    vertical: false, // perfil para redes: 9:16
+    calibrating: false,
+    cropX: store.get('plastilinaCrop', 0.5), // qué parte del vídeo se queda en vertical (0 = izquierda)
   };
 
   rig.devices = async () => {
@@ -340,27 +343,49 @@ export function createWebcam(ctx) {
     if (rig.active) {
       rig.active = false;
       const c = renderer.domElement;
-      c.style.marginLeft = c.style.marginTop = '';
+      camera.clearViewOffset();
       ctx.onLayoutReset();
     }
   };
 
   rig.size = () => [video.videoWidth || 1280, video.videoHeight || 720];
 
-  // El lienzo a la resolución del vídeo (es lo que se graba), encajado en la ventana.
+  // Lienzo de W×H píxeles (es lo que se graba), encajado en la ventana.
+  rig.fit = (W, H) => {
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H, false);
+    const s = Math.min(innerWidth / W, innerHeight / H), c = renderer.domElement;
+    c.style.width = Math.round(W * s) + 'px';
+    c.style.height = Math.round(H * s) + 'px';
+    c.style.marginLeft = Math.round((innerWidth - W * s) / 2) + 'px';
+    c.style.marginTop = Math.round((innerHeight - H * s) / 2) + 'px';
+  };
+
+  // Horizontal: a la resolución del vídeo. Vertical: 1080×1920 con un trozo del vídeo.
+  // Calibrando se ve siempre entero: las manos se buscan en toda la imagen.
   rig.layout = () => {
     if (!rig.active) return;
-    const [w, h] = rig.size();
-    renderer.setPixelRatio(1);
-    renderer.setSize(w, h, false);
-    const s = Math.min(innerWidth / w, innerHeight / h), c = renderer.domElement;
-    c.style.width = Math.round(w * s) + 'px';
-    c.style.height = Math.round(h * s) + 'px';
-    c.style.marginLeft = Math.round((innerWidth - w * s) / 2) + 'px';
-    c.style.marginTop = Math.round((innerHeight - h * s) / 2) + 'px';
+    const [w, h] = rig.size(), vertical = rig.vertical && !rig.calibrating;
+    if (vertical) rig.fit(1080, 1920);
+    else rig.fit(w, h);
     camera.aspect = w / h;
+    rig.frame();
     rig.applyCamera();
   };
+
+  // El recorte mueve vídeo y escultura a la vez, sin tocar la calibración.
+  rig.frame = () => {
+    const [w, h] = rig.size(), tex = rig.texture;
+    if (rig.vertical && !rig.calibrating) {
+      const cw = (h * 9) / 16, x = (w - cw) * rig.cropX;
+      camera.setViewOffset(w, h, x, 0, cw, h);
+      if (tex) { tex.repeat.set(cw / w, 1); tex.offset.set(x / w, 0); }
+    } else {
+      camera.clearViewOffset();
+      if (tex) { tex.repeat.set(1, 1); tex.offset.set(0, 0); }
+    }
+  };
+  rig.setCrop = (v) => { rig.cropX = v; store.set('plastilinaCrop', v); rig.frame(); };
 
   rig.applyCamera = () => {
     if (!rig.active) return;
@@ -485,6 +510,14 @@ export function createWebcam(ctx) {
 
   rig.calibrate = async (ui) => {
     if (!rig.active) return;
+    rig.calibrating = true;
+    rig.layout();
+    try { return await calibrateHere(ui); } finally {
+      rig.calibrating = false;
+      rig.layout();
+    }
+  };
+  const calibrateHere = async (ui) => {
     const [w, h] = rig.size();
     const notify = ctx.notify || (() => {});
     const before = rig.calib, beforeCtrls = rig.showCtrls, beforeDelay = rig.delay;
@@ -556,7 +589,7 @@ export function createWebcam(ctx) {
     const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
     const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
     const d = new Date(), z = (n) => String(n).padStart(2, '0');
-    const name = `plastilina_${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}-${z(d.getMinutes())}-${z(d.getSeconds())}.${ext}`;
+    const name = `plastilina_${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}-${z(d.getMinutes())}-${z(d.getSeconds())}${rig.vertical ? '_vertical' : ''}.${ext}`;
     const mr = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16e6 });
     const rec = { mr, name, part: 0, chain: Promise.resolve(), local: [], failed: false, bytes: 0, t0: performance.now(), micStream };
     // Cada trozo se manda al Mac en orden; si el servidor no responde, se guarda en memoria.

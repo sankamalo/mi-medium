@@ -95,7 +95,7 @@ const D = {
   'Flechas: girar · Mayús+flechas: mover · +/−: zoom (retoque fino de la cámara).': ['Arrows: rotate · Shift+arrows: move · +/−: zoom (fine camera adjustment).', 'ลูกศร: หมุน · Shift+ลูกศร: ย้าย · +/−: ซูม (ปรับกล้องละเอียด)'],
   'Fondo': ['Background', 'พื้นหลัง'], 'Fondo: {0}': ['Background: {0}', 'พื้นหลัง: {0}'], 'oscuro': ['dark', 'มืด'], 'croma': ['chroma', 'โครมา'], 'blanco': ['white', 'ขาว'], 'negro': ['black', 'ดำ'], 'Ocultar': ['Hide', 'ซ่อน'],
   '● Grabar': ['● Record', '● บันทึกวิดีโอ'], '■ Parar': ['■ Stop', '■ หยุด'], '■ Parar {0}': ['■ Stop {0}', '■ หยุด {0}'], 'Guardando…': ['Saving…', 'กำลังบันทึก…'], 'Micro': ['Mic', 'ไมค์'],
-  '1/2/3/4 vista · F fondo (verde = croma) · M malla · R grabar · H ocultar/mostrar este panel.': ['1/2/3/4 view · F background (green = chroma) · M mesh · R record · H hide/show this panel.', '1/2/3/4 มุมมอง · F พื้นหลัง (เขียว = โครมา) · M ตาข่าย · R บันทึกวิดีโอ · H ซ่อน/แสดงแผงนี้'],
+  '1/2/3/4 vista · F fondo (verde = croma) · M malla · R grabar · V formato · H ocultar/mostrar este panel.': ['1/2/3/4 view · F background (green = chroma) · M mesh · R record · V format · H hide/show this panel.', '1/2/3/4 มุมมอง · F พื้นหลัง (เขียว = โครมา) · M ตาข่าย · R บันทึกวิดีโอ · V รูปแบบ · H ซ่อน/แสดงแผงนี้'],
   'Las grabaciones se guardan en el Mac, en la carpeta': ['Recordings are saved on the Mac, in the folder', 'วิดีโอจะบันทึกใน Mac ในโฟลเดอร์'],
   'Repetir': ['Redo', 'ทำใหม่'], 'Usar esta calibración': ['Use this calibration', 'ใช้การปรับเทียบนี้'], 'Cancelar': ['Cancel', 'ยกเลิก'], 'Cámara {0}': ['Camera {0}', 'กล้อง {0}'],
   'No puedo abrir la cámara: {0}': ["Can't open the camera: {0}", 'เปิดกล้องไม่ได้: {0}'], 'Cámara lista. Pulsa "Calibrar" para encajar la escultura con el vídeo': ['Camera ready. Press "Calibrate" to line up the sculpture with the video', 'กล้องพร้อมแล้ว กด "ปรับเทียบ" เพื่อให้ประติมากรรมตรงกับวิดีโอ'],
@@ -112,6 +112,8 @@ const D = {
   'Error: {0} px · lente {1}° · cámara a {2} m · retraso {3} ms': ['Error: {0} px · lens {1}° · camera at {2} m · delay {3} ms', 'คลาดเคลื่อน: {0} px · เลนส์ {1}° · กล้องห่าง {2} ม. · หน่วง {3} ms'],
   'No cuadra: hace falta más luz y mover más las manos delante de la cámara.': ['It does not fit: it needs more light and more hand movement in front of the camera.', 'ยังไม่ตรง: ต้องการแสงมากขึ้นและขยับมือตรงหน้ากล้องมากขึ้น'],
   'Puedes quedarte con la anterior, que es la que ves ahora.': ['You can keep the previous one, which is what you see now.', 'คุณเลือกใช้อันก่อนหน้าได้ ซึ่งคืออันที่เห็นอยู่ตอนนี้'],
+  'Horizontal': ['Horizontal', 'แนวนอน'], 'Vertical (redes)': ['Vertical (social)', 'แนวตั้ง (โซเชียล)'], 'Encuadre': ['Framing', 'จัดเฟรม'],
+  'No se puede cambiar el formato mientras grabas': ['You cannot change the format while recording', 'เปลี่ยนรูปแบบระหว่างบันทึกไม่ได้'],
   'Cámara calibrada. Retoca con las flechas si hace falta': ['Camera calibrated. Fine-tune with the arrow keys if needed', 'ปรับเทียบกล้องแล้ว ใช้ปุ่มลูกศรปรับละเอียดได้ถ้าจำเป็น'],
   'No llegan los mandos de las gafas': ['The headset controllers are not arriving', 'ไม่ได้รับข้อมูลคอนโทรลเลอร์จากแว่น'], 'Calculando…': ['Calculating…', 'กำลังคำนวณ…'], 'Sin micro: se graba sin sonido': ['No mic: recording without sound', 'ไม่มีไมค์: บันทึกแบบไม่มีเสียง'], 'Grabación descargada: {0}': ['Recording downloaded: {0}', 'ดาวน์โหลดวิดีโอแล้ว: {0}'], 'Grabación guardada en {0}': ['Recording saved in {0}', 'บันทึกวิดีโอไว้ที่ {0}'],
 };
