@@ -1709,6 +1709,7 @@ function xrFrame(dt) {
     else right = c;
   }
   if (left && hud3d.parent !== left) left.add(hud3d, panel3d);
+  hud3d.visible = !panel3d.visible; // con el panel abierto, el aviso de herramienta lo taparía
   if (right && ray.parent !== right) right.add(ray);
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
 
