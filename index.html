@@ -8,10 +8,11 @@
   <link rel="icon" href="icon-192.png" />
   <meta name="theme-color" content="#1d2026" />
   <style>
+    @font-face { font-family: 'Noto Sans Thai'; src: url('vendor/fonts/NotoSansThai.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
     :root { --bg: #1d2026; --panel: rgba(18, 20, 25, 0.88); --fg: #e8ecf3; --mute: #9aa4b5; --acc: #3d8bff; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
-      font: 14px/1.4 system-ui, -apple-system, sans-serif; user-select: none; }
+      font: 14px/1.4 system-ui, -apple-system, 'Noto Sans Thai', sans-serif; user-select: none; }
     #app canvas { display: block; }
     #hud { position: fixed; top: 12px; left: 12px; width: 250px; padding: 14px; border-radius: 12px;
       background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
@@ -55,6 +56,8 @@
     body.spectator #spec { display: block; }
     body.spectator #spec.hidden { display: none; }
     body.spectator #hud, body.spectator #help { display: none; }
+    .lang { margin-bottom: 10px; }
+    .lang button { font-size: 15px; padding: 8px 4px; }
     #spec .hidden { display: none; }
     #spec select { width: 100%; margin-top: 8px; }
     #camSec input[type=range] { flex: 1; }
@@ -96,6 +99,11 @@
   <div id="app"></div>
   <div id="hud">
     <h1>LA PLASTILINA</h1>
+    <div class="lang"><b>Idiomas</b>
+      <div class="row">
+        <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
+      </div>
+    </div>
     <div id="tool">Añadir</div>
     <div id="info"></div>
     <label>Tamaño <input id="size" type="range" min="0" max="1" step="0.002" /></label>
@@ -128,7 +136,6 @@
       <button id="btnPaint" title="Pincel de pintar (P)">✎ Pintar</button>
       <button id="btnBase" title="Usar el color actual como color base de la capa activa">Color → base capa</button>
     </div>
-    <label class="check"><input id="addColor" type="checkbox" /> Añadir barro con el color actual</label>
     <div class="sec">Capas <button id="layerAdd" class="mini" title="Nueva capa (N)">+ Capa</button></div>
     <div id="layerList"></div>
     <div class="row">
@@ -166,6 +173,9 @@
   </div>
   <div id="spec">
     <b>LA PLASTILINA · ESPEJO</b> <span id="specStatus">Esperando a las gafas…</span>
+    <div class="lang"><div class="row">
+      <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
+    </div></div>
     <div class="row">
       <button data-view="gafas" title="1">Tus ojos</button>
       <button data-view="libre" title="2">Cámara libre</button>

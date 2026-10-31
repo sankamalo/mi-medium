@@ -3,6 +3,7 @@
 //
 // Mitad de arriba: las herramientas de esculpir, grandes. Mitad de abajo: 4 acciones.
 // Si te quedas un momento sobre "Añadir", la mitad de arriba cambia a las formas del pincel.
+import { t } from './i18n.js';
 
 export const TOOL_COLORS = {
   add: '#5ad17a',
@@ -159,11 +160,11 @@ export class RadialMenu {
       let icon = it.icon;
       if (it.id === 'add' && state.shape && state.shape !== 'sphere') icon = '+' + SHAPE_ICON[state.shape];
       ctx.fillStyle = hl ? '#101215' : color || '#e8ecf3';
-      ctx.font = `bold ${size * (big ? 0.07 : 0.05)}px system-ui, sans-serif`;
+      ctx.font = `bold ${size * (big ? 0.07 : 0.05)}px system-ui, "Noto Sans Thai", sans-serif`;
       ctx.fillText(icon, ix, iy - (narrow ? 0 : size * (big ? 0.035 : 0.022)));
       ctx.fillStyle = hl ? '#101215' : '#e8ecf3';
-      ctx.font = `700 ${size * (narrow ? 0.024 : big ? 0.04 : 0.026)}px system-ui, sans-serif`;
-      ctx.fillText(narrow ? it.short || it.label : it.label, lx, ly + (narrow ? 0 : size * (big ? 0.045 : 0.03)));
+      ctx.font = `700 ${size * (narrow ? 0.024 : big ? 0.04 : 0.026)}px system-ui, "Noto Sans Thai", sans-serif`;
+      ctx.fillText(t(narrow ? it.short || it.label : it.label), lx, ly + (narrow ? 0 : size * (big ? 0.045 : 0.03)));
     };
     // Arriba: de izquierda (-180°) a derecha (0°) pasando por arriba.
     const top = this.top, segT = Math.PI / top.length;
@@ -174,9 +175,9 @@ export class RadialMenu {
 
     // Arcos deslizadores (Tamaño, Estabilizar).
     this.sliders.forEach((sl, i) => {
-      const rr = this.sliderR[i], t = sl.get();
+      const rr = this.sliderR[i], v = sl.get();
       const hl = this.highlight === 'slider:' + sl.id;
-      const end = Math.PI - t * Math.PI; // ángulo de canvas: π = izquierda, 0 = derecha (por abajo)
+      const end = Math.PI - v * Math.PI; // ángulo de canvas: π = izquierda, 0 = derecha (por abajo)
       ctx.lineCap = 'butt';
       ctx.lineWidth = size * (hl ? 0.03 : 0.024);
       ctx.strokeStyle = 'rgba(24,26,32,0.92)';
@@ -198,13 +199,13 @@ export class RadialMenu {
       // del arco; el valor va en la bolita.
       const lx = i === 0 ? size * 0.13 : size * 0.87, ly = size * 0.93;
       ctx.fillStyle = sl.color;
-      ctx.font = `700 ${size * (hl ? 0.032 : 0.027)}px system-ui, sans-serif`;
-      ctx.fillText(sl.label, lx, ly);
-      ctx.font = `600 ${size * 0.02}px system-ui, sans-serif`;
+      ctx.font = `700 ${size * (hl ? 0.032 : 0.027)}px system-ui, "Noto Sans Thai", sans-serif`;
+      ctx.fillText(t(sl.label), lx, ly);
+      ctx.font = `600 ${size * 0.02}px system-ui, "Noto Sans Thai", sans-serif`;
       ctx.fillStyle = '#9aa4b5';
-      ctx.fillText(i === 0 ? 'arco de dentro' : 'arco de fuera', lx, ly + size * 0.035);
+      ctx.fillText(t(i === 0 ? 'arco de dentro' : 'arco de fuera'), lx, ly + size * 0.035);
       ctx.fillStyle = '#101215';
-      ctx.font = `800 ${size * (hl ? 0.02 : 0.016)}px system-ui, sans-serif`;
+      ctx.font = `800 ${size * (hl ? 0.02 : 0.016)}px system-ui, "Noto Sans Thai", sans-serif`;
       ctx.fillText(sl.text(), kx, ky + 1);
     });
 
@@ -215,20 +216,20 @@ export class RadialMenu {
     const sl = this.highlight?.startsWith('slider:') && this.sliders.find((x) => 'slider:' + x.id === this.highlight);
     if (sl) {
       ctx.fillStyle = sl.color;
-      ctx.font = `700 ${size * 0.034}px system-ui, sans-serif`;
-      ctx.fillText(sl.label, c, c - size * 0.022);
+      ctx.font = `700 ${size * 0.034}px system-ui, "Noto Sans Thai", sans-serif`;
+      ctx.fillText(t(sl.label), c, c - size * 0.022);
       ctx.fillStyle = '#e8ecf3';
-      ctx.font = `700 ${size * 0.03}px system-ui, sans-serif`;
+      ctx.font = `700 ${size * 0.03}px system-ui, "Noto Sans Thai", sans-serif`;
       ctx.fillText(sl.text(), c, c + size * 0.035);
       return;
     }
     const curId = this.highlight || state.tool;
     const cur = [...TOP, ...BOTTOM, ...SHAPES].find((i) => i.id === curId) || TOP[0];
     ctx.fillStyle = TOOL_COLORS[cur.id] || (cur.shape ? TOOL_COLORS.add : '#fff');
-    ctx.font = `700 ${size * 0.034}px system-ui, sans-serif`;
-    ctx.fillText(cur.label, c, c - size * 0.022);
+    ctx.font = `700 ${size * 0.034}px system-ui, "Noto Sans Thai", sans-serif`;
+    ctx.fillText(t(cur.label), c, c - size * 0.022);
     ctx.fillStyle = '#9aa4b5';
-    ctx.font = `500 ${size * 0.02}px system-ui, sans-serif`;
-    ctx.fillText(this.sub ? 'Forma del pincel' : this.highlight === 'add' ? 'Espera: formas…' : info, c, c + size * 0.035);
+    ctx.font = `500 ${size * 0.02}px system-ui, "Noto Sans Thai", sans-serif`;
+    ctx.fillText(this.sub ? t('Forma del pincel') : this.highlight === 'add' ? t('Espera: formas…') : info, c, c + size * 0.035);
   }
 }

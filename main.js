@@ -9,8 +9,10 @@ import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
+import { t, getLang, setLang } from './i18n.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
+const DEFAULT_RES = 320;
 const CHUNK = 32;
 // En el casco la memoria es mucho más justa que en el Mac: menos historial de deshacer.
 const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
@@ -30,7 +32,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
-  color: '#e04f4f', addColor: false, bakeSize: 2048,
+  color: '#cfc6bb', bakeSize: 2048,
 };
 
 // Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
@@ -176,7 +178,7 @@ class Layer {
   constructor(n, shape, opts = {}) {
     this.id = opts.id ?? ++layerSeq;
     layerSeq = Math.max(layerSeq, this.id);
-    this.name = opts.name ?? `Capa ${this.id}`;
+    this.name = opts.name ?? t('Capa {0}', this.id);
     this.color = opts.color ?? LAYER_COLORS[(this.id - 1) % LAYER_COLORS.length];
     this.grid = opts.grid ?? new SDFGrid(n, shape);
     this.group = new THREE.Group();
@@ -339,7 +341,7 @@ class Layer {
   }
 }
 
-let layers = [new Layer(256, 'sphere')];
+let layers = [new Layer(DEFAULT_RES, 'sphere')];
 let active = layers[0];
 const layerById = (id) => layers.find((L) => L.id === id);
 
@@ -354,18 +356,18 @@ function newLayer() {
   layers.push(L);
   setActive(L);
   live.structure();
-  toast(`${L.name} creada (vacía): añade barro con "Añadir"`);
+  toast(t('{0} creada (vacía): añade barro con "Añadir"', L.name));
 }
 
 function nextLayer() {
   setActive(layers[(layers.indexOf(active) + 1) % layers.length]);
   live.structure();
-  toast(`Capa activa: ${active.name}`);
+  toast(t('Capa activa: {0}', active.name));
 }
 
 function deleteLayer(L, ask = true) {
   if (layers.length === 1) return toast('No puedes borrar la única capa');
-  if (ask && !confirm(`¿Borrar ${L.name}? No se puede deshacer.`)) return;
+  if (ask && !confirm(t('¿Borrar {0}? No se puede deshacer.', L.name))) return;
   for (const s of [undoStack, redoStack]) {
     for (let i = s.length - 1; i >= 0; i--) if (s[i].layer === L) s.splice(i, 1);
   }
@@ -527,7 +529,7 @@ function applyAt(p, dt, pressure = 1) {
     rgb: hexToRgb(state.color),
     base: active.base,
   };
-  const usePaint = tool === 'paint' || (tool === 'add' && state.addColor) ? paint : null;
+  const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
   const rot = shapeActive() ? brushRot() : null;
   const opts = rot ? { shape: state.shape, rot } : null;
   brushCall(active, tool, a, p, state.radius, s, state.invert, dt, usePaint, opts);
@@ -548,7 +550,7 @@ function changeRes(dir) {
   active.grid.resample(RES_STEPS[ni]);
   active.rebuildAll();
   live.structure();
-  toast(`${active.name}: resolución ${active.grid.n}³`);
+  toast(t('{0}: resolución {1}³', active.name, active.grid.n));
 }
 
 function resetLayer(shape) {
@@ -568,11 +570,11 @@ function choose(id) {
     case 'shape:sphere': case 'shape:cube': case 'shape:pyramid':
       state.shape = id.slice(6);
       if (state.tool !== 'remove') state.tool = 'add';
-      toast(`Pincel: ${LABELS[id]}`, 1200);
+      toast(t('Pincel: {0}', t(LABELS[id])), 1200);
       break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
-    case 'sym': state.sym = !state.sym; toast(`Simetría ${state.sym ? 'ON' : 'OFF'}`); break;
+    case 'sym': state.sym = !state.sym; toast(state.sym ? 'Simetría ON' : 'Simetría OFF'); break;
     case 'wire':
       state.wire = !state.wire;
       layers.forEach((L) => L.setWire(state.wire));
@@ -605,16 +607,15 @@ async function remeshLayer(L) {
   updateHud();
   const t0 = performance.now();
   const stale = () => L.version !== ver || !layers.includes(L);
-  const prog = (stage, f) => toast(`${L.name} · ${stage}… ${Math.round(f * 100)}%`, 3000);
+  const prog = (stage, f) => toast(`${L.name} · ${t(stage)}… ${Math.round(f * 100)}%`, 3000);
   try {
     const low = await remeshSDF(L.grid, meshArea(hi.positions, hi.quads), state.quads, prog);
     if (stale()) throw new Error('stale');
     await bakeRemesh(L, low, ver);
-    toast(`${L.name}: ${(low.quads.length / 4).toLocaleString('es')} quads + detalle horneado ` +
-      `(${state.bakeSize}px) en ${((performance.now() - t0) / 1000).toFixed(1)} s`, 5000);
+    toast(t('{0}: {1} quads + detalle horneado ({2}px) en {3} s', L.name, (low.quads.length / 4).toLocaleString(), state.bakeSize, ((performance.now() - t0) / 1000).toFixed(1)), 5000);
   } catch (e) {
     if (e.message === 'stale') toast('Has esculpido durante el remesh: vuelve a lanzarlo');
-    else { console.error(e); toast('Remesh falló: ' + e.message); }
+    else { console.error(e); toast(t('Remesh falló: {0}', e.message)); }
   }
   L.busy = false;
   updateHud();
@@ -622,7 +623,7 @@ async function remeshLayer(L) {
 
 // Pone la malla nueva en la capa y hornea el detalle (también al recuperar una obra).
 async function bakeRemesh(L, low, ver = L.version, size = state.bakeSize) {
-  const prog = (stage, f) => toast(`${L.name} · ${stage}… ${Math.round(f * 100)}%`, 3000);
+  const prog = (stage, f) => toast(`${L.name} · ${t(stage)}… ${Math.round(f * 100)}%`, 3000);
   const bake = await bakeMesh(L.grid, low, L.base, size, prog);
   if (L.version !== ver || !layers.includes(L)) throw new Error('stale');
   if (L.remesh?.data.positions !== low.positions) L.setRemesh({ positions: low.positions, normals: low.normals, quads: low.quads });
@@ -638,7 +639,7 @@ async function remeshBlender(L) {
   if (!(await checkServer())) return toast('El remesh usa Blender en el Mac: conéctate a su Wi-Fi');
   L.busy = true;
   const ver = L.version;
-  toast(`Remesh de ${L.name}: Blender trabajando…`, 60000);
+  toast(t('Remesh de {0}: Blender trabajando…', L.name), 60000);
   updateHud();
   try {
     const r = await fetch(API + '/api/remesh?faces=' + state.quads, {
@@ -651,11 +652,11 @@ async function remeshBlender(L) {
     else {
       L.setRemesh(parsed);
       live.structure();
-      toast(`${L.name}: ${parsed.quads.length / 4} quads uniformes (esculpir lo descarta)`);
+      toast(t('{0}: {1} quads uniformes (esculpir lo descarta)', L.name, parsed.quads.length / 4));
     }
   } catch (e) {
     console.error(e);
-    toast('Remesh falló: ' + (e.message || 'sin conexión con el servidor'));
+    toast(t('Remesh falló: {0}', e.message || t('sin conexión con el servidor')));
   }
   L.busy = false;
   updateHud();
@@ -741,7 +742,7 @@ async function exportModel() {
     await sendToMac(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
     await sendToMac(base + '.glb', new Blob([glb], { type: 'model/gltf-binary' }));
     const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
-    toast(`Guardado en el Mac: ${objects.length} capa(s) · ${total} quads`);
+    toast(t('Guardado en el Mac: {0} capa(s) · {1} quads', objects.length, total));
   } catch (e) {
     console.error(e);
     exporting = false;
@@ -780,9 +781,9 @@ async function shareModel() {
   const ok = files.find((f) => navigator.canShare?.({ files: [f] }));
   shareFiles = { share: ok || null, download: files[0] };
   const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
-  $('shareInfo').textContent = `${(ok || files[0]).name} · ${objects.length} capa(s) · ${total.toLocaleString('es')} quads` +
-    (baked ? ' · con texturas' : '') + ` · ${(files[0].size / 1048576).toFixed(1)} MB` +
-    (ok ? '' : '. Este navegador no deja compartir este archivo: descárgalo y adjúntalo desde WhatsApp.');
+  $('shareInfo').textContent = t('{0} · {1} capa(s) · {2} quads', (ok || files[0]).name, objects.length, total.toLocaleString()) +
+    (baked ? t(' · con texturas') : '') + ` · ${(files[0].size / 1048576).toFixed(1)} MB` +
+    (ok ? '' : t('. Este navegador no deja compartir este archivo: descárgalo y adjúntalo desde WhatsApp.'));
   $('shareGo').style.display = ok ? '' : 'none';
   $('share').classList.add('show');
 }
@@ -791,7 +792,7 @@ $('shareGo').onclick = async () => {
     await navigator.share({ files: [shareFiles.share], title: 'La Plastilina' });
     $('share').classList.remove('show');
   } catch (e) {
-    if (e.name !== 'AbortError') toast('No se pudo compartir: ' + e.message);
+    if (e.name !== 'AbortError') toast(t('No se pudo compartir: {0}', e.message));
   }
 };
 $('shareDl').onclick = () => {
@@ -814,7 +815,6 @@ $('stab').oninput = (e) => { state.stab = +e.target.value; updateHud(); };
 strIn.oninput = () => { state.strength = +strIn.value; updateHud(); };
 quadsIn.oninput = () => { state.quads = +quadsIn.value; updateHud(); };
 colorIn.oninput = () => setColor(colorIn.value);
-$('addColor').onchange = (e) => { state.addColor = e.target.checked; updateHud(); };
 $('btnPaint').onclick = () => choose('paint');
 $('btnBase').onclick = () => setLayerBase(active, state.color);
 $('btnUndo').onclick = undo;
@@ -848,7 +848,7 @@ for (const hex of PALETTE) {
   swatchBox.append(s);
 }
 
-const label = (id) => LABELS[id] || id;
+const label = (id) => t(LABELS[id] || id);
 // Carga de la escena: quads en pantalla y memoria de las rejillas (para ver cuánto aguanta el casco).
 let loadCache = null, loadSig = '';
 function sceneLoad() {
@@ -868,7 +868,7 @@ function sceneLoad() {
 function infoText() {
   const { quads, mb } = sceneLoad();
   const k = quads >= 1e6 ? (quads / 1e6).toFixed(1) + 'M' : Math.round(quads / 1000) + 'k';
-  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${state.sym ? ' · simetría' : ''}${state.wire ? ' · malla' : ''}`;
+  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${state.sym ? t(' · simetría') : ''}${state.wire ? t(' · malla') : ''}`;
 }
 
 function renderLayers() {
@@ -883,14 +883,14 @@ function renderLayers() {
     const name = document.createElement('span');
     name.className = 'lname';
     name.textContent = L.name + (L.remesh ? ' ⊞' : '') + (L.busy ? ' …' : '');
-    name.title = 'Doble clic para renombrar';
+    name.title = t('Doble clic para renombrar');
     const res = document.createElement('span');
     res.className = 'lres';
     res.textContent = `${L.grid.n}³`;
     const eye = document.createElement('button');
     eye.className = 'eye';
     eye.textContent = L.visible ? '👁' : '–';
-    eye.title = 'Mostrar / ocultar';
+    eye.title = t('Mostrar / ocultar');
     eye.onclick = (e) => {
       e.stopPropagation();
       L.visible = !L.visible;
@@ -899,7 +899,7 @@ function renderLayers() {
     };
     row.onclick = () => setActive(L);
     name.ondblclick = () => {
-      const v = prompt('Nombre de la capa', L.name);
+      const v = prompt(t('Nombre de la capa'), L.name);
       if (v) { L.name = v.trim().slice(0, 30); updateHud(); live.structure(); }
     };
     row.append(dot, name, res, eye);
@@ -909,26 +909,25 @@ function renderLayers() {
 
 let hudMsg = '', hudMsgUntil = 0;
 function updateHud() {
-  const t = $('tool');
+  const el = $('tool');
   const tool = activeTool();
-  t.textContent = label(tool) + (state.invert ? ' (invertido)' : '');
-  t.style.color = TOOL_COLORS[tool];
+  el.textContent = label(tool) + (state.invert ? ' ' + t('(invertido)') : '');
+  el.style.color = TOOL_COLORS[tool];
   $('info').textContent = infoText();
   sizeIn.value = radiusToT(state.radius);
   $('stab').value = state.stab;
-  $('stabVal').textContent = state.stab ? Math.round(state.stab * 100) + '%' : 'no';
+  $('stabVal').textContent = state.stab ? Math.round(state.stab * 100) + '%' : t('no');
   strIn.value = state.strength;
   quadsIn.value = state.quads;
   colorIn.value = state.color;
-  $('addColor').checked = state.addColor;
   $('btnPaint').classList.toggle('on', state.tool === 'paint');
   $('btnSym').classList.toggle('on', state.sym);
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
-  $('quadsVal').textContent = state.quads.toLocaleString('es');
+  $('quadsVal').textContent = state.quads.toLocaleString();
   for (const s of swatchBox.children) s.classList.toggle('on', s.dataset.hex === state.color);
-  const paintLike = tool === 'paint' || (tool === 'add' && state.addColor);
+  const paintLike = tool === 'paint' || tool === 'add';
   cursor.material.color.set(state.invert ? '#ffffff' : paintLike ? state.color : TOOL_COLORS[tool]);
   renderLayers();
   if (obrasReady) renderObras();
@@ -938,7 +937,8 @@ function updateHud() {
 }
 
 let toastTimer = 0;
-function toast(msg, ms = 2600) {
+function toast(raw, ms = 2600) {
+  const msg = t(raw); // los avisos fijos se traducen aquí
   const el = $('toast');
   el.textContent = msg;
   el.classList.add('show');
@@ -959,7 +959,7 @@ radial.sliders = [
   { id: 'size', label: 'Tamaño', color: '#e8ecf3', get: () => radiusToT(state.radius),
     set: (t) => (state.radius = tToRadius(t)), text: () => String(Math.round(state.radius * 1000) / 10) },
   { id: 'stab', label: 'Estabilizar', color: '#f2c94c', get: () => state.stab,
-    set: (t) => (state.stab = Math.round(t * 20) / 20), text: () => (state.stab ? Math.round(state.stab * 100) + '%' : 'no') },
+    set: (t) => (state.stab = Math.round(t * 20) / 20), text: () => (state.stab ? Math.round(state.stab * 100) + '%' : t('no')) },
 ];
 // Vista previa del tamaño del pincel mientras ajustas el arco de Tamaño: encima del dial, con la
 // forma del pincel y el tamaño que tendrá en pantalla (en las gafas, a tamaño real; ver xrFrame).
@@ -1013,9 +1013,9 @@ function drawPreview() {
   g.stroke();
   g.globalAlpha = 1;
   g.fillStyle = '#e8ecf3';
-  g.font = '600 26px system-ui, sans-serif';
+  g.font = '600 26px system-ui, "Noto Sans Thai", sans-serif';
   g.textAlign = 'center';
-  g.fillText(real > c - 6 ? 'más grande ↗' : 'tamaño real', c, S - 14);
+  g.fillText(t(real > c - 6 ? 'más grande ↗' : 'tamaño real'), c, S - 14);
 }
 
 // Mueve el arco i al ángulo de (x, y) (píxeles del canvas desde el centro).
@@ -1212,7 +1212,7 @@ function pickColor(hit) {
   const L = hit.layer || active;
   const c = L.grid.sampleColor(hit[0], hit[1], hit[2]);
   setColor(c ? rgbToHex(c) : L.color);
-  toast('Color cogido: ' + state.color, 1200);
+  toast(t('Color cogido: {0}', state.color), 1200);
 }
 
 function setModifiers(e) {
@@ -1387,7 +1387,10 @@ async function startXR(mode) {
     scene.background = mode === 'immersive-ar' ? null : new THREE.Color(0x15171c);
     model.position.set(0, 1.1, -0.6);
     model.quaternion.identity();
-    model.scale.setScalar(0.7);
+    model.scale.setScalar(WS.scale);
+    bounds.material.opacity = 0.4;
+    xr.follow = true; // el espacio te sigue con la vista hasta que empiezas a esculpir
+    xr.followSnap = true;
     hud3d.visible = true;
     live.structure();
     session.addEventListener('end', () => {
@@ -1395,6 +1398,7 @@ async function startXR(mode) {
       model.position.set(0, 0, 0);
       model.quaternion.identity();
       model.scale.setScalar(1);
+      bounds.material.opacity = 0.12;
       menu3d.visible = false;
       hud3d.visible = false;
       panel3d.visible = false;
@@ -1403,7 +1407,7 @@ async function startXR(mode) {
     });
   } catch (e) {
     console.error(e);
-    toast('No se pudo entrar en las gafas: ' + e.message);
+    toast(t('No se pudo entrar en las gafas: {0}', e.message));
   }
 }
 
@@ -1483,15 +1487,15 @@ function drawHud3D() {
   g.fill();
   const tool = activeTool();
   g.fillStyle = state.invert ? '#fff' : TOOL_COLORS[tool];
-  g.font = '700 52px system-ui, sans-serif';
+  g.font = '700 52px system-ui, "Noto Sans Thai", sans-serif';
   g.fillText(label(tool) + (state.invert ? ' ⇄' : ''), 26, 66);
   g.fillStyle = state.color;
   g.beginPath();
   g.arc(470, 46, 24, 0, Math.PI * 2);
   g.fill();
   g.fillStyle = '#cfd6e2';
-  g.font = '500 30px system-ui, sans-serif';
-  g.fillText(`${infoText()} · fuerza ${Math.round(state.strength * 100)}%`, 26, 118);
+  g.font = '500 30px system-ui, "Noto Sans Thai", sans-serif';
+  g.fillText(t('{0} · fuerza {1}%', infoText(), Math.round(state.strength * 100)), 26, 118);
   if (performance.now() < hudMsgUntil) {
     g.fillStyle = '#7fb6ff';
     g.fillText(hudMsg, 26, 168);
@@ -1500,7 +1504,7 @@ function drawHud3D() {
 }
 
 // ---------- Panel de la mano izquierda (gafas) ----------
-const PW = 768, PH = 1388;
+const PW = 768, PH = 1528;
 let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
@@ -1509,7 +1513,7 @@ const panel3d = new THREE.Mesh(
   new THREE.PlaneGeometry(0.24, 0.24 * (PH / PW)),
   new THREE.MeshBasicMaterial({ map: panelTex, transparent: true }),
 );
-panel3d.position.set(0.02, 0.17, -0.06);
+panel3d.position.set(0.02, 0.19, -0.06);
 panel3d.rotation.x = -0.35;
 panel3d.visible = false;
 
@@ -1517,7 +1521,7 @@ function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
-  W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' (invertido)' : ''), color: TOOL_COLORS[activeTool()], size: 40 });
+  W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), color: TOOL_COLORS[activeTool()], size: 40 });
   W.push({ type: 'label', x: PW - M, y: 44, text: infoText(), align: 'right', size: 22, weight: 500 });
   W.push({
     type: 'slider', x: M, y: 112, w: IW, h: 30, label: 'Tamaño',
@@ -1532,14 +1536,14 @@ function buildPanel() {
   W.push({
     type: 'slider', x: M, y: 268, w: IW, h: 30, label: 'Estabilizar (línea recta)',
     get: () => state.stab, set: (t) => (state.stab = Math.round(t * 20) / 20),
-    text: () => (state.stab ? Math.round(state.stab * 100) + '%' : 'no'),
+    text: () => (state.stab ? Math.round(state.stab * 100) + '%' : t('no')),
   });
   const tools = TOOL_KEYS;
   const tw = (IW - (tools.length - 1) * 8) / tools.length;
-  tools.forEach((t, i) => W.push({
+  tools.forEach((tl, i) => W.push({
     type: 'button', x: M + i * (tw + 8), y: 318, w: tw, h: 64, size: 18,
-    label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[t] || label(t),
-    active: () => state.tool === t, onClick: () => choose(t),
+    label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[tl] || label(tl),
+    active: () => state.tool === tl, onClick: () => choose(tl),
   }));
   // Forma del pincel de Añadir / Quitar.
   const shw = (IW - 2 * 8) / 3;
@@ -1555,10 +1559,8 @@ function buildPanel() {
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
   const yc = 503 + 2 * (sw * 0.7 + 8) + 4;
-  W.push({ type: 'button', x: M, y: yc, w: IW / 2 - 4, h: 56, label: 'Añadir con color', size: 22,
-    active: () => state.addColor, onClick: () => { state.addColor = !state.addColor; updateHud(); } });
-  W.push({ type: 'button', x: M + IW / 2 + 4, y: yc, w: IW / 2 - 4, h: 56, label: 'Color → base capa', size: 22,
-    onClick: () => setLayerBase(active, state.color) });
+  W.push({ type: 'button', x: M, y: yc, w: IW, h: 56, label: 'Traer el espacio aquí', size: 24,
+    onClick: () => placeWorkspace(true) });
   const yl = yc + 92;
   W.push({ type: 'label', x: M, y: yl, text: 'CAPAS', size: 22 });
   W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
@@ -1570,22 +1572,30 @@ function buildPanel() {
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
   const yo = 1028;
-  W.push({ type: 'label', x: M, y: yo, text: 'OBRA: ' + obraName() + (obraDirty() ? ' •' : ''), size: 22 });
+  W.push({ type: 'label', x: M, y: yo, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 22 });
   const ow = (IW - 3 * 8) / 4;
   [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
     ['Nueva', newObra], ['Compartir', shareModel]]
     .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (ow + 8), y: yo + 22, w: ow, h: 64, label: l, size: 22,
       active: () => i === 0 && obraDirty(), onClick: f }));
-  const yb = PH - 200;
+  const yb = 1188;
   W.push({
     type: 'slider', x: M, y: yb, w: IW, h: 30, label: 'Quads del remesh',
     get: () => (state.quads - 1000) / 59000, set: (t) => (state.quads = Math.round((1000 + t * 59000) / 1000) * 1000),
-    text: () => state.quads.toLocaleString('es'),
+    text: () => state.quads.toLocaleString(),
   });
   const bw = (IW - 5 * 8) / 6;
   [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Remesh', 'remesh'], ['A Blender', 'export']]
     .forEach(([l, id], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: yb + 56, w: bw, h: 64, label: l, size: 19,
       active: () => (id === 'sym' && state.sym) || (id === 'wire' && state.wire), onClick: () => choose(id) }));
+  // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
+  const yi = yb + 150;
+  W.push({ type: 'label', x: M, y: yi, text: 'Idiomas', size: 28, color: '#ffffff' });
+  const lw = (IW - 2 * 8) / 3;
+  [['es', 'Español'], ['en', 'English'], ['th', 'ไทย']].forEach(([l, name], i) => W.push({
+    type: 'button', x: M + i * (lw + 8), y: yi + 22, w: lw, h: 100, label: name, size: 36,
+    active: () => getLang() === l, onClick: () => changeLang(l),
+  }));
   W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   return W;
@@ -1605,6 +1615,18 @@ function buildObrasPage() {
   W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
     text: 'Abrir otra guarda antes la actual' });
   return W;
+}
+
+// Cambiar de idioma: el HTML se traduce solo; los lienzos se redibujan.
+function changeLang(l) {
+  setLang(l, () => {
+    updateHud();
+    drawHud3D();
+    if (panel3d.visible) drawPanel();
+    if (SPECTATOR) setSpecBg(spec.bg);
+    if (!webcam?.rec && SPECTATOR) $('recBtn').textContent = t('● Grabar');
+    document.querySelectorAll('[data-lang]').forEach((b) => b.classList.toggle('on', b.dataset.lang === getLang()));
+  });
 }
 
 function drawPanel() {
@@ -1644,6 +1666,31 @@ function closeRadial3D(pick) {
   if (pick && radial.highlight) choose(radial.highlight);
 }
 
+// Espacio de trabajo: grande, a tu alrededor y delante de ti. Mientras no empiezas a esculpir te
+// sigue con la vista (suave); en cuanto tocas algo se queda quieto para no marear.
+const WS = { scale: 1.3, dist: 0.6, drop: 0.25 };
+const wsHead = new THREE.Vector3(), wsDir = new THREE.Vector3(), wsPos = new THREE.Vector3(), wsQ = new THREE.Quaternion();
+const wsUp = new THREE.Vector3(0, 1, 0);
+function placeWorkspace(snap, dt = 0) {
+  const cam = renderer.xr.getCamera();
+  cam.getWorldPosition(wsHead);
+  if (wsHead.lengthSq() < 1e-6) return; // aún no hay pose de cabeza
+  cam.getWorldDirection(wsDir);
+  wsDir.y = 0;
+  if (wsDir.lengthSq() < 0.04) return; // mirando recto arriba o abajo: se queda como está
+  wsDir.normalize();
+  wsPos.copy(wsHead).addScaledVector(wsDir, WS.dist);
+  wsPos.y -= WS.drop;
+  wsQ.setFromAxisAngle(wsUp, Math.atan2(-wsDir.x, -wsDir.z));
+  const first = xr.followSnap || snap;
+  const k = first ? 1 : 1 - Math.exp(-dt * 3);
+  model.position.lerp(wsPos, k);
+  model.quaternion.slerp(wsQ, k);
+  xr.followSnap = false;
+  if (snap) xr.follow = false;
+  model.updateMatrixWorld();
+}
+
 function xrFrame(dt) {
   let right = null, left = null;
   for (const c of ctrls) {
@@ -1657,9 +1704,13 @@ function xrFrame(dt) {
   if (right && ray.parent !== right) right.add(ray);
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
 
-  // Grips: uno agarra y mueve el modelo; los dos a la vez lo escalan (más grande / más pequeño).
+  if (xr.follow) placeWorkspace(false, dt);
+
+  // Grips: uno agarra y mueve el modelo (palanca adelante/atrás = más grande/más pequeño);
+  // los dos a la vez también lo escalan, separando las manos.
   const gL = !!gpL?.buttons[1]?.pressed, gR = !!gpR?.buttons[1]?.pressed;
   const mode = gL && gR ? 'scale' : gL ? 'grabL' : gR ? 'grabR' : 'none';
+  if (mode !== 'none') xr.follow = false;
   if (mode !== xr.grabMode) {
     xr.grabMode = mode;
     model.updateMatrixWorld();
@@ -1677,7 +1728,13 @@ function xrFrame(dt) {
   }
   if (mode === 'grabL' || mode === 'grabR') {
     const c = mode === 'grabL' ? left : right;
-    tmpM.multiplyMatrices(c.matrixWorld, grabOffset).decompose(model.position, model.quaternion, tmpS);
+    const stick = (mode === 'grabL' ? gpL : gpR).axes[3] || 0;
+    if (Math.abs(stick) > 0.2) {
+      // Se escala alrededor de la mano que agarra.
+      const f = THREE.MathUtils.clamp(Math.exp(-stick * dt * 1.5), 0.05 / model.scale.x, 8 / model.scale.x);
+      grabOffset.premultiply(tmpM.makeScale(f, f, f));
+    }
+    tmpM.multiplyMatrices(c.matrixWorld, grabOffset).decompose(model.position, model.quaternion, model.scale);
   } else if (mode === 'scale') {
     vA.setFromMatrixPosition(left.matrixWorld);
     vB.setFromMatrixPosition(right.matrixWorld);
@@ -1702,7 +1759,8 @@ function xrFrame(dt) {
       if (panel3d.visible) drawPanel();
     }
     xr.lStickPrev = lStick;
-    const sx = gpL.axes[2] || 0, sy = gpL.axes[3] || 0;
+    const grabbing = mode !== 'none'; // con grip, el stick es para escalar
+    const sx = grabbing ? 0 : gpL.axes[2] || 0, sy = grabbing ? 0 : gpL.axes[3] || 0;
     if (xr.flick === 0 && Math.abs(sx) > 0.75 && Math.abs(sx) > Math.abs(sy)) {
       xr.flick = sx < 0 ? -1 : 1;
       sx < 0 ? undo() : redo();
@@ -1787,7 +1845,7 @@ function xrFrame(dt) {
 
   // Stick derecho ↑/↓ = tamaño del pincel (o de la capa agarrada con Mover).
   if (Math.abs(ay) > 0.2 && moveOp.L) scaleMove(Math.exp(-ay * dt * 1.2));
-  else if (Math.abs(ay) > 0.2) {
+  else if (Math.abs(ay) > 0.2 && !gR) {
     state.radius = clampRadius(state.radius * (1 - ay * dt * 1.5));
     drawHud3D();
   }
@@ -1800,12 +1858,20 @@ function xrFrame(dt) {
     cursorMirror.scale.setScalar(state.radius);
     cursorMirror.visible = true;
   }
+  if (trig > 0.08) xr.follow = false;
   if (state.tool === 'move') {
     xrMove(right, gpR, tipL, trigDown);
     return;
   }
   if (trig > 0.08) {
-    if (!xr.stroking) { beginStroke(); xr.stroking = true; }
+    if (!xr.stroking) {
+      beginStroke();
+      xr.stroking = true;
+      if (Math.max(Math.abs(tipL[0]), Math.abs(tipL[1]), Math.abs(tipL[2])) > 0.5) {
+        toast('Estás fuera del espacio de trabajo: acércate al cubo');
+        gpR.hapticActuators?.[0]?.pulse?.(0.8, 120);
+      }
+    }
     const q = stabilize(tipL);
     cursor.position.fromArray(q);
     if (state.sym) cursorMirror.position.set(-q[0], q[1], q[2]);
@@ -1980,7 +2046,7 @@ function applySnapshot(buf) {
   }
   active = layerById(meta.active) || layers[0];
   synced = true;
-  if (SPECTATOR) $('specStatus').textContent = 'En directo';
+  if (SPECTATOR) $('specStatus').textContent = t('En directo');
 }
 
 function applyPatch(buf) {
@@ -2075,34 +2141,34 @@ function setSpecBg(name) {
   const names = Object.keys(BGS);
   spec.bg = name || names[(names.indexOf(spec.bg) + 1) % names.length];
   if (!webcam.active) scene.background = new THREE.Color(BGS[spec.bg]);
-  $('specBg').textContent = 'Fondo: ' + spec.bg;
+  $('specBg').textContent = t('Fondo: {0}', t(spec.bg));
 }
 
 async function fillCams() {
   const sel = $('camSel'), cur = sel.value;
   const cams = await webcam.devices();
-  sel.innerHTML = cams.map((c, i) => `<option value="${c.deviceId}">${c.label || 'Cámara ' + (i + 1)}</option>`).join('');
+  sel.innerHTML = cams.map((c, i) => `<option value="${c.deviceId}">${c.label || t('Cámara {0}', i + 1)}</option>`).join('');
   const active = webcam.stream?.getVideoTracks()[0]?.getSettings().deviceId;
   sel.value = active || cur || sel.value;
 }
 async function toggleRecord() {
   const b = $('recBtn');
   if (webcam.rec) {
-    b.textContent = 'Guardando…';
+    b.textContent = t('Guardando…');
     await webcam.stopRecord();
-    b.textContent = '● Grabar';
+    b.textContent = t('● Grabar');
     b.classList.remove('rec');
     return;
   }
   if (!(await webcam.record({ mic: $('recMic').checked }))) return;
-  b.textContent = '■ Parar';
+  b.textContent = t('■ Parar');
   b.classList.add('rec');
 }
 function recTimer() {
   const r = webcam.rec;
   if (!r) return;
   const s = Math.floor((performance.now() - r.t0) / 1000);
-  $('recBtn').textContent = `■ Parar ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} · ${(r.bytes / 1048576).toFixed(0)} MB`;
+  $('recBtn').textContent = t('■ Parar {0}', `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} · ${(r.bytes / 1048576).toFixed(0)} MB`);
 }
 
 function spectatorFrame(dt) {
@@ -2240,15 +2306,15 @@ async function restoreScene() {
 // "Guardar" guarda la obra abierta; abrir otra o empezar una nueva guarda antes la actual.
 
 const obraDirty = () => sceneSig() !== obraSig;
-const obraName = () => obras.find((o) => o.id === obraId)?.name || 'sin guardar';
-const fmtDate = (t) => new Date(t).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const obraName = () => obras.find((o) => o.id === obraId)?.name || t('sin guardar');
+const fmtDate = (d) => new Date(d).toLocaleString(getLang(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 async function saveObra(asNew = false, quiet = false) {
   if (sculpting) return;
   let o = !asNew && obras.find((x) => x.id === obraId);
   if (!o) {
-    const num = Math.max(0, ...obras.map((x) => +(x.name.match(/^Obra (\d+)$/)?.[1] || 0))) + 1;
-    o = { id: Date.now(), name: `Obra ${num}` };
+    const num = Math.max(0, ...obras.map((x) => +(x.name.match(/ (\d+)$/)?.[1] || 0))) + 1;
+    o = { id: Date.now(), name: t('Obra {0}', num) };
     obras.push(o);
   }
   try {
@@ -2261,10 +2327,10 @@ async function saveObra(asNew = false, quiet = false) {
     obraId = o.id;
     obraSig = sceneSig();
     await idbSet('escenaMeta', { obraId, dirty: false });
-    if (!quiet) toast(`Guardado: ${o.name} (en las gafas)`);
+    if (!quiet) toast(t('Guardado: {0} (en las gafas)', o.name));
   } catch (e) {
     console.error(e);
-    toast('No se pudo guardar: ' + e.message);
+    toast(t('No se pudo guardar: {0}', e.message));
   }
   updateHud();
 }
@@ -2287,13 +2353,13 @@ async function openObra(id) {
   await idbSet('escenaMeta', { obraId, dirty: false });
   updateHud();
   live.structure();
-  toast(`Abierta: ${obraName()}`);
+  toast(t('Abierta: {0}', obraName()));
 }
 
 async function newObra() {
   if (obraDirty()) await saveObra(false, true);
   layers.forEach((L) => L.dispose());
-  layers = [new Layer(256, 'sphere')];
+  layers = [new Layer(DEFAULT_RES, 'sphere')];
   active = layers[0];
   resetHistory();
   obraId = null;
@@ -2306,7 +2372,7 @@ async function newObra() {
 
 async function deleteObra(id) {
   const o = obras.find((x) => x.id === id);
-  if (!o || !confirm(`¿Borrar ${o.name} de las gafas? No se puede deshacer.`)) return;
+  if (!o || !confirm(t('¿Borrar {0} de las gafas? No se puede deshacer.', o.name))) return;
   await idbDel('obra:' + id);
   obras = obras.filter((x) => x !== o);
   await idbSet('obras', obras);
@@ -2321,14 +2387,14 @@ function renderObras() {
   for (const o of obras) {
     const row = document.createElement('div');
     row.className = 'obra' + (o.id === obraId ? ' active' : '');
-    row.innerHTML = '<span class="lname"></span><span class="lres"></span><button class="eye" title="Borrar">✕</button>';
+    row.innerHTML = '<span class="lname"></span><span class="lres"></span><button class="eye" title="' + t('Borrar') + '">✕</button>';
     row.children[0].textContent = o.name;
-    row.children[0].title = 'Doble clic para renombrar';
+    row.children[0].title = t('Doble clic para renombrar');
     row.children[1].textContent = fmtDate(o.date);
     row.onclick = () => openObra(o.id);
     row.children[0].ondblclick = async (e) => {
       e.stopPropagation();
-      const v = prompt('Nombre de la obra', o.name);
+      const v = prompt(t('Nombre de la obra'), o.name);
       if (v) { o.name = v.trim().slice(0, 30); await idbSet('obras', obras); updateHud(); }
     };
     row.children[2].onclick = (e) => { e.stopPropagation(); deleteObra(o.id); };
@@ -2364,5 +2430,8 @@ if ('serviceWorker' in navigator && window.isSecureContext && !SPECTATOR) {
 
 updateHud();
 if (!window.isSecureContext && !SPECTATOR) toast('Abre la app por https:// para usar las gafas');
+document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => changeLang(b.dataset.lang)));
+changeLang(getLang());
+
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), webcam, setSpecView: SPECTATOR ? setSpecView : null, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, renderer, setSpecView: SPECTATOR ? setSpecView : null, spectatorPose: SPECTATOR ? spectatorPose : null };

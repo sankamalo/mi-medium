@@ -1,6 +1,8 @@
 // Mini interfaz dibujada en un canvas, para usarla dentro de las gafas
 // (se apunta con el rayo del mando derecho y se pulsa con el gatillo).
 //
+import { t } from './i18n.js';
+
 // Widgets: { type: 'label' | 'button' | 'slider' | 'swatch', x, y, w, h, ... }
 //   button: label, active(), onClick()     slider: label, get() 0..1, set(t), text()
 //   swatch: color, active(), onClick()     label: text, color, size
@@ -62,9 +64,9 @@ export class CanvasPanel {
       const hov = i === this.hover;
       if (w.type === 'label') {
         g.fillStyle = w.color || '#9aa4b5';
-        g.font = `${w.weight || 700} ${w.size || 26}px system-ui, sans-serif`;
+        g.font = `${w.weight || 700} ${w.size || 26}px system-ui, "Noto Sans Thai", sans-serif`;
         g.textAlign = w.align || 'left';
-        g.fillText(w.text, w.x, w.y);
+        g.fillText(t(w.text), w.x, w.y);
       } else if (w.type === 'button') {
         const on = w.active?.();
         g.fillStyle = on ? '#3d8bff' : hov ? '#3a414e' : '#2a2f39';
@@ -77,9 +79,9 @@ export class CanvasPanel {
           g.fill();
         }
         g.fillStyle = w.textColor || '#e8ecf3';
-        g.font = `600 ${w.size || 26}px system-ui, sans-serif`;
+        g.font = `600 ${w.size || 26}px system-ui, "Noto Sans Thai", sans-serif`;
         g.textAlign = w.dot ? 'left' : 'center';
-        g.fillText(w.label, w.dot ? w.x + 48 : w.x + w.w / 2, w.y + w.h / 2 + 1);
+        g.fillText(t(w.label), w.dot ? w.x + 48 : w.x + w.w / 2, w.y + w.h / 2 + 1);
       } else if (w.type === 'swatch') {
         g.fillStyle = w.color;
         round(g, w.x, w.y, w.w, w.h, 12);
@@ -90,18 +92,18 @@ export class CanvasPanel {
           g.stroke();
         }
       } else if (w.type === 'slider') {
-        const t = w.get();
+        const v = w.get();
         g.fillStyle = '#9aa4b5';
-        g.font = '600 24px system-ui, sans-serif';
+        g.font = '600 24px system-ui, "Noto Sans Thai", sans-serif';
         g.textAlign = 'left';
-        g.fillText(w.label, w.x, w.y - 18);
+        g.fillText(t(w.label), w.x, w.y - 18);
         g.textAlign = 'right';
-        g.fillText(w.text?.() ?? '', w.x + w.w, w.y - 18);
+        g.fillText(t(w.text?.() ?? ''), w.x + w.w, w.y - 18);
         g.fillStyle = '#2a2f39';
         round(g, w.x, w.y, w.w, w.h, w.h / 2);
         g.fill();
         g.fillStyle = hov || this.drag === w ? '#5aa0ff' : '#3d8bff';
-        round(g, w.x, w.y, Math.max(w.h, w.w * t), w.h, w.h / 2);
+        round(g, w.x, w.y, Math.max(w.h, w.w * v), w.h, w.h / 2);
         g.fill();
       }
     });

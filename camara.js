@@ -8,6 +8,7 @@
 // - Grabación: el lienzo (vídeo + escultura) se graba y se va guardando en el Mac a trozos
 //   (carpeta grabaciones/), así no se pierde nada si algo se cuelga.
 import * as THREE from 'three';
+import { t } from './i18n.js';
 
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
@@ -176,7 +177,7 @@ export function createWebcam(ctx) {
         audio: false,
       });
     } catch (e) {
-      toast('No puedo abrir la cámara: ' + e.message, 5000);
+      toast(t('No puedo abrir la cámara: {0}', e.message), 5000);
       return false;
     }
     const track = rig.stream.getVideoTracks()[0];
@@ -317,19 +318,19 @@ export function createWebcam(ctx) {
     const [w, h] = rig.size();
     const samples = [];
     ui.open();
-    ui.say('Ponte las gafas y coge <b>un solo mando</b> (deja el otro quieto).<br>' +
+    ui.say(t('Ponte las gafas y coge <b>un solo mando</b> (deja el otro quieto).<br>' +
       'En cada foto pon la punta del mando en un sitio <b>que se vea en la webcam</b> y quédate quieto.<br>' +
-      'Cambia de sitio en cada una: cerca, lejos, arriba, abajo, a los lados.', 'Empezamos en 5 s…');
+      'Cambia de sitio en cada una: cerca, lejos, arriba, abajo, a los lados.'), t('Empezamos en 5 s…'));
     beep(440, 0.2);
     for (let s = 5; s > 0 && !ui.cancelled; s--) { ui.big(s); await sleep(1000); }
     for (let i = 0; i < shots && !ui.cancelled; i++) {
-      for (let s = 3; s > 0 && !ui.cancelled; s--) { ui.big(s); ui.sub(`Foto ${i + 1} de ${shots}: muévete a otro sitio`); beep(520); await sleep(900); }
+      for (let s = 3; s > 0 && !ui.cancelled; s--) { ui.big(s); ui.sub(t('Foto {0} de {1}: muévete a otro sitio', i + 1, shots)); beep(520); await sleep(900); }
       // Espera a que esté quieto (hasta 4 s).
       const t0 = performance.now();
-      while (!still() && performance.now() - t0 < 4000 && !ui.cancelled) { ui.big('…'); ui.sub('Quieto…'); await sleep(100); }
+      while (!still() && performance.now() - t0 < 4000 && !ui.cancelled) { ui.big('…'); ui.sub(t('Quieto…')); await sleep(100); }
       if (ui.cancelled) break;
       const pose = rig.delayed();
-      if (!pose || !pose.hands.some(Boolean)) { ui.sub('No llegan los mandos de las gafas'); await sleep(1200); i--; if (performance.now() - t0 > 30000) break; continue; }
+      if (!pose || !pose.hands.some(Boolean)) { ui.sub(t('No llegan los mandos de las gafas')); await sleep(1200); i--; if (performance.now() - t0 > 30000) break; continue; }
       const cv = document.createElement('canvas');
       cv.width = w; cv.height = h;
       cv.getContext('2d').drawImage(video, 0, 0, w, h);
@@ -352,19 +353,18 @@ export function createWebcam(ctx) {
     beep(440, 0.3);
     const pts = [];
     for (let i = 0; i < samples.length && !ui.cancelled; i++) {
-      const uv = await ui.pick(samples[i].img, `Foto ${i + 1} de ${samples.length}: haz clic en la <b>punta del mando</b> (el centro del aro). ` +
-        'Si no se ve, pulsa "Saltar".');
+      const uv = await ui.pick(samples[i].img, t('Foto {0} de {1}: haz clic en la <b>punta del mando</b> (el centro del aro). Si no se ve, pulsa "Saltar".', i + 1, samples.length));
       if (uv) pts.push({ p: samples[i].hands[hand], u: uv[0], v: uv[1], i });
     }
     if (ui.cancelled) { ui.close(); return; }
     if (pts.length < 5) { ui.close(); toast('Hacen falta al menos 5 clics'); return; }
-    ui.say('Calculando…', '');
+    ui.say(t('Calculando…'), '');
     await sleep(30);
     const c = calibrate(pts, w, h);
     const ok = c.rms < Math.max(12, h * 0.02);
-    const msg = `Error medio: ${c.rms.toFixed(1)} px · lente ${c.fov.toFixed(1)}° · cámara a ${new THREE.Vector3(...c.pos).distanceTo(new THREE.Vector3(...pts[0].p)).toFixed(2)} m`;
+    const msg = t('Error medio: {0} px · lente {1}° · cámara a {2} m', c.rms.toFixed(1), c.fov.toFixed(1), new THREE.Vector3(...c.pos).distanceTo(new THREE.Vector3(...pts[0].p)).toFixed(2));
     const accept = await ui.result(samples[pts[0].i].img, pts, c.reproj,
-      (ok ? 'Calibrada ✔ ' : 'Algo no cuadra (¿algún clic fuera de sitio?). ') + msg);
+      t(ok ? 'Calibrada ✔ ' : 'Algo no cuadra (¿algún clic fuera de sitio?). ') + msg);
     ui.close();
     if (!accept) return;
     rig.calib = { pos: c.pos, quat: c.quat, fov: c.fov, w, h, rms: c.rms, date: Date.now() };
@@ -427,8 +427,8 @@ export function createWebcam(ctx) {
         a.download = rec.name;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-        toast('Grabación descargada: ' + rec.name, 5000);
-      } else toast('Grabación guardada en ' + (rec.saved || 'grabaciones/' + rec.name), 6000);
+        toast(t('Grabación descargada: {0}', rec.name), 5000);
+      } else toast(t('Grabación guardada en {0}', rec.saved || 'grabaciones/' + rec.name), 6000);
       rig.rec = null;
       resolve(rec);
     };
@@ -476,7 +476,7 @@ export function calibUI() {
     if (ui.cancelled) done(null);
   });
   ui.result = (img, pts, reproj, text) => new Promise((resolve) => {
-    ui.say(text + '<br><small>Rosa = tus clics · verde = donde cae el mando con la calibración.</small>');
+    ui.say(text + `<br><small>${t('Rosa = tus clics · verde = donde cae el mando con la calibración.')}</small>`);
     cv.style.display = '';
     fit(img);
     const r = cv.width / 90;
