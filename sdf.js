@@ -1,5 +1,6 @@
 // Rejilla de vóxeles con distancia con signo (SDF), como el "barro" de Medium.
-// Espacio local: cubo [-0.5, 0.5]^3. Negativo = dentro del material.
+// Espacio local: empieza siendo el cubo [-0.5, 0.5]^3 y crece solo si te acercas al borde (grow),
+// sin cambiar el tamaño del vóxel. Una muestra (x,y,z) está en o + x*h. Negativo = dentro del material.
 //
 // Es DISPERSA: se guarda en bloques de 8x8x8 y solo existen los bloques cerca de la
 // superficie. Los bloques vacíos guardan un único signo (todo dentro / todo fuera).
@@ -79,21 +80,65 @@ export class SDFGrid {
     this.view = null;
     this.n = n;
     this.h = 1 / (n - 1);
+    this.o = -0.5;
     this.band = 4 * this.h;
-    this.nb = Math.ceil(n / B);
+    this.alloc();
+  }
+
+  // Vacía la rejilla con el tamaño que tiene.
+  alloc() {
+    this.nb = Math.ceil(this.n / B);
     this.bricks = new Array(this.nb ** 3).fill(null);
     this.colors = new Array(this.nb ** 3).fill(null);
     this.fill = new Int8Array(this.nb ** 3).fill(1);
   }
 
+  // La resolución que elige el usuario: lo que define el tamaño del vóxel, no cuánto espacio ocupa.
+  get res() { return Math.round(1 / this.h) + 1; }
+
+  // Añade S muestras (múltiplo de 8) por cada lado sin tocar lo que hay. Devuelve cómo se traduce
+  // el número de un bloque antiguo al nuevo (para el historial de deshacer).
+  grow(S) {
+    const k = S / B, onb = this.nb, { bricks, colors, fill } = this;
+    this.n += 2 * S;
+    this.o -= S * this.h;
+    this.alloc();
+    const nb = this.nb;
+    const remap = (bi) => (bi % onb) + k + nb * ((Math.floor(bi / onb) % onb) + k + nb * (Math.floor(bi / (onb * onb)) + k));
+    for (let bi = 0; bi < onb ** 3; bi++) {
+      if (!bricks[bi] && !colors[bi] && fill[bi] === 1) continue;
+      const ni = remap(bi);
+      this.bricks[ni] = bricks[bi];
+      this.colors[ni] = colors[bi];
+      this.fill[ni] = fill[bi];
+    }
+    return remap;
+  }
+
+  // Caja que ocupa la plastilina, en espacio local (null si la capa está vacía).
+  occupied() {
+    const { nb, bricks, fill, h, o } = this;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    let i = 0;
+    for (let z = 0; z < nb; z++) for (let y = 0; y < nb; y++) for (let x = 0; x < nb; x++, i++) {
+      if (!bricks[i] && fill[i] > 0) continue;
+      [x, y, z].forEach((v, a) => {
+        lo[a] = Math.min(lo[a], o + v * B * h);
+        hi[a] = Math.max(hi[a], o + (v * B + B) * h);
+      });
+    }
+    return lo[0] === Infinity ? null : { lo, hi };
+  }
+
   // Estado completo por referencia (para deshacer cambios de resolución sin copiar).
   state() {
-    const { n, bricks, colors, fill } = this;
-    return { n, bricks, colors, fill };
+    const { n, h, o, bricks, colors, fill } = this;
+    return { n, h, o, bricks, colors, fill };
   }
   setState(s) {
     this.n = s.n;
-    this.h = 1 / (s.n - 1);
+    this.h = s.h;
+    this.o = s.o;
     this.band = 4 * this.h;
     this.nb = Math.ceil(s.n / B);
     this.bricks = s.bricks;
@@ -166,7 +211,7 @@ export class SDFGrid {
   // bloque entero cae dentro/fuera (para saltárselo), o 0 si hay que calcularlo.
   // colorFn(x,y,z) -> [r,g,b,a] | null copia color (al cambiar de resolución).
   build(fn, uniform, colorFn) {
-    const { nb, n, h, band } = this;
+    const { nb, n, h, o, band } = this;
     for (let bz = 0; bz < nb; bz++)
       for (let by = 0; by < nb; by++)
         for (let bx = 0; bx < nb; bx++) {
@@ -178,7 +223,7 @@ export class SDFGrid {
           let allIn = true, allOut = true;
           for (let k = 0; k < B3; k++) {
             const x = bx * B + (k & 7), y = by * B + ((k >> 3) & 7), z = bz * B + (k >> 6);
-            let d = fn(-0.5 + x * h, -0.5 + y * h, -0.5 + z * h);
+            let d = fn(o + x * h, o + y * h, o + z * h);
             d = Math.max(-band, Math.min(band, d));
             if (x <= 0 || y <= 0 || z <= 0 || x >= n - 1 || y >= n - 1 || z >= n - 1) d = Math.max(d, h * 0.5);
             b[k] = d;
@@ -191,7 +236,7 @@ export class SDFGrid {
             let c = null;
             for (let k = 0; k < B3; k++) {
               const x = bx * B + (k & 7), y = by * B + ((k >> 3) & 7), z = bz * B + (k >> 6);
-              const col = colorFn(-0.5 + x * h, -0.5 + y * h, -0.5 + z * h);
+              const col = colorFn(o + x * h, o + y * h, o + z * h);
               if (!col) continue;
               if (!c) c = new Uint8Array(B3 * 4);
               c.set(col, k * 4);
@@ -206,7 +251,7 @@ export class SDFGrid {
     this.build(
       (x, y, z) => Math.sqrt(x * x + y * y + z * z) - radius,
       (bx, by, bz) => {
-        const c = (i) => -0.5 + (i * B + (B - 1) / 2) * this.h;
+        const c = (i) => this.o + (i * B + (B - 1) / 2) * this.h;
         const d = Math.hypot(c(bx), c(by), c(bz)) - radius;
         return d > rb ? 1 : d < -rb ? -1 : 0;
       },
@@ -215,7 +260,7 @@ export class SDFGrid {
 
   sample(px, py, pz) {
     const n = this.n, s = n - 1;
-    const fx = (px + 0.5) * s, fy = (py + 0.5) * s, fz = (pz + 0.5) * s;
+    const fx = (px - this.o) / this.h, fy = (py - this.o) / this.h, fz = (pz - this.o) / this.h;
     if (fx < 0 || fy < 0 || fz < 0 || fx > s || fy > s || fz > s) return this.band;
     const x = Math.min(fx | 0, n - 2), y = Math.min(fy | 0, n - 2), z = Math.min(fz | 0, n - 2);
     const tx = fx - x, ty = fy - y, tz = fz - z;
@@ -231,7 +276,7 @@ export class SDFGrid {
   // Color (RGBA 0-255) de la muestra más cercana; null si no está pintada.
   sampleColor(px, py, pz) {
     const s = this.n - 1;
-    const cl = (v) => Math.max(0, Math.min(s, Math.round((v + 0.5) * s)));
+    const cl = (v) => Math.max(0, Math.min(s, Math.round((v - this.o) / this.h)));
     const x = cl(px), y = cl(py), z = cl(pz);
     const c = this.colors[(x >> 3) + this.nb * ((y >> 3) + this.nb * (z >> 3))];
     if (!c) return null;
@@ -248,17 +293,27 @@ export class SDFGrid {
     return [gx / l, gy / l, gz / l];
   }
 
-  // Cambia la resolución conservando la forma y el color.
-  resample(newN) {
+  // Muestras que hacen falta para cubrir el mismo espacio con otra resolución.
+  samplesFor(res) {
+    return Math.max(res, Math.ceil(((this.n - 1) * this.h * (res - 1) + 1) / B) * B);
+  }
+
+  // Cambia la resolución conservando la forma, el color y el espacio que cubre.
+  resample(res) {
     const old = new SDFGrid(2, 'empty');
     old.setState(this.state());
-    this.setResolution(newN);
-    const ratio = (old.n - 1) / (newN - 1);
+    this.n = this.samplesFor(res);
+    this.h = 1 / (res - 1);
+    this.o = -((this.n - 1) * this.h) / 2;
+    this.band = 4 * this.h;
+    this.view = null;
+    this.alloc();
+    const at = (i) => (this.o + i * B * this.h - old.o) / old.h;
     this.build(
       (x, y, z) => old.sample(x, y, z),
       (bx, by, bz) => {
-        const lo = (i) => Math.max(0, Math.floor(i * B * ratio) - 1);
-        const hi = (i) => Math.min(old.n - 1, Math.ceil((i * B + B) * ratio) + 1);
+        const lo = (i) => Math.max(0, Math.min(old.n - 1, Math.floor(at(i)) - 1));
+        const hi = (i) => Math.max(0, Math.min(old.n - 1, Math.ceil(at(i + 1)) + 1));
         if (!old.regionUniform(lo(bx), lo(by), lo(bz), hi(bx), hi(by), hi(bz))) return 0;
         return old.fill[(lo(bx) >> 3) + old.nb * ((lo(by) >> 3) + old.nb * (lo(bz) >> 3))];
       },
@@ -272,8 +327,9 @@ export class SDFGrid {
   applyTransform(inv, scale = 1) {
     const old = new SDFGrid(2, 'empty');
     old.setState(this.state());
-    this.setResolution(this.n);
-    const e = inv, s = old.n - 1, h = this.h;
+    this.view = null;
+    this.alloc();
+    const e = inv, s = old.n - 1, h = this.h, g0 = this.o;
     const tp = (x, y, z) => [
       e[0] * x + e[4] * y + e[8] * z + e[12],
       e[1] * x + e[5] * y + e[9] * z + e[13],
@@ -285,10 +341,10 @@ export class SDFGrid {
         // Caja (en vóxeles de antes) que ocupa este bloque una vez girado.
         const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
         for (let c = 0; c < 8; c++) {
-          const p = tp(-0.5 + (bx * B + (c & 1) * (B - 1)) * h, -0.5 + (by * B + ((c >> 1) & 1) * (B - 1)) * h,
-            -0.5 + (bz * B + (c >> 2) * (B - 1)) * h);
+          const p = tp(g0 + (bx * B + (c & 1) * (B - 1)) * h, g0 + (by * B + ((c >> 1) & 1) * (B - 1)) * h,
+            g0 + (bz * B + (c >> 2) * (B - 1)) * h);
           for (let a = 0; a < 3; a++) {
-            const v = (p[a] + 0.5) * s;
+            const v = (p[a] - old.o) / old.h;
             lo[a] = Math.min(lo[a], Math.floor(v) - 1);
             hi[a] = Math.max(hi[a], Math.ceil(v) + 1);
           }
@@ -307,12 +363,13 @@ export class SDFGrid {
   // Rayo (local) contra la superficie. Devuelve [x,y,z, t] o null.
   raymarch(o, d) {
     let t0 = -Infinity, t1 = Infinity;
+    const g0 = this.o, g1 = this.o + (this.n - 1) * this.h;
     for (let a = 0; a < 3; a++) {
       if (Math.abs(d[a]) < 1e-9) {
-        if (o[a] < -0.5 || o[a] > 0.5) return null;
+        if (o[a] < g0 || o[a] > g1) return null;
         continue;
       }
-      let ta = (-0.5 - o[a]) / d[a], tb = (0.5 - o[a]) / d[a];
+      let ta = (g0 - o[a]) / d[a], tb = (g1 - o[a]) / d[a];
       if (ta > tb) [ta, tb] = [tb, ta];
       t0 = Math.max(t0, ta);
       t1 = Math.min(t1, tb);
@@ -340,7 +397,7 @@ export class SDFGrid {
   // copia de simetría, para que la textura salga reflejada igual que la forma).
   // 'pinch' junta el barro hacia la línea del trazo; 'crease' además hunde un surco.
   applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
-    const { n, h, band, nb, bricks, colors, fill } = this;
+    const { n, h, o, band, nb, bricks, colors, fill } = this;
     const shape = (tool === 'add' || tool === 'remove') && opts?.shape && opts.shape !== 'sphere' ? opts.shape : null;
     const tex = opts?.texture ? TEXTURES[opts.texture] : null;
     const period = Math.max(r * 0.7, 6 * h);
@@ -356,8 +413,8 @@ export class SDFGrid {
     const back = tool === 'grab' ? [2 * a[0] - b[0], 2 * a[1] - b[1], 2 * a[2] - b[2]] : a;
     const lo = [0, 0, 0], hi = [0, 0, 0];
     for (let i = 0; i < 3; i++) {
-      lo[i] = Math.max(0, Math.floor((Math.min(a[i], b[i], back[i]) - reach + 0.5) / h) - 1);
-      hi[i] = Math.min(n - 1, Math.ceil((Math.max(a[i], b[i], back[i]) + reach + 0.5) / h) + 1);
+      lo[i] = Math.max(0, Math.floor((Math.min(a[i], b[i], back[i]) - reach - o) / h) - 1);
+      hi[i] = Math.min(n - 1, Math.ceil((Math.max(a[i], b[i], back[i]) + reach - o) / h) + 1);
       if (lo[i] > hi[i]) return null;
     }
     let op = tool;
@@ -423,7 +480,7 @@ export class SDFGrid {
           if (!bricks[bi]) {
             // Saltar bloques vacíos que la herramienta no puede cambiar.
             if (op === 'paint') continue;
-            const cx = -0.5 + (bx * B + 3.5) * h, cy = -0.5 + (by * B + 3.5) * h, cz = -0.5 + (bz * B + 3.5) * h;
+            const cx = o + (bx * B + 3.5) * h, cy = o + (by * B + 3.5) * h, cz = o + (bz * B + 3.5) * h;
             const rb = B * 0.87 * h;
             if (op === 'grab') {
               if (Math.hypot(cx - a[0], cy - a[1], cz - a[2]) - rb > r + glen + band) continue;
@@ -443,11 +500,11 @@ export class SDFGrid {
           const y0 = Math.max(lo[1], by * B), y1 = Math.min(hi[1], by * B + 7);
           const z0 = Math.max(lo[2], bz * B), z1 = Math.min(hi[2], bz * B + 7);
           for (let z = z0; z <= z1; z++) {
-            const pz = -0.5 + z * h;
+            const pz = o + z * h;
             for (let y = y0; y <= y1; y++) {
-              const py = -0.5 + y * h;
+              const py = o + y * h;
               for (let x = x0; x <= x1; x++) {
-                const px = -0.5 + x * h;
+                const px = o + x * h;
                 const dist = segDist(px, py, pz);
                 const w = falloff(dist / r);
                 const li = (x & 7) | ((y & 7) << 3) | ((z & 7) << 6);
@@ -597,11 +654,13 @@ export class SDFGrid {
     const parts = [this.fill.slice().buffer];
     for (const i of idx) parts.push(this.bricks[i].slice().buffer);
     for (const i of cidx) parts.push(this.colors[i].slice().buffer);
-    return { meta: { n: this.n, idx, cidx }, parts };
+    return { meta: { n: this.n, h: this.h, o: this.o, idx, cidx }, parts };
   }
 
   static deserialize(meta, buf, off) {
     const g = new SDFGrid(meta.n, 'empty');
+    // Las obras de antes no traen h ni o: son la caja de siempre.
+    if (meta.h) { g.h = meta.h; g.o = meta.o; g.band = 4 * g.h; }
     const nb3 = g.nb ** 3;
     g.fill = new Int8Array(buf.slice(off, off + nb3));
     off += Math.ceil(nb3 / 4) * 4;

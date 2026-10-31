@@ -15,6 +15,8 @@ import { t, getLang, setLang } from './i18n.js';
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const DEFAULT_RES = 320;
 const CHUNK = 32;
+// Hasta dónde puede crecer el espacio de una capa, en muestras por lado (unos 6 m a resolución 320).
+const MAX_SAMPLES = 1600;
 // En el casco la memoria es mucho más justa que en el Mac: menos historial de deshacer.
 const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
 const UNDO_BYTES = ON_QUEST ? 300e6 : 800e6;
@@ -34,6 +36,7 @@ const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
+  look: { rough: 0.55, wax: 0, shine: 0 },
   color: '#cfc6bb', bakeSize: 2048,
 };
 
@@ -73,16 +76,62 @@ scene.add(rim);
 
 const model = new THREE.Group();
 scene.add(model);
-const clay = new THREE.MeshStandardMaterial({
+const clay = withLook(new THREE.MeshStandardMaterial({
   roughness: 0.55, metalness: 0, vertexColors: true,
   polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-});
+}));
 const wireMat = new THREE.LineBasicMaterial({ color: 0x15171c, transparent: true, opacity: 0.5 });
-const bounds = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12 }),
-);
-model.add(bounds);
+// Sin caja que marque el centro: con la simetría puesta se ven sus planos y su eje.
+const guideMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false });
+const guidePlane = (u, v) => {
+  const S = 0.32, p = (a, b) => [u[0] * a + v[0] * b, u[1] * a + v[1] * b, u[2] * a + v[2] * b];
+  const pts = [p(-S, -S), p(S, -S), p(S, -S), p(S, S), p(S, S), p(-S, S), p(-S, S), p(-S, -S), p(-S, 0), p(S, 0), p(0, -S), p(0, S)];
+  return new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3)), guideMat);
+};
+const symGuides = {
+  sym: guidePlane([0, 1, 0], [0, 0, 1]),
+  symY: guidePlane([1, 0, 0], [0, 0, 1]),
+  symZ: guidePlane([1, 0, 0], [0, 1, 0]),
+  radial: new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, -0.4, 0, 0, 0.4, 0], 3)), guideMat),
+};
+Object.values(symGuides).forEach((g) => { g.visible = false; model.add(g); });
+
+// Material de la plastilina. La refracción de verdad no cabe en las gafas: "translucidez" es un
+// truco de cera (la luz parece entrar y salir por los bordes) y "brillo" un reflejo barato del cielo.
+const LOOK_DEFAULT = { rough: 0.55, wax: 0, shine: 0 };
+const lookU = { uWax: { value: 0 }, uShine: { value: 0 } };
+function withLook(mat) {
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, lookU);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uWax;\nuniform float uShine;')
+      .replace('#include <opaque_fragment>', `
+        vec3 lookV = normalize(vViewPosition);
+        float lookF = pow(1.0 - saturate(dot(normal, lookV)), 3.0);
+        outgoingLight += diffuseColor.rgb * uWax * (0.18 + 0.75 * lookF);
+        vec3 lookR = inverseTransformDirection(reflect(-lookV, normal), viewMatrix);
+        float lookS = smoothstep(0.35, 0.95, lookR.y) + 0.25 * smoothstep(0.2, 0.9, lookR.x);
+        outgoingLight += vec3(lookS) * uShine * (0.25 + 0.6 * lookF) * (1.0 - roughnessFactor * 0.7);
+        #include <opaque_fragment>`);
+  };
+  mat.customProgramCacheKey = () => 'plastilinaLook';
+  return mat;
+}
+function setLook(look) {
+  state.look = { ...look };
+  clay.roughness = look.rough;
+  lookU.uWax.value = look.wax;
+  lookU.uShine.value = look.shine;
+  layers.forEach((L) => { if (L.remesh?.baked) L.remesh.baked.material.roughness = look.rough; });
+}
+function changeLook(key, value) {
+  setLook({ ...state.look, [key]: value });
+  if (live.emitting) live.hub.send({ t: 'look', look: state.look });
+  syncLookInputs();
+}
+function syncLookInputs() {
+  document.querySelectorAll('#hud [data-look]').forEach((el) => (el.value = state.look[el.dataset.look]));
+}
 
 const cursor = new THREE.Mesh(
   new THREE.SphereGeometry(1, 24, 16),
@@ -216,6 +265,31 @@ class Layer {
     this.changed();
   }
 
+  // Hace sitio para un tramo del pincel: si se acerca al borde, el espacio crece y nadie lo nota.
+  fit(a, b, r) {
+    const g = this.grid, pad = r * 2 + g.band * 2, g1 = g.o + (g.n - 1) * g.h;
+    let need = 0;
+    for (let i = 0; i < 3; i++) need = Math.max(need, g.o - (Math.min(a[i], b[i]) - pad), Math.max(a[i], b[i]) + pad - g1);
+    if (need <= 0) return;
+    // Múltiplo de CHUNK (y de 8): los trozos de malla ya hechos siguen valiendo, solo cambian de sitio.
+    let S = Math.ceil(Math.max(need / g.h, g.n * 0.25) / CHUNK) * CHUNK;
+    if (g.n + 2 * S > MAX_SAMPLES) S = Math.floor((MAX_SAMPLES - g.n) / 2 / CHUNK) * CHUNK;
+    if (S <= 0) {
+      if (!this.fullWarned) toast('Has llegado al final del espacio de esta capa');
+      this.fullWarned = true;
+      return;
+    }
+    const remap = g.grow(S);
+    rebaseUndo(this, remap);
+    const k = S / CHUNK, oldC = this.C, oldChunks = this.chunks, oldDirty = this.dirty;
+    this.C = Math.ceil((g.n - 1) / CHUNK);
+    const C = this.C, shift = (i) => (i % oldC) + k + C * ((Math.floor(i / oldC) % oldC) + k + C * (Math.floor(i / (oldC * oldC)) + k));
+    this.chunks = new Array(C ** 3).fill(null);
+    oldChunks.forEach((ch, i) => { if (ch) this.chunks[shift(i)] = ch; });
+    this.dirty = new Set();
+    for (const i of oldDirty) this.dirty.add(shift(i));
+  }
+
   markDirty(lo, hi) {
     const C = this.C;
     const range = (a) => {
@@ -302,10 +376,10 @@ class Layer {
     };
     // Normal map en convención OpenGL/glTF (Y = arriba en la imagen): three.js sin tangentes
     // necesita la Y invertida, igual que hace su cargador de glTF.
-    const mat = new THREE.MeshStandardMaterial({
+    const mat = withLook(new THREE.MeshStandardMaterial({
       map: tex(bake.colorMap, true), normalMap: tex(bake.normalMap, false),
-      normalScale: new THREE.Vector2(1, -1), roughness: 0.55, metalness: 0,
-    });
+      normalScale: new THREE.Vector2(1, -1), roughness: state.look.rough, metalness: 0,
+    }));
     r.baked = new THREE.Mesh(geo, mat);
     r.bake = bake;
     r.mesh.visible = false;
@@ -356,7 +430,7 @@ function setActive(L) {
 }
 
 function newLayer() {
-  const L = new Layer(active.grid.n, 'empty');
+  const L = new Layer(active.grid.res, 'empty');
   layers.push(L);
   setActive(L);
   live.structure();
@@ -404,6 +478,20 @@ function pushFull(L) {
   undoStack.push({ layer: L, full: L.grid.state(), bytes: L.grid.bytes() });
   redoStack.length = 0;
   trimUndo();
+}
+// El espacio ha crecido: los trazos guardados apuntan a bloques con otro número. Se traducen hasta
+// llegar a un cambio de rejilla entera, porque por debajo de él la rejilla vuelve a ser la de antes.
+function rebaseUndo(L, remap) {
+  for (let i = undoStack.length - 1; i >= 0; i--) {
+    const e = undoStack[i];
+    if (e.layer !== L) continue;
+    if (e.full) break;
+    const items = [...e.rec];
+    e.rec.clear();
+    for (const [bi, v] of items) e.rec.set(remap(bi), v);
+  }
+  // Rehacer se vacía al empezar un trazo; lo que quede de otra rejilla ya no se puede aplicar.
+  for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].layer === L && redoStack[i].rec) redoStack.splice(i, 1);
 }
 function trimUndo() {
   let total = undoStack.reduce((a, e) => a + entryBytes(e), 0);
@@ -484,6 +572,7 @@ function stabilize(p) {
 
 // Una pincelada = el tramo desde el punto anterior hasta el actual (trazo continuo).
 function brushCall(L, tool, a, b, r, s, inv, dt, paint, opts) {
+  L.fit(a, b, r);
   const res = L.grid.applyBrush(tool, a, b, r, s, inv, dt, L === active ? strokeRec : null, paint, opts);
   if (res) L.markDirty(res.lo, res.hi);
   live.brush(L, tool, a, b, r, s, inv, dt, paint, opts);
@@ -534,6 +623,7 @@ function rebuildSym() {
   mirror(state.symY, [1, 0, 0, 0, -1, 0, 0, 0, 1]);
   mirror(state.symZ, [1, 0, 0, 0, 1, 0, 0, 0, -1]);
   symCopies = list.slice(1);
+  for (const k in symGuides) symGuides[k].visible = state[k];
   symCopies.forEach((m, i) => {
     symM4[i] = (symM4[i] || new THREE.Matrix4()).set(m[0], m[3], m[6], 0, m[1], m[4], m[7], 0, m[2], m[5], m[8], 0, 0, 0, 0, 1);
   });
@@ -685,22 +775,23 @@ function applyAt(p, dt, pressure = 1) {
 }
 
 function changeRes(dir) {
-  const n = active.grid.n;
+  const n = active.grid.res;
   let i = RES_STEPS.findIndex((r) => r >= n);
   if (i < 0) i = RES_STEPS.length - 1;
   const ni = Math.max(0, Math.min(RES_STEPS.length - 1, i + dir));
   if (RES_STEPS[ni] === n) return toast(dir > 0 ? 'Resolución máxima' : 'Resolución mínima');
+  if (active.grid.samplesFor(RES_STEPS[ni]) > MAX_SAMPLES) return toast('Esta capa ocupa demasiado para subir la resolución');
   pushFull(active);
   active.grid.resample(RES_STEPS[ni]);
   active.rebuildAll();
   live.structure();
-  toast(t('{0}: resolución {1}³', active.name, active.grid.n));
+  toast(t('{0}: resolución {1}³', active.name, active.grid.res));
 }
 
 function resetLayer(shape) {
   pushFull(active);
   const g = active.grid;
-  g.setResolution(g.n);
+  g.setResolution(g.res);
   if (shape === 'sphere') g.reset();
   active.rebuildAll();
   live.structure();
@@ -870,13 +961,13 @@ async function buildGLB(objects) {
         textures.push(t);
         return t;
       };
-      mat = new THREE.MeshStandardMaterial({ map: tex(b.colorMap, true), normalMap: tex(b.normalMap, false), roughness: 0.55 });
+      mat = new THREE.MeshStandardMaterial({ map: tex(b.colorMap, true), normalMap: tex(b.normalMap, false), roughness: state.look.rough });
     } else {
       geo.setAttribute('position', new THREE.BufferAttribute(o.mesh.positions, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(o.mesh.normals, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(srgbToLinear(o.mesh.colors), 3));
       geo.setIndex(new THREE.BufferAttribute(quadsToTris(o.mesh.quads), 1));
-      mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 });
+      mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: state.look.rough });
     }
     const m = new THREE.Mesh(geo, mat);
     m.name = o.name;
@@ -1000,6 +1091,8 @@ $('btnWire').onclick = () => choose('wire');
 document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => (b.onclick = () => { state.bakeSize = +b.dataset.bake; updateHud(); }));
 document.querySelectorAll('#shapes [data-shape]').forEach((b) => (b.onclick = () => choose('shape:' + b.dataset.shape)));
 document.querySelectorAll('#hud [data-opt]').forEach((b) => (b.onclick = () => choose(b.dataset.opt)));
+document.querySelectorAll('#hud [data-look]').forEach((el) => (el.oninput = () => changeLook(el.dataset.look, +el.value)));
+syncLookInputs();
 $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
@@ -1044,7 +1137,7 @@ function sceneLoad() {
 function infoText() {
   const { quads, mb } = sceneLoad();
   const k = quads >= 1e6 ? (quads / 1e6).toFixed(1) + 'M' : Math.round(quads / 1000) + 'k';
-  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${symOn() ? t(' · simetría') : ''}${state.wire ? t(' · malla') : ''}`;
+  return `${active.name} · ${active.grid.res}³ · ${k} quads · ${mb.toFixed(0)} MB${symOn() ? t(' · simetría') : ''}${state.wire ? t(' · malla') : ''}`;
 }
 
 function renderLayers() {
@@ -1062,7 +1155,7 @@ function renderLayers() {
     name.title = t('Doble clic para renombrar');
     const res = document.createElement('span');
     res.className = 'lres';
-    res.textContent = `${L.grid.n}³`;
+    res.textContent = `${L.grid.res}³`;
     const eye = document.createElement('button');
     eye.className = 'eye';
     eye.textContent = L.visible ? '👁' : '–';
@@ -1323,6 +1416,16 @@ function endMove() {
   if (moved && layers.includes(L)) {
     const hadRemesh = !!L.remesh;
     pushFull(L);
+    // Que quepa donde la has dejado: se mide la caja que ocupa una vez movida.
+    const box = L.grid.occupied();
+    if (box) {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let c = 0; c < 8; c++) {
+        const p = new THREE.Vector3((c & 1 ? box.hi : box.lo)[0], (c & 2 ? box.hi : box.lo)[1], (c & 4 ? box.hi : box.lo)[2]).applyMatrix4(m).toArray();
+        p.forEach((v, a) => { lo[a] = Math.min(lo[a], v); hi[a] = Math.max(hi[a], v); });
+      }
+      L.fit(lo, hi, 0);
+    }
     L.grid.applyTransform(m.invert().elements, s);
     L.rebuildAll();
     L.flush(); // todo de golpe, para que no parpadee en la posición vieja
@@ -1364,7 +1467,7 @@ function pickLocal(allowAir) {
   if (!best && allowAir) {
     const t = -(o[0] * d[0] + o[1] * d[1] + o[2] * d[2]);
     const p = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
-    if (t > 0 && p.every((v) => Math.abs(v) < 0.5)) best = [...p, t];
+    if (t > 0) best = [...p, t];
   }
   if (best) best.layer = bestLayer;
   return best;
@@ -1576,7 +1679,6 @@ async function startXR(mode) {
     model.position.set(0, 1.1, -0.6);
     model.quaternion.identity();
     model.scale.setScalar(WS.scale);
-    bounds.material.opacity = 0.4;
     xr.follow = true; // el espacio te sigue con la vista hasta que empiezas a esculpir
     xr.followSnap = true;
     hud3d.visible = true;
@@ -1586,7 +1688,6 @@ async function startXR(mode) {
       model.position.set(0, 0, 0);
       model.quaternion.identity();
       model.scale.setScalar(1);
-      bounds.material.opacity = 0.12;
       flower.close();
       hud3d.visible = false;
       panel3d.visible = false;
@@ -1703,6 +1804,7 @@ panel3d.visible = false;
 function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
   if (panelPage === 'pincel') return buildBrushPage();
+  if (panelPage === 'material') return buildMaterialPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), color: TOOL_COLORS[activeTool()], size: 40 });
@@ -1736,17 +1838,19 @@ function buildPanel() {
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
   const yc = 503 + 2 * (sw * 0.7 + 8) + 4;
-  const hw = (IW - 8) / 2;
-  W.push({ type: 'button', x: M, y: yc, w: hw, h: 56, label: 'Traer el espacio aquí', size: 22,
+  const hw = (IW - 2 * 8) / 3;
+  W.push({ type: 'button', x: M, y: yc, w: hw, h: 56, label: 'Traer aquí', size: 22,
     onClick: () => placeWorkspace(true) });
   W.push({ type: 'button', x: M + hw + 8, y: yc, w: hw, h: 56, label: 'Pincel ▸', size: 24,
     onClick: () => { panelPage = 'pincel'; drawPanel(); } });
+  W.push({ type: 'button', x: M + 2 * (hw + 8), y: yc, w: hw, h: 56, label: 'Material ▸', size: 24,
+    onClick: () => { panelPage = 'material'; drawPanel(); } });
   const yl = yc + 92;
   W.push({ type: 'label', x: M, y: yl, text: 'CAPAS', size: 22 });
   W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
   layers.slice(-4).forEach((L, i) => {
     const y = yl + 34 + i * 62;
-    W.push({ type: 'button', x: M, y, w: IW - 90, h: 54, label: `${L.name}  ·  ${L.grid.n}³${L.remesh ? '  ⊞' : ''}`,
+    W.push({ type: 'button', x: M, y, w: IW - 90, h: 54, label: `${L.name}  ·  ${L.grid.res}³${L.remesh ? '  ⊞' : ''}`,
       dot: L.color, size: 22, active: () => L === active, onClick: () => setActive(L) });
     W.push({ type: 'button', x: PW - M - 80, y, w: 80, h: 54, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
@@ -1780,6 +1884,23 @@ function buildPanel() {
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   return W;
 }
+// Página del material: tres retoques suaves de cómo se ve la plastilina.
+function buildMaterialPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M;
+  W.push({ type: 'label', x: M, y: 44, text: 'Material', size: 36 });
+  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
+    onClick: () => { panelPage = 'main'; drawPanel(); } });
+  LOOK_SLIDERS.forEach(([key, text, min, max], i) => W.push({
+    type: 'slider', x: M, y: 160 + i * 100, w: IW, h: 34, label: text,
+    get: () => (state.look[key] - min) / (max - min), set: (v) => changeLook(key, min + v * (max - min)),
+    text: () => Math.round(((state.look[key] - min) / (max - min)) * 100) + '%',
+  }));
+  W.push({ type: 'button', x: M, y: 450, w: IW, h: 60, label: 'Volver a la plastilina normal', size: 24,
+    onClick: () => { for (const k in LOOK_DEFAULT) changeLook(k, LOOK_DEFAULT[k]); drawPanel(); } });
+  return W;
+}
+const LOOK_SLIDERS = [['rough', 'Rugosidad', 0.15, 1], ['wax', 'Translucidez', 0, 0.6], ['shine', 'Brillo', 0, 1]];
 // Página del pincel: forma, borde, textura, trazo y simetría.
 function buildBrushPage() {
   const W = [];
@@ -2061,10 +2182,6 @@ function xrFrame(dt) {
     if (!xr.stroking) {
       beginStroke();
       xr.stroking = true;
-      if (Math.max(Math.abs(tipL[0]), Math.abs(tipL[1]), Math.abs(tipL[2])) > 0.5) {
-        toast('Estás fuera del espacio de trabajo: acércate al cubo');
-        gpR.hapticActuators?.[0]?.pulse?.(0.8, 120);
-      }
     }
     const q = stabilize(tipL);
     cursor.position.fromArray(q);
@@ -2194,8 +2311,11 @@ async function applyRemote(m) {
     if (!synced) return;
     const L = layerById(m.l);
     if (!L) return;
+    L.fit(m.a, m.b, m.r);
     const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, m.o);
     if (res) L.markDirty(res.lo, res.hi);
+  } else if (m.t === 'look') {
+    setLook(m.look);
   } else if (m.t === 'blob') {
     const buf = await fetchBlob(m.id);
     if (m.kind === 'snap') applySnapshot(buf);
@@ -2205,7 +2325,7 @@ async function applyRemote(m) {
 
 // Escena completa (todas las capas) en un binario: espejo y autoguardado.
 function packScene() {
-  const meta = { active: active.id, layers: [] };
+  const meta = { active: active.id, look: state.look, layers: [] };
   const parts = [];
   for (const L of layers) {
     const s = L.grid.serialize();
@@ -2248,6 +2368,8 @@ function applySnapshot(buf) {
     layers.push(L);
   }
   active = layerById(meta.active) || layers[0];
+  setLook(meta.look || LOOK_DEFAULT);
+  syncLookInputs();
   synced = true;
   if (SPECTATOR) $('specStatus').textContent = t('En directo');
 }
@@ -2428,7 +2550,6 @@ if (SPECTATOR) {
   camera.position.set(0, 1.5, 0.3);
   camera.lookAt(model.position);
   controls.target.copy(model.position);
-  bounds.visible = false;
   setSpecView('gafas');
   setSpecBg('oscuro');
   document.querySelectorAll('#spec [data-view]').forEach((b) => (b.onclick = () => setSpecView(b.dataset.view)));
@@ -2525,7 +2646,7 @@ renderer.setAnimationLoop(() => {
 
 // ---------- Autoguardado en las gafas (sin Wi-Fi no se pierde nada) ----------
 let savedSig = '';
-const sceneSig = () => active.id + '|' + layers.map((L) => [L.id, L.version, L.name, L.color, L.visible, !!L.remesh].join(':')).join('|');
+const sceneSig = () => active.id + '|' + JSON.stringify(state.look) + '|' + layers.map((L) => [L.id, L.version, L.name, L.color, L.visible, !!L.remesh].join(':')).join('|');
 async function autosave() {
   if (sculpting || layers.some((L) => L.busy)) return;
   const sig = sceneSig();
@@ -2705,6 +2826,8 @@ async function newObra() {
   layers.forEach((L) => L.dispose());
   layers = [new Layer(DEFAULT_RES, 'sphere')];
   active = layers[0];
+  setLook(LOOK_DEFAULT);
+  syncLookInputs();
   resetHistory();
   obraId = null;
   obraSig = sceneSig();

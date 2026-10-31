@@ -16,7 +16,7 @@ let cscratch = new Uint8Array(0);
 
 // base = color base de la capa [r,g,b] 0-255. Devuelve colores por vértice en sRGB 0-1.
 export function meshRegion(grid, c0x, c0y, c0z, S, base = [207, 198, 187]) {
-  const { n, h } = grid;
+  const { n, h, o: g0 } = grid;
   // Muestras necesarias: celdas [c0-1, c0+S) => muestras [c0-1, c0+S].
   const ox = Math.max(c0x - 1, 0), oy = Math.max(c0y - 1, 0), oz = Math.max(c0z - 1, 0);
   const mx = Math.min(c0x + S, n - 1), my = Math.min(c0y + S, n - 1), mz = Math.min(c0z + S, n - 1);
@@ -63,7 +63,7 @@ export function meshRegion(grid, c0x, c0y, c0z, S, base = [207, 198, 187]) {
           cnt++;
         }
         const gx = x + ox, gy = y + oy, gz = z + oz;
-        pos.push(-0.5 + (gx + ax / cnt) * h, -0.5 + (gy + ay / cnt) * h, -0.5 + (gz + az / cnt) * h);
+        pos.push(g0 + (gx + ax / cnt) * h, g0 + (gy + ay / cnt) * h, g0 + (gz + az / cnt) * h);
         const nx = v[1] - v[0] + v[3] - v[2] + v[5] - v[4] + v[7] - v[6];
         const ny = v[2] - v[0] + v[3] - v[1] + v[6] - v[4] + v[7] - v[5];
         const nz = v[4] - v[0] + v[5] - v[1] + v[6] - v[2] + v[7] - v[3];

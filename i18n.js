@@ -9,6 +9,10 @@ try { const s = localStorage.getItem('plastilinaLang'); if (LANGS.includes(s)) l
 // español: [inglés, tailandés]
 const D = {
   // Herramientas
+  'Material': ['Material', 'วัสดุ'], 'Material ▸': ['Material ▸', 'วัสดุ ▸'], 'Rugosidad': ['Roughness', 'ความหยาบ'], 'Translucidez': ['Translucency', 'ความโปร่งแสง'], 'Brillo': ['Shine', 'ความเงา'],
+  'Traer aquí': ['Bring here', 'นำมาที่นี่'], 'Volver a la plastilina normal': ['Back to normal clay', 'กลับเป็นดินน้ำมันปกติ'],
+  'Has llegado al final del espacio de esta capa': ['You reached the end of this layer\'s space', 'ถึงขอบพื้นที่ของเลเยอร์นี้แล้ว'],
+  'Esta capa ocupa demasiado para subir la resolución': ['This layer is too big to raise its resolution', 'เลเยอร์นี้ใหญ่เกินกว่าจะเพิ่มความละเอียด'],
   'Aplan.': ['Flat', 'แบน'], 'Pellizcar': ['Pinch', 'บีบ'], 'Pellizc.': ['Pinch', 'บีบ'], 'Hendidura': ['Crease', 'ทำร่อง'], 'Hend.': ['Crease', 'ร่อง'], 'Arrast.': ['Drag', 'ลาก'],
   'Simetría Y': ['Symmetry Y', 'สมมาตร Y'], 'Simetría Z': ['Symmetry Z', 'สมมาตร Z'], 'Radial': ['Radial', 'รัศมี'],
   'Pincel': ['Brush', 'พู่กัน'], 'Pincel ▸': ['Brush ▸', 'พู่กัน ▸'], 'FORMA': ['SHAPE', 'รูปทรง'], 'BORDE': ['EDGE', 'ขอบ'], 'TEXTURA': ['TEXTURE', 'พื้นผิว'], 'TRAZO': ['STROKE', 'เส้น'], 'SIMETRÍA': ['SYMMETRY', 'สมมาตร'], 'COPIAS DE LA RADIAL': ['RADIAL COPIES', 'จำนวนสำเนา'],

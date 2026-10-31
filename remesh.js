@@ -14,15 +14,15 @@ const B = 8;
 
 // Acceso rápido a la rejilla dispersa (sin el registro de deshacer de get()).
 function field(grid) {
-  const { n, h, nb, bricks, colors, fill, band } = grid;
-  const s = n - 1;
+  const { n, h, o, nb, bricks, colors, fill, band } = grid;
+  const s = n - 1, g1 = o + s * h;
   const val = (x, y, z) => {
     const bi = (x >> 3) + nb * ((y >> 3) + nb * (z >> 3));
     const b = bricks[bi];
     return b ? b[(x & 7) | ((y & 7) << 3) | ((z & 7) << 6)] : fill[bi] * band;
   };
   const sample = (px, py, pz) => {
-    const fx = (px + 0.5) * s, fy = (py + 0.5) * s, fz = (pz + 0.5) * s;
+    const fx = (px - o) / h, fy = (py - o) / h, fz = (pz - o) / h;
     if (!(fx >= 0 && fy >= 0 && fz >= 0 && fx <= s && fy <= s && fz <= s)) return band;
     const x = Math.min(fx | 0, n - 2), y = Math.min(fy | 0, n - 2), z = Math.min(fz | 0, n - 2);
     const tx = fx - x, ty = fy - y, tz = fz - z;
@@ -47,8 +47,8 @@ function field(grid) {
   // Color (sRGB 0-255) mezclando las 8 muestras vecinas; lo no pintado usa el color base.
   const col = [0, 0, 0];
   const color = (px, py, pz, base) => {
-    const fx = Math.max(0, Math.min(s, (px + 0.5) * s)), fy = Math.max(0, Math.min(s, (py + 0.5) * s));
-    const fz = Math.max(0, Math.min(s, (pz + 0.5) * s));
+    const fx = Math.max(0, Math.min(s, (px - o) / h)), fy = Math.max(0, Math.min(s, (py - o) / h));
+    const fz = Math.max(0, Math.min(s, (pz - o) / h));
     const x = Math.min(fx | 0, n - 2), y = Math.min(fy | 0, n - 2), z = Math.min(fz | 0, n - 2);
     const tx = fx - x, ty = fy - y, tz = fz - z;
     let r = 0, gg = 0, b = 0;
@@ -65,8 +65,8 @@ function field(grid) {
   };
   // Si la caja [a, b] solo toca bloques vacíos de la rejilla, su valor (±band); si no, null.
   const empty = (ax, ay, az, bx, by, bz) => {
-    const lo = (p) => Math.floor((p + 0.5) * s) >> 3, hi = (p) => Math.min(nb - 1, (Math.floor((p + 0.5) * s) + 1) >> 3);
-    if (ax < -0.5 || ay < -0.5 || az < -0.5 || bx > 0.5 || by > 0.5 || bz > 0.5) return null;
+    const lo = (p) => Math.floor((p - o) / h) >> 3, hi = (p) => Math.min(nb - 1, (Math.floor((p - o) / h) + 1) >> 3);
+    if (ax < o || ay < o || az < o || bx > g1 || by > g1 || bz > g1) return null;
     let sign = 0;
     for (let z = lo(az); z <= hi(bz); z++)
       for (let y = lo(ay); y <= hi(by); y++)
@@ -77,7 +77,7 @@ function field(grid) {
         }
     return sign * band;
   };
-  return { n, h, band, sample, grad, color, empty };
+  return { n, h, band, box: grid.occupied(), sample, grad, color, empty };
 }
 
 function ticker(onProgress) {
@@ -192,8 +192,10 @@ function adjacency(nv, Q) {
 // Surface Nets sobre una rejilla de celda hc; cada vértice queda pegado a la superficie fina.
 // precise: pegar cada vértice a la superficie fina (si no, se queda donde lo pone Surface Nets).
 async function netsMesh(F, hc, tick, f0, f1, precise = true) {
-  const M = Math.ceil(1 / hc) + 1;
-  const o = -0.5 - (M * hc - 1) / 2; // rejilla centrada en la caja
+  // Un cubo alrededor de la plastilina, con margen: así no depende de cuánto haya crecido el espacio.
+  const box = F.box || { lo: [-0.5, -0.5, -0.5], hi: [0.5, 0.5, 0.5] };
+  const M = Math.ceil(Math.max(box.hi[0] - box.lo[0], box.hi[1] - box.lo[1], box.hi[2] - box.lo[2]) / hc) + 5;
+  const [ox, oy, oz] = [0, 1, 2].map((a) => (box.lo[a] + box.hi[a]) / 2 - ((M - 1) * hc) / 2);
   const MM = M * M;
   const vals = new Float32Array(M * MM);
   // Por bloques de 8³ muestras: los que caen en zonas vacías de la rejilla dispersa no se muestrean.
@@ -202,11 +204,11 @@ async function netsMesh(F, hc, tick, f0, f1, precise = true) {
     for (let by = 0; by < M; by += K)
       for (let bx = 0; bx < M; bx += K) {
         const ex = Math.min(bx + K, M), ey = Math.min(by + K, M), ez = Math.min(bz + K, M);
-        const e = F.empty(o + bx * hc, o + by * hc, o + bz * hc, o + (ex - 1) * hc, o + (ey - 1) * hc, o + (ez - 1) * hc);
+        const e = F.empty(ox + bx * hc, oy + by * hc, oz + bz * hc, ox + (ex - 1) * hc, oy + (ey - 1) * hc, oz + (ez - 1) * hc);
         for (let z = bz; z < ez; z++)
           for (let y = by; y < ey; y++)
             for (let x = bx; x < ex; x++)
-              vals[x + M * y + MM * z] = e ?? F.sample(o + x * hc, o + y * hc, o + z * hc);
+              vals[x + M * y + MM * z] = e ?? F.sample(ox + x * hc, oy + y * hc, oz + z * hc);
       }
     await tick(f0 + (f1 - f0) * 0.4 * bz / M);
   }
@@ -234,7 +236,7 @@ async function netsMesh(F, hc, tick, f0, f1, precise = true) {
           cnt++;
         }
         vmap[x + C * (y + C * z)] = pos.length / 3;
-        pos.push(o + (x + ax / cnt) * hc, o + (y + ay / cnt) * hc, o + (z + az / cnt) * hc);
+        pos.push(ox + (x + ax / cnt) * hc, oy + (y + ay / cnt) * hc, oz + (z + az / cnt) * hc);
         const nx = v[1] - v[0] + v[3] - v[2] + v[5] - v[4] + v[7] - v[6];
         const ny = v[2] - v[0] + v[3] - v[1] + v[6] - v[4] + v[7] - v[5];
         const nz = v[4] - v[0] + v[5] - v[1] + v[6] - v[2] + v[7] - v[3];
@@ -386,7 +388,7 @@ function buildHierarchy(V, N, deg, nbr, cell0) {
   while (levels.at(-1).n > 64 && levels.length < 16) {
     const L = levels.at(-1);
     cell *= 2;
-    const K = Math.ceil(1 / cell) + 4;
+    const K = 1 << 15; // de sobra para cualquier tamaño de escultura
     const map = new Map();
     const parent = new Int32Array(L.n);
     const sv = [], sn = [], cnt = [];
@@ -397,8 +399,8 @@ function buildHierarchy(V, N, deg, nbr, cell0) {
       if (Math.abs(ny) > av) { ax = 1; av = Math.abs(ny); }
       if (Math.abs(nz) > av) ax = 2;
       const cls = ax * 2 + (L.N[j + ax] < 0 ? 1 : 0);
-      const fx = Math.floor((L.V[j] + 0.5) / cell) + 1, fy = Math.floor((L.V[j + 1] + 0.5) / cell) + 1;
-      const fz = Math.floor((L.V[j + 2] + 0.5) / cell) + 1;
+      const fx = Math.floor(L.V[j] / cell) + K / 2, fy = Math.floor(L.V[j + 1] / cell) + K / 2;
+      const fz = Math.floor(L.V[j + 2] / cell) + K / 2;
       const key = ((fx * K + fy) * K + fz) * 6 + cls;
       let pi = map.get(key);
       if (pi === undefined) { pi = cnt.length; map.set(key, pi); cnt.push(0); sv.push(0, 0, 0); sn.push(0, 0, 0); }
