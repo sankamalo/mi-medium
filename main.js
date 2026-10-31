@@ -4,6 +4,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { SDFGrid } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
+import { createControllerRig, Flower } from './flor.js';
 import { CanvasPanel } from './panel.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
@@ -1411,7 +1412,7 @@ async function startXR(mode) {
       model.quaternion.identity();
       model.scale.setScalar(1);
       bounds.material.opacity = 0.12;
-      menu3d.visible = false;
+      flower.close();
       hud3d.visible = false;
       panel3d.visible = false;
       ray.visible = false;
@@ -1439,11 +1440,25 @@ const ctrls = [0, 1].map((i) => {
   const c = renderer.xr.getController(i);
   c.addEventListener('connected', (e) => (c.userData.src = e.data));
   c.addEventListener('disconnected', () => (c.userData.src = null));
-  c.add(controllerModel());
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.005, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  tip.position.set(0, 0, -0.055);
+  c.add(tip);
   scene.add(c);
   return c;
 });
 const TIP = new THREE.Vector3(0, 0, -0.055);
+
+// Mando y mano de plastilina, en el espacio de agarre (ahí está el mando de verdad).
+const rigs = { left: createControllerRig('left'), right: createControllerRig('right') };
+[0, 1].forEach((i) => {
+  const grip = renderer.xr.getControllerGrip(i);
+  grip.addEventListener('connected', (e) => {
+    const rig = rigs[e.data.handedness];
+    if (rig) grip.add(rig.group);
+  });
+  grip.addEventListener('disconnected', () => grip.clear());
+  scene.add(grip);
+});
 
 // Rayo del mando derecho (para el panel)
 const ray = new THREE.Line(
@@ -1452,29 +1467,9 @@ const ray = new THREE.Line(
 );
 ray.visible = false;
 
-// Menú radial en 3D
-const radialTex = new THREE.CanvasTexture(radial.canvas);
-radialTex.colorSpace = THREE.SRGBColorSpace;
-const menu3d = new THREE.Mesh(
-  new THREE.PlaneGeometry(0.26, 0.26),
-  new THREE.MeshBasicMaterial({ map: radialTex, transparent: true, depthTest: false }),
-);
-menu3d.renderOrder = 999;
-// Gafas: muestra del pincel a tamaño real encima del dial mientras ajustas Tamaño.
-const preview3d = new THREE.Mesh(cursor.geometry, cursor.material);
-preview3d.visible = false;
-scene.add(preview3d);
-function updatePreview3D() {
-  preview3d.visible = radialOpen && menu3d.visible && radial.highlight === 'slider:size';
-  if (!preview3d.visible) return;
-  const r = state.radius * model.scale.x;
-  preview3d.geometry = cursor.geometry;
-  preview3d.scale.setScalar(r);
-  preview3d.quaternion.copy(menu3d.quaternion);
-  preview3d.position.set(0, 0.13 + r * 1.5 + 0.015, 0).applyQuaternion(menu3d.quaternion).add(menu3d.position);
-}
-menu3d.visible = false;
-scene.add(menu3d);
+// Menú de las gafas: la flor.
+const flower = new Flower((id) => label(id));
+scene.add(flower.group);
 
 // HUD en el mando izquierdo
 const hudCanvas = document.createElement('canvas');
@@ -1652,30 +1647,26 @@ const xr = {
 };
 const grabOffset = new THREE.Matrix4();
 const tmpM = new THREE.Matrix4(), tmpS = new THREE.Vector3();
-const vA = new THREE.Vector3(), vB = new THREE.Vector3();
+const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vT0 = new THREE.Vector3();
 const scale0 = { d: 1, s: 1, mid: new THREE.Vector3(), pos: new THREE.Vector3() };
 const panelRay = new THREE.Raycaster();
 let hudMsgShown = false;
 
-function openRadial3D(tipW, mode) {
+function openFlower(tipW, mode) {
   xr.menuOpen = true;
   xr.menuMode = mode;
   xr.menuOpenedFrame = true; // el mismo clic que lo abre no debe cerrarlo
-  radialOpen = true;
-  radial.reset();
-  xr.radialDrag = -1;
-  radial.draw(state, infoText());
-  radialTex.needsUpdate = true;
-  menu3d.position.copy(tipW);
-  menu3d.lookAt(renderer.xr.getCamera().getWorldPosition(vA));
-  menu3d.visible = true;
+  // La flor sale de la cabeza del mando, un poco por detrás de él visto desde tus ojos.
+  const head = renderer.xr.getCamera().getWorldPosition(vA);
+  const at = rigs.right.group.localToWorld(vB.set(0, 0, -0.025));
+  at.addScaledVector(vT0.copy(at).sub(head).normalize(), 0.04);
+  flower.open(at, head, state.tool, tipW);
 }
-function closeRadial3D(pick) {
+function closeFlower(pick) {
   xr.menuOpen = false;
-  radialOpen = false;
-  menu3d.visible = false;
-  preview3d.visible = false;
-  if (pick && radial.highlight) choose(radial.highlight);
+  const h = flower.highlight;
+  flower.close();
+  if (pick && h) choose(h);
 }
 
 // Espacio de trabajo: grande, a tu alrededor y delante de ti. Mientras no empiezas a esculpir te
@@ -1709,6 +1700,11 @@ function xrFrame(dt) {
     c.updateMatrixWorld(true);
     const src = c.userData.src;
     if (!src || !src.gamepad) continue;
+    const rig = rigs[src.handedness];
+    if (rig) {
+      rig.group.visible = !src.hand; // con las manos desnudas no hay mando que enseñar
+      rig.update(src.gamepad, dt);
+    }
     if (src.handedness === 'left') left = c;
     else right = c;
   }
@@ -1811,40 +1807,20 @@ function xrFrame(dt) {
     if (panel.pointer(null, null, trigDown)) drawPanel();
   }
 
-  // Menú radial: clic en el stick derecho (o mantener A/B). Eliges con el stick o moviendo la mano.
+  // La flor: clic en el stick derecho (o mantener A/B). Eliges con el stick o moviendo la mano.
   const rStick = !!gpR.buttons[3]?.pressed;
   const ab = !!(gpR.buttons[4]?.pressed || gpR.buttons[5]?.pressed);
   if (!xr.menuOpen) {
-    if (rStick && !xr.rStickPrev) openRadial3D(tipW, 'toggle');
-    else if (ab && !xr.menuPrev) openRadial3D(tipW, 'hold');
+    if (rStick && !xr.rStickPrev) openFlower(tipW, 'toggle');
+    else if (ab && !xr.menuPrev) openFlower(tipW, 'hold');
   }
   if (xr.menuOpen) {
-    let h = null;
-    const p = menu3d.worldToLocal(tipW.clone());
-    const k = radial.size / 0.26, cx = p.x * k, cy = -p.y * k;
-    if (!trigDown) xr.radialDrag = -1;
-    const si = xr.radialDrag >= 0 ? xr.radialDrag : Math.hypot(ax, ay) > 0.5 ? -1 : radial.sliderAt(cx, cy);
-    if (si >= 0) {
-      // Arcos de Tamaño / Estabilizar: apunta con la punta del mando y arrastra con el gatillo.
-      h = 'slider:' + radial.sliders[si].id;
-      if (trigDown) {
-        xr.radialDrag = si;
-        const before = radial.sliders[si].text();
-        radial.sliders[si].set(radial.sliderValue(cx, cy));
-        if (radial.sliders[si].text() !== before) gpR.hapticActuators?.[0]?.pulse?.(0.15, 8);
-        updateHud();
-        radialTex.needsUpdate = true;
-      }
-    } else if (Math.hypot(ax, ay) > 0.5) h = radial.itemAt(ax, ay);
-    else if (radial.inside(cx * 0.8, cy * 0.8)) h = radial.itemAt(p.x, -p.y); // en VR, algo más de margen
-    if (radial.setHighlight(h) | radial.tick()) {
-      radial.draw(state, infoText());
-      radialTex.needsUpdate = true;
-    }
-    updatePreview3D();
-    if (xr.menuMode === 'hold' && !ab) closeRadial3D(true);
-    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev && !radial.highlight?.startsWith('slider:')))) {
-      closeRadial3D(true);
+    const h = Math.hypot(ax, ay) > 0.5 ? flower.itemAt(ax, ay) : flower.itemAtWorld(tipW);
+    if (flower.setHighlight(h) && h) gpR.hapticActuators?.[0]?.pulse?.(0.25, 15);
+    flower.update(dt);
+    if (xr.menuMode === 'hold' && !ab) closeFlower(true);
+    else if (xr.menuMode === 'toggle' && ((rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true) || (trigDown && !xr.trigPrev))) {
+      closeFlower(true);
     }
     xr.menuOpenedFrame = false;
     xr.rStickPrev = rStick;
@@ -2609,4 +2585,4 @@ document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => chang
 changeLang(getLang());
 
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };
