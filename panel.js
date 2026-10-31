@@ -6,6 +6,7 @@ import { t } from './i18n.js';
 // Widgets: { type: 'block' | 'label' | 'button' | 'slider' | 'swatch', x, y, w, h, ... }
 //   block: color (lo que va después se dibuja encima y toma de él el color del texto)
 //   button: label, active(), onClick(), group (misma letra en toda la fila), plain (sin mayúsculas)
+//   thumb: img (lienzo), active(), onClick()
 //   slider: label, get() 0..1, set(t), text()     swatch: color, active(), onClick()
 //   label: text, size, head (letra de botón), max (encoge para caber), wrap (ancho: corta en líneas)
 
@@ -119,6 +120,14 @@ export class CanvasPanel {
         g.font = kanit(w.group ? sizes[w.group] : fitSize(g, kanit, str, w.size || 26, room));
         g.textAlign = w.dot ? 'left' : 'center';
         g.fillText(str, (w.dot ? w.x + 50 : w.x + w.w / 2) + d, w.y + d + w.h / 2 + 1);
+      } else if (w.type === 'thumb') {
+        const on = w.active?.();
+        g.fillStyle = on ? CERA.yellow : hov ? '#ffe98a' : CERA.white;
+        g.fillRect(w.x, w.y, w.w, w.h);
+        g.lineWidth = 4;
+        g.strokeStyle = CERA.ink;
+        g.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
+        if (w.img) g.drawImage(w.img, w.x + 8, w.y + 8, w.w - 16, w.h - 16);
       } else if (w.type === 'swatch') {
         const on = w.active?.();
         const cx = w.x + w.w / 2, cy = w.y + w.h / 2, r = Math.min(w.w, w.h) / 2;

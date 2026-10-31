@@ -68,7 +68,7 @@ function sdPyramid(px, py, pz, h) {
 }
 
 // Cuánto sobresale cada forma respecto a r (para no saltarse bloques que toca).
-export const SHAPE_REACH = { sphere: 1, cube: 1.32, pyramid: 1.62 };
+export const SHAPE_REACH = { sphere: 1, cube: 1.32, pyramid: 1.62, stamp: 1.8 };
 
 export class SDFGrid {
   constructor(n = 192, shape = 'sphere') {
@@ -395,6 +395,7 @@ export class SDFGrid {
   // añadir/quitar con forma. 'grab' (arrastrar) lleva el barro de a hasta b con caída suave.
   // También en opts: edge ('soft' | 'hard'), texture (nombre en TEXTURES), y frame + shift (giro 3x3 y
   // desplazamiento de la copia de simetría, para que la textura salga reflejada igual que la forma).
+  // Con shape 'stamp', opts.stampEval(x, y, z, out) da la distancia y el color del sello (en unidades de r).
   // 'pinch' junta el barro hacia la línea del trazo; 'crease' además hunde un surco.
   applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
     const { n, h, o, band, nb, bricks, colors, fill } = this;
@@ -432,6 +433,8 @@ export class SDFGrid {
     };
     // Distancia con signo a la forma del pincel (barrida a lo largo del tramo a→b).
     const R = opts?.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const stampOut = { d: 0, c: null };
+    let stampRgb = null;
     const shapeDist = (px, py, pz) => {
       let t = ab2 > 0 ? ((px - a[0]) * abx + (py - a[1]) * aby + (pz - a[2]) * abz) / ab2 : 0;
       t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -440,6 +443,11 @@ export class SDFGrid {
       const lx = dx * R[0] + dy * R[1] + dz * R[2];
       const ly = dx * R[3] + dy * R[4] + dz * R[5];
       const lz = dx * R[6] + dy * R[7] + dz * R[8];
+      if (shape === 'stamp') {
+        opts.stampEval(lx / r, ly / r, lz / r, stampOut);
+        stampRgb = stampOut.c;
+        return stampOut.d * r;
+      }
       if (shape === 'cube') {
         const e = r * 0.75;
         const qx = Math.abs(lx) - e, qy = Math.abs(ly) - e, qz = Math.abs(lz) - e;
@@ -517,10 +525,11 @@ export class SDFGrid {
                     if (tex && Math.abs(s) < band + amp) s -= amp * texAt(px, py, pz);
                     if (s < d) {
                       d = s;
-                      if (rgb && s < band) {
+                      const tint = stampRgb || rgb;
+                      if (tint && s < band) {
                         if (!cb) cb = colors[bi] = new Uint8Array(B3 * 4);
                         const j = li * 4;
-                        cb[j] = rgb[0]; cb[j + 1] = rgb[1]; cb[j + 2] = rgb[2]; cb[j + 3] = 255;
+                        cb[j] = tint[0]; cb[j + 1] = tint[1]; cb[j + 2] = tint[2]; cb[j + 3] = 255;
                       }
                     }
                     break;

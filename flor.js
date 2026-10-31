@@ -348,6 +348,8 @@ function poseThumb(h, target, elbow) {
   aimY(h.th2, vB.copy(T0).addScaledVector(vA, d).sub(elbow));
 }
 
+export { surfaceNets };
+
 export function createControllerRig(handedness) {
   const group = new THREE.Group();
   const inner = new THREE.Group();
@@ -465,8 +467,8 @@ function petalPoints(len, wid, grow = 0) {
 // Formas planas juntas en una sola malla: se pintan en el orden en que se añaden.
 class Flat {
   constructor() { this.pos = []; this.col = []; this.idx = []; }
-  shape(shape, hex) {
-    const g = new THREE.ShapeGeometry(shape, 10);
+  shape(shape, hex, curve = 10) {
+    const g = new THREE.ShapeGeometry(shape, curve);
     const base = this.pos.length / 3, c = new THREE.Color(hex), p = g.attributes.position;
     for (let i = 0; i < p.count; i++) {
       this.pos.push(p.getX(i), p.getY(i), 0);
@@ -479,7 +481,7 @@ class Flat {
   circle(x, y, rx, ry, hex) {
     const s = new THREE.Shape();
     s.absellipse(x, y, rx, ry, 0, Math.PI * 2);
-    this.shape(s, hex);
+    this.shape(s, hex, 48);
   }
   // La rueda de color: anillos de vértices, cada uno con el color que le toca.
   wheel(radius, colorAt, rings = 14, segs = 72) {
@@ -508,7 +510,7 @@ class Flat {
 const ICON_FILES = {
   inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
   pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial',
-  'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid',
+  'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid', 'shape:more': 'shape-more',
   'tool:palillo': 'tool-palillo', 'tool:cuter': 'tool-cuter', 'tool:cuchara': 'tool-cuchara',
   'tool:dedo': 'tool-dedo', 'tool:rodillo': 'tool-rodillo', 'tool:espatula': 'tool-espatula',
   'tex:plain': 'tex-plain', 'tex:rough': 'tex-rough', 'tex:dots': 'tex-dots', 'tex:stripes': 'tex-stripes', 'tex:scales': 'tex-scales',
@@ -553,7 +555,7 @@ export const FLOWER = [
 // Si te quedas un momento sobre estos pétalos, de su parte gorda nace otra flor con sus opciones.
 const fan = (ids, step) => ids.map((id, i) => ({ id, off: (i - (ids.length - 1) / 2) * step }));
 const SUBS = {
-  add: fan(['shape:sphere', 'shape:cube', 'shape:pyramid'], 58),
+  add: fan(['shape:sphere', 'shape:cube', 'shape:pyramid', 'shape:more'], 54),
   sym: fan(['sym:x', 'sym:y', 'sym:z', 'sym:radial'], 54),
   paint: [{ id: 'color:wheel', off: 0, wheel: true }],
   remove: fan(['tool:palillo', 'tool:cuter', 'tool:cuchara'], 58),
@@ -584,6 +586,11 @@ function wheelSpot(hex) {
   return [Math.cos((h / 6) * Math.PI * 2) * rad, Math.sin((h / 6) * Math.PI * 2) * rad];
 }
 const DWELL = 0.42;
+// El pétalo grande de los sellos: un círculo sobre la flor, con dos anillos de dibujitos.
+const STAMP_DISC = 0.245, STAMP_THUMB = 0.034, STAMP_HOLE = 0.05;
+const STAMP_RINGS = [{ r: 0.098, n: 8 }, { r: 0.188, n: 14 }];
+const STAMP_SLOTS = STAMP_RINGS.reduce((t, x) => t + x.n, 0);
+const ATLAS_CELL = 96, ATLAS_N = 5;
 const wrap = (a) => ((a + 540) % 360) - 180;
 // Muelle con rebote: lo que hace que se sienta vivo.
 const STIFF = 520, DAMP = 24;
@@ -654,6 +661,7 @@ export class Flower {
       return p;
     });
     this.wheelHex = '#cfc6bb';
+    this.buildStampDisc();
     this.petals.forEach((p) => loadIcon(p, ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
     this.subPetals.filter((p) => !p.wheel).forEach((p) => loadIcon(p, SUB_ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
     // Nombre de lo que señalas.
@@ -669,6 +677,78 @@ export class Flower {
     this.label.renderOrder = 1000;
     this.label.visible = false;
     this.group.add(this.label);
+  }
+
+  buildStampDisc() {
+    const disc = new THREE.Group();
+    disc.visible = false;
+    const back = new Flat();
+    back.circle(0, 0, STAMP_DISC + 0.004, STAMP_DISC + 0.004, INK);
+    back.circle(0, 0, STAMP_DISC, STAMP_DISC, COLORS.paper);
+    const bg = new THREE.Mesh(back.geometry(), flatMat());
+    bg.renderOrder = 950;
+    disc.add(bg);
+    // Todos los dibujitos en una sola textura.
+    this.atlas = document.createElement('canvas');
+    this.atlas.width = this.atlas.height = ATLAS_CELL * ATLAS_N;
+    this.atlasTex = new THREE.CanvasTexture(this.atlas);
+    this.atlasTex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshBasicMaterial({ map: this.atlasTex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
+    this.slots = [];
+    STAMP_RINGS.forEach((ring) => {
+      for (let i = 0; i < ring.n; i++) {
+        const a = (i / ring.n) * Math.PI * 2;
+        const root = new THREE.Group();
+        root.position.set(Math.sin(a) * ring.r, Math.cos(a) * ring.r, 0);
+        const on = new Flat();
+        on.circle(0, 0, STAMP_THUMB + 0.006, STAMP_THUMB + 0.006, COLORS.yellow);
+        const halo = new THREE.Mesh(on.geometry(), flatMat());
+        halo.renderOrder = 951;
+        halo.visible = false;
+        const cell = this.slots.length;
+        const geo = new THREE.PlaneGeometry(STAMP_THUMB * 2, STAMP_THUMB * 2);
+        const uv = geo.attributes.uv, u0 = (cell % ATLAS_N) / ATLAS_N, v0 = 1 - (Math.floor(cell / ATLAS_N) + 1) / ATLAS_N;
+        for (let k = 0; k < uv.count; k++) uv.setXY(k, u0 + uv.getX(k) / ATLAS_N, v0 + uv.getY(k) / ATLAS_N);
+        const pic = new THREE.Mesh(geo, mat);
+        pic.renderOrder = 952;
+        root.add(halo, pic);
+        root.visible = false;
+        disc.add(root);
+        this.slots.push({ root, halo, pic, x: root.position.x, y: root.position.y, id: null, size: 1 });
+      }
+    });
+    this.stampDisc = disc;
+    this.group.add(disc);
+    this.stampsOpen = false;
+  }
+
+  // list: [{ id, canvas }]. Se llena en orden, del anillo de dentro al de fuera. canvas puede llegar luego.
+  setStamps(list) {
+    this.stampList = list.slice(0, Math.min(STAMP_SLOTS, ATLAS_N * ATLAS_N));
+    const g = this.atlas.getContext('2d');
+    g.clearRect(0, 0, this.atlas.width, this.atlas.height);
+    // El anillo de fuera se reparte por igual entre los que haya.
+    const inner = STAMP_RINGS[0].n, outer = Math.max(0, this.stampList.length - inner);
+    this.slots.forEach((s, i) => {
+      const it = this.stampList[i];
+      s.id = it?.id ?? null;
+      s.root.visible = !!it;
+      if (i >= inner && it) {
+        const a = ((i - inner) / outer) * Math.PI * 2;
+        s.x = Math.sin(a) * STAMP_RINGS[1].r;
+        s.y = Math.cos(a) * STAMP_RINGS[1].r;
+        s.root.position.set(s.x, s.y, 0);
+      }
+      if (it?.canvas) g.drawImage(it.canvas, (i % ATLAS_N) * ATLAS_CELL, Math.floor(i / ATLAS_N) * ATLAS_CELL, ATLAS_CELL, ATLAS_CELL);
+    });
+    this.atlasTex.needsUpdate = true;
+  }
+
+  openStamps(on) {
+    if (on === this.stampsOpen) return;
+    this.stampsOpen = on;
+    this.stampDisc.visible = on;
+    for (const p of [...this.petals, ...this.subPetals]) p.body.visible = !on;
   }
 
   buildWheel(p) {
@@ -712,6 +792,8 @@ export class Flower {
     this.age = 0;
     this.sub = false;
     this.pStrength = this.pStrengthV = 0;
+    this.isActive = isActive;
+    this.openStamps(false);
     this.setWheel(color, ...wheelSpot(color));
     this.setHighlight(null);
     for (const p of [...this.petals, ...this.subPetals]) {
@@ -736,6 +818,7 @@ export class Flower {
     const a = Math.atan2(x, -y) / DEG;
     this.pAngle = a;
     this.pStrength = Math.max(0, Math.min(1, (d - DEAD) / 0.035));
+    if (this.stampsOpen) return this.hoverStamps(x, -y, d);
     let id = null;
     if (d >= DEAD) {
       id = this.sub ? this.hoverSub(x, -y) : null;
@@ -745,6 +828,22 @@ export class Flower {
     // El submenú se cierra en cuanto te vas a otro pétalo o sales de la flor.
     if (this.sub && id !== this.sub && !SUBS[this.sub].some((s) => s.id === id)) this.setSub(false);
     return this.setHighlight(id);
+  }
+
+  // En el pétalo de los sellos. Volver al centro (o salir por fuera) lleva de vuelta a la flor.
+  hoverStamps(x, y, d) {
+    if (d < STAMP_HOLE || d > STAMP_DISC + 0.05) {
+      this.openStamps(false);
+      this.setSub(false);
+      return this.setHighlight(null);
+    }
+    let best = null, bd = 0.06;
+    for (const s of this.slots) {
+      if (!s.id) continue;
+      const q = Math.hypot(x - s.x, y - s.y);
+      if (q < bd) { bd = q; best = s.id; }
+    }
+    return this.setHighlight(best);
   }
 
   // ¿Qué opción de la flor abierta hay en (x, y), con y hacia arriba?
@@ -777,6 +876,11 @@ export class Flower {
   // El stick señala una dirección: como una mano que estuviera ya sobre el pétalo.
   hoverDir(ax, ay) {
     const l = Math.hypot(ax, ay) || 1;
+    // Sellos: empujar a medias es el anillo de dentro; a fondo, el de fuera.
+    if (this.stampsOpen) {
+      const r = (l < 0.82 ? STAMP_RINGS[0] : STAMP_RINGS[1]).r;
+      return this.hover((ax / l) * r, (ay / l) * r);
+    }
     if (this.sub) {
       const c = this.subCenter();
       // Al abrirse las opciones sigues en el pétalo: hay que mover el stick para entrar en ellas.
@@ -804,7 +908,7 @@ export class Flower {
   isOver(world) {
     const p = this.group.worldToLocal(vT.copy(world));
     const d = Math.hypot(p.x, p.y);
-    return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.sub ? 0.34 : OUTER);
+    return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.stampsOpen ? STAMP_DISC + 0.05 : this.sub ? 0.34 : OUTER);
   }
 
   // on: el id del pétalo cuyas opciones se abren, o false para cerrarlas.
@@ -823,7 +927,7 @@ export class Flower {
     if (id === this.highlight) return false;
     this.highlight = id;
     this.since = this.age;
-    const p = this.find(id);
+    const p = this.find(id) || (id && this.slots.some((s) => s.id === id) ? {} : null);
     this.label.visible = !!p;
     this.petals.forEach((q) => setOrder(q, q.id === id || q.id === this.sub ? 940 : q.order));
     this.subPetals.forEach((q) => setOrder(q, q.id === id ? 935 : q.order));
@@ -852,6 +956,23 @@ export class Flower {
     const step = Math.min(dt, 1 / 40);
     this.age += dt;
     if (SUBS[this.highlight] && !this.sub && this.age - this.since > DWELL) this.setSub(this.highlight);
+    if (this.highlight === 'shape:more' && this.age - this.since > DWELL) {
+      this.openStamps(true);
+      this.setHighlight(null);
+    }
+    if (this.stampsOpen) {
+      const k = 1 - Math.exp(-dt * 18);
+      for (const s of this.slots) {
+        if (!s.id) continue;
+        const hot = s.id === this.highlight;
+        s.size += ((hot ? 1.3 : 1) - s.size) * k;
+        s.root.scale.setScalar(s.size);
+        s.halo.visible = this.isActive?.(s.id) || hot;
+        s.root.position.z = hot ? 0.002 : 0;
+        s.pic.renderOrder = hot ? 954 : 952;
+        s.halo.renderOrder = hot ? 953 : 951;
+      }
+    }
     this.subAge = (this.subAge || 0) + dt;
     const opening = Math.min(1, this.age / 0.16);
     const s = this.pStrength;
@@ -886,6 +1007,12 @@ export class Flower {
         p.body.scale.setScalar(Math.max(0.0001, p.size));
         p.holder.rotation.z = p.ang * DEG;
       });
+    }
+    const slot = this.stampsOpen && this.slots.find((s) => s.id === this.highlight);
+    if (slot) {
+      this.label.visible = true;
+      this.label.position.set(slot.x, slot.y + STAMP_THUMB * 1.3 + 0.02, 0.003);
+      return;
     }
     const hot = this.find(this.highlight);
     this.label.visible = !!hot && hot.id !== this.sub; // no tapar las opciones

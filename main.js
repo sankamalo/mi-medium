@@ -4,8 +4,9 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { SDFGrid } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
-import { createControllerRig, Flower } from './flor.js';
+import { createControllerRig, Flower, surfaceNets } from './flor.js';
 import { CanvasPanel, CERA } from './panel.js';
+import { STAMPS, addOwnStamp, removeOwnStamp, stampFromGrid, stampThumb } from './sellos.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
@@ -34,7 +35,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
-  invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
+  invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
   color: '#cfc6bb', bakeSize: 2048,
@@ -219,9 +220,22 @@ const CURSOR_GEO = {
   cube: new THREE.BoxGeometry(1.5, 1.5, 1.5, 2, 2, 2),
   pyramid: new THREE.ConeGeometry(Math.SQRT2, 2, 4, 1).rotateY(Math.PI / 4).translate(0, 0.4, 0),
 };
+// El fantasma de un sello: su malla, hecha la primera vez que se usa.
+function stampCursorGeo(id) {
+  const st = STAMPS.get(id);
+  if (!st) return CURSOR_GEO.sphere;
+  if (st.geo) return st.geo;
+  const out = { d: 0, c: null };
+  const net = surfaceNets((p) => { st.eval(p[0], p[1], p[2], out); return out.d; }, [-1.3, -1.3, -1.3], [1.3, 1.3, 1.3], 0.09);
+  st.geo = new THREE.BufferGeometry();
+  st.geo.setAttribute('position', new THREE.BufferAttribute(net.positions, 3));
+  st.geo.setIndex(net.indices);
+  return st.geo;
+}
 function updateCursorShape() {
   const sh = shapeActive() ? state.shape : 'sphere';
-  if (cursor.geometry !== CURSOR_GEO[sh]) cursor.geometry = CURSOR_GEO[sh];
+  const geo = sh === 'stamp' ? stampCursorGeo(state.stamp) : CURSOR_GEO[sh];
+  if (cursor.geometry !== geo) cursor.geometry = geo;
   if (sh === 'sphere') {
     cursor.quaternion.identity();
     return;
@@ -637,11 +651,14 @@ function stabilize(p) {
 }
 
 // Una pincelada = el tramo desde el punto anterior hasta el actual (trazo continuo).
+const stampOpts = (o) => (o?.shape === 'stamp' ? { ...o, stampEval: STAMPS.get(o.stamp)?.eval } : o);
 function brushCall(L, tool, a, b, r, s, inv, dt, paint, opts) {
   L.fit(a, b, r);
-  const res = L.grid.applyBrush(tool, a, b, r, s, inv, dt, L === active ? strokeRec : null, paint, opts);
+  const res = L.grid.applyBrush(tool, a, b, r, s, inv, dt, L === active ? strokeRec : null, paint, stampOpts(opts));
   if (res) L.markDirty(res.lo, res.hi);
-  live.brush(L, tool, a, b, r, s, inv, dt, paint, opts);
+  // Los sellos tuyos no están en el Mac: le llega la escena entera.
+  if (opts?.shape === 'stamp' && STAMPS.get(opts.stamp)?.own) live.structure();
+  else live.brush(L, tool, a, b, r, s, inv, dt, paint, opts);
 }
 
 // Orientación del pincel de forma (cubo, pirámide) en coordenadas del modelo:
@@ -784,6 +801,8 @@ function optionOn(id) {
   if (id === 'sym:y') return state.symY;
   if (id === 'sym:z') return state.symZ;
   if (id === 'sym:radial') return state.radial;
+  if (id === 'shape:more') return state.shape === 'stamp';
+  if (k === 'stamp') return state.shape === 'stamp' && state.stamp === id;
   if (k === 'shape') return state.shape === v;
   return state.tool === id;
 }
@@ -791,7 +810,7 @@ function optionOn(id) {
 // Opciones de la pincelada (null si no hay ninguna: el mensaje al espejo sigue siendo pequeño).
 function brushOpts(tool, rot, c) {
   const o = {};
-  if (rot) { o.shape = state.shape; o.rot = c ? mul3(c.m, rot) : rot; }
+  if (rot) { o.shape = state.shape; o.rot = c ? mul3(c.m, rot) : rot; if (state.shape === 'stamp') o.stamp = state.stamp; }
   if (state.edge !== 'even') o.edge = state.edge;
   if (state.texture !== 'plain' && TEXTURED.has(tool)) {
     o.texture = state.texture;
@@ -863,7 +882,7 @@ function brushStep(tool, a, p, dt, pressure) {
   const paint = { rgb: hexToRgb(state.color), base: active.base };
   const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
   const rot = (tool === 'add' || tool === 'remove') && state.shape !== 'sphere' ? brushRot() : null;
-  if (state.edge === 'soft' && (tool === 'add' || tool === 'remove')) (meltPath ||= [[a[0], a[1], a[2]]]).push([p[0], p[1], p[2]]);
+  if (state.edge === 'soft' && (tool === 'add' || tool === 'remove') && !(rot && state.shape === 'stamp')) (meltPath ||= [[a[0], a[1], a[2]]]).push([p[0], p[1], p[2]]);
   forCopies(a, p, (qa, qb, c) => {
     brushCall(active, tool, qa, qb, state.radius, s, state.invert, dt, usePaint, brushOpts(tool, rot, c));
   });
@@ -874,6 +893,12 @@ function applyAt(p, dt, pressure = 1) {
   const a = strokePrev || p;
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
   const moved = Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
+  // Un sello se pone de un golpe: mientras no sueltes, no se repite.
+  if (shapeActive() && state.shape === 'stamp') {
+    if (!strokePrev) brushStep(tool, p, p, 1 / 60, pressure);
+    strokePrev = [p[0], p[1], p[2]];
+    return;
+  }
   if (state.line && tool !== 'grab') return trackLine(p, pressure, lineStroke?.tool || tool);
   if (strokePrev && moved < state.radius * 0.05 && (tool === 'add' || tool === 'remove')) return;
   if (tool === 'grab') {
@@ -933,6 +958,17 @@ function choose(id) {
       if (state.tool !== 'remove') state.tool = 'add';
       toast(t('Pincel: {0}', t(LABELS[id])), 1200);
       break;
+    default:
+      if (STAMPS.has(id)) {
+        state.shape = 'stamp';
+        state.stamp = id;
+        if (state.tool !== 'remove') state.tool = 'add';
+        toast(t('Pincel: {0}', label(id)), 1200);
+      }
+      break;
+    case 'shape:more': panelPage = 'sellos'; if (panel3d.visible) drawPanel(); $('stampBox').hidden = !$('stampBox').hidden; break;
+    case 'stamp:save': saveStamp(); break;
+    case 'stamp:delete': deleteLastStamp(); break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
     case 'sym': {
@@ -982,6 +1018,84 @@ function choose(id) {
     case 'layerNext': nextLayer(); break;
   }
   updateHud();
+}
+
+// ---------- Sellos ----------
+// Los de la app y los tuyos, guardados en las gafas. Sus dibujitos se hacen de uno en uno.
+const MAX_OWN_STAMPS = 9;
+let ownStamps = []; // { id, name, n, d, c }
+const stampThumbs = new Map();
+const stampRows = () => [{ id: 'stamp:save' }, ...STAMPS.values()];
+function plusThumb() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 72;
+  const g = c.getContext('2d');
+  g.fillStyle = CERA.ink;
+  g.beginPath(); g.arc(36, 36, 32, 0, Math.PI * 2); g.fill();
+  g.fillStyle = CERA.yellow;
+  g.fillRect(31, 15, 10, 42); g.fillRect(15, 31, 42, 10);
+  return c;
+}
+function stampsChanged() {
+  flower.setStamps(stampRows().map((s) => ({ id: s.id, canvas: stampThumbs.get(s.id) })));
+  drawStampBox();
+  if (panel3d.visible) drawPanel();
+}
+function drawStampBox() {
+  const box = $('stampBox');
+  box.replaceChildren(...stampRows().map((s) => {
+    const b = document.createElement('button');
+    b.className = 'stamp';
+    b.title = label(s.id);
+    b.dataset.opt = s.id;
+    const pic = stampThumbs.get(s.id);
+    if (pic) { const c = document.createElement('canvas'); c.width = c.height = pic.width; c.getContext('2d').drawImage(pic, 0, 0); b.append(c); }
+    b.onclick = () => choose(s.id);
+    return b;
+  }));
+  updateHud();
+}
+let thumbTimer = null;
+function renderThumbs() {
+  clearTimeout(thumbTimer);
+  const todo = [...STAMPS.values()].find((s) => !stampThumbs.has(s.id));
+  if (!todo) return stampsChanged();
+  stampThumbs.set(todo.id, stampThumb(todo));
+  thumbTimer = setTimeout(renderThumbs, 30);
+}
+function saveStamp() {
+  const n = (ownStamps.at(-1)?.num || 0) + 1;
+  const saved = stampFromGrid(active.grid, 'stamp:mio' + n, t('Mi sello {0}', n));
+  if (!saved) return toast(t('Esta capa está vacía'));
+  saved.num = n;
+  if (ownStamps.length >= MAX_OWN_STAMPS) dropStamp(ownStamps[0]);
+  ownStamps.push(saved);
+  addOwnStamp(saved);
+  state.shape = 'stamp';
+  state.stamp = saved.id;
+  if (state.tool !== 'remove') state.tool = 'add';
+  idbSet('sellos', ownStamps).catch(() => {});
+  toast(t('Sello guardado'));
+  renderThumbs();
+}
+function dropStamp(s) {
+  ownStamps = ownStamps.filter((q) => q !== s);
+  removeOwnStamp(s.id);
+  stampThumbs.delete(s.id);
+  if (state.stamp === s.id) { state.stamp = 'stamp:ojo'; if (state.shape === 'stamp') state.shape = 'sphere'; }
+}
+function deleteLastStamp() {
+  const s = ownStamps.at(-1);
+  if (!s) return;
+  dropStamp(s);
+  idbSet('sellos', ownStamps).catch(() => {});
+  stampsChanged();
+}
+async function loadStamps() {
+  try { ownStamps = (await idbGet('sellos')) || []; } catch { ownStamps = []; }
+  ownStamps.forEach(addOwnStamp);
+  stampThumbs.set('stamp:save', plusThumb());
+  renderThumbs();
 }
 
 function setColor(hex) {
@@ -1249,7 +1363,7 @@ for (const hex of PALETTE) {
   swatchBox.append(s);
 }
 
-const label = (id) => t(LABELS[id] || id);
+const label = (id) => (STAMPS.get(id)?.own ? STAMPS.get(id).name : t(LABELS[id] || STAMPS.get(id)?.name || id));
 // Carga de la escena: quads en pantalla y memoria de las rejillas (para ver cuánto aguanta el casco).
 let loadCache = null, loadSig = '';
 function sceneLoad() {
@@ -1791,7 +1905,7 @@ addEventListener('keydown', (e) => {
   else if (k >= '1' && k <= '9') choose(TOOL_KEYS[+k - 1]);
   else if (k === '0') choose('crease');
   else if (k === 'l') choose(state.line ? 'stroke:free' : 'stroke:line');
-  else if (k === 'b') choose('shape:' + { sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape]);
+  else if (k === 'b') choose('shape:' + ({ sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape] || 'sphere'));
   else if (k === 'g') choose('move');
   else if (k === 'p') choose('paint');
   else if (k === 'w') choose('wire');
@@ -1915,6 +2029,7 @@ ray.visible = false;
 // Menú de las gafas: la flor.
 const flower = new Flower((id) => label(id));
 scene.add(flower.group);
+loadStamps();
 
 // HUD en el mando izquierdo
 const hudCanvas = document.createElement('canvas');
@@ -1977,6 +2092,7 @@ const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, co
 function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
   if (panelPage === 'pincel') return buildBrushPage();
+  if (panelPage === 'sellos') return buildStampsPage();
   if (panelPage === 'material') return buildMaterialPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
@@ -2099,7 +2215,7 @@ function buildBrushPage() {
       active: () => optionOn(id), onClick: () => choose(id) }));
     y += h + 62;
   };
-  row('FORMA', ['sphere', 'cube', 'pyramid'].map((sh) => ['shape:' + sh, `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`]));
+  row('FORMA', [...['sphere', 'cube', 'pyramid'].map((sh) => ['shape:' + sh, `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`]), ['shape:more', '+']]);
   row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
   row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
   row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
@@ -2110,6 +2226,22 @@ function buildBrushPage() {
   ['Textura: en Añadir, Quitar, Inflar y Pintar.', 'Trazo recto: aprieta en el inicio, suelta en el final.',
     'Simetría: coge la bola amarilla con el gatillo para moverla y girarla.']
     .forEach((text, i) => W.push({ type: 'label', x: M, y: y + 10 + i * 66, size: 24, wrap: IW, text }));
+  return W;
+}
+// Página de los sellos: una rejilla de dibujitos; primero el botón de guardar tu capa.
+function buildStampsPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, cols = 4, gap = 12, size = (IW - (cols - 1) * gap) / cols;
+  const list = [...STAMPS.values()];
+  const rows = Math.ceil(list.length / cols);
+  const yGrid = 196, yText = yGrid + rows * (size + gap) + 22, yEnd = yText + (ownStamps.length ? 164 : 84);
+  W.push(panelBlock(8, yEnd, CERA.blue));
+  pageHead(W, 'Sellos');
+  W.push({ type: 'button', x: M, y: 108, w: IW, h: 66, size: 26, label: 'Guardar mi capa como sello', onClick: () => choose('stamp:save') });
+  list.forEach((s, i) => W.push({ type: 'thumb', x: M + (i % cols) * (size + gap), y: yGrid + Math.floor(i / cols) * (size + gap), w: size, h: size,
+    img: stampThumbs.get(s.id), active: () => optionOn(s.id), onClick: () => choose(s.id) }));
+  W.push({ type: 'label', x: M, y: yText, size: 22, wrap: IW, text: 'Sellos: pulsa una vez y queda puesto. El tamaño es el del pincel.' });
+  if (ownStamps.length) W.push({ type: 'button', x: M, y: yText + 64, w: IW, h: 66, size: 24, label: 'Borrar mi último sello', onClick: () => choose('stamp:delete') });
   return W;
 }
 function buildObrasPage() {
@@ -2170,7 +2302,7 @@ function closeFlower(pick) {
   xr.menuOpen = false;
   const h = flower.highlight;
   flower.close();
-  if (!pick || !h) return;
+  if (!pick || !h || h === 'shape:more') return;
   if (h === 'color:wheel') {
     choose('paint');
     setColor(flower.wheelHex);
@@ -2534,7 +2666,7 @@ async function applyRemote(m) {
     const L = layerById(m.l);
     if (!L) return;
     L.fit(m.a, m.b, m.r);
-    const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, m.o);
+    const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, stampOpts(m.o));
     if (res) L.markDirty(res.lo, res.hi);
   } else if (m.t === 'look') {
     setLook(m.look);
@@ -3135,4 +3267,4 @@ document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => chang
 changeLang(getLang());
 
 window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
-  glb: () => buildGLB(exportObjects()), closeFlower, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, camera, spectatorPose: SPECTATOR ? spectatorPose : null };
+  glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, stamps: STAMPS, camera, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

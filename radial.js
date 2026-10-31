@@ -43,7 +43,7 @@ export const SHAPES = [
   { id: 'shape:cube', shape: 'cube', label: 'Cubo', icon: '■' },
   { id: 'shape:pyramid', shape: 'pyramid', label: 'Pirámide', icon: '▲' },
 ];
-export const SHAPE_ICON = { sphere: '●', cube: '■', pyramid: '▲' };
+export const SHAPE_ICON = { sphere: '●', cube: '■', pyramid: '▲', stamp: '✚' };
 
 // Nombres de todo lo que se puede elegir (también lo que solo está en el panel lateral).
 export const LABELS = {
@@ -54,7 +54,7 @@ export const LABELS = {
   'tool:palillo': 'Palillo', 'tool:cuter': 'Cúter', 'tool:cuchara': 'Cuchara',
   'tool:dedo': 'Dedo mojado', 'tool:rodillo': 'Rodillo', 'tool:espatula': 'Espátula',
   'tex:plain': 'Liso', 'tex:rough': 'Rugoso', 'tex:dots': 'Puntos', 'tex:stripes': 'Rayas', 'tex:scales': 'Escamas',
-  'color:wheel': 'Rueda de color',
+  'color:wheel': 'Rueda de color', 'shape:more': 'Sellos', 'stamp:save': 'Guardar mi capa como sello',
 };
 
 const DWELL_MS = 450;
