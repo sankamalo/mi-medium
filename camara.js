@@ -353,7 +353,7 @@ export function createWebcam(ctx) {
     beep(440, 0.3);
     const pts = [];
     for (let i = 0; i < samples.length && !ui.cancelled; i++) {
-      const uv = await ui.pick(samples[i].img, t('Foto {0} de {1}: haz clic en la <b>punta del mando</b> (el centro del aro). Si no se ve, pulsa "Saltar".', i + 1, samples.length));
+      const uv = await ui.pick(samples[i].img, t('Foto {0} de {1}: haz clic en la <b>punta delantera del mando</b>. Si no se ve, pulsa "Saltar".', i + 1, samples.length));
       if (uv) pts.push({ p: samples[i].hands[hand], u: uv[0], v: uv[1], i });
     }
     if (ui.cancelled) { ui.close(); return; }
