@@ -1648,7 +1648,7 @@ const xr = {
 const grabOffset = new THREE.Matrix4();
 const tmpM = new THREE.Matrix4(), tmpS = new THREE.Vector3();
 const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vT0 = new THREE.Vector3();
-const scale0 = { d: 1, s: 1, mid: new THREE.Vector3(), pos: new THREE.Vector3() };
+const scale0 = { d: 1, s: 1, mid: new THREE.Vector3(), pos: new THREE.Vector3(), dir: new THREE.Vector3(), quat: new THREE.Quaternion(), turn: new THREE.Quaternion() };
 const panelRay = new THREE.Raycaster();
 let hudMsgShown = false;
 
@@ -1716,7 +1716,7 @@ function xrFrame(dt) {
   if (xr.follow) placeWorkspace(false, dt);
 
   // Grips: uno agarra y mueve el modelo (palanca adelante/atrás = más grande/más pequeño);
-  // los dos a la vez también lo escalan, separando las manos.
+  // los dos a la vez lo escalan (separando las manos), lo giran y lo mueven.
   const gL = !!gpL?.buttons[1]?.pressed, gR = !!gpR?.buttons[1]?.pressed;
   const mode = gL && gR ? 'scale' : gL ? 'grabL' : gR ? 'grabR' : 'none';
   if (mode !== 'none') xr.follow = false;
@@ -1733,6 +1733,8 @@ function xrFrame(dt) {
       scale0.s = model.scale.x;
       scale0.mid.addVectors(vA, vB).multiplyScalar(0.5);
       scale0.pos.copy(model.position);
+      scale0.dir.subVectors(vB, vA).normalize();
+      scale0.quat.copy(model.quaternion);
     }
   }
   if (mode === 'grabL' || mode === 'grabR') {
@@ -1749,7 +1751,11 @@ function xrFrame(dt) {
     vB.setFromMatrixPosition(right.matrixWorld);
     const s = THREE.MathUtils.clamp((scale0.s * vA.distanceTo(vB)) / scale0.d, 0.05, 8);
     model.scale.setScalar(s);
-    model.position.copy(scale0.pos).sub(scale0.mid).multiplyScalar(s / scale0.s).add(scale0.mid);
+    // La línea entre las dos manos es como un eje que agarras: lo que gira ella, gira el modelo.
+    scale0.turn.setFromUnitVectors(scale0.dir, vT0.subVectors(vB, vA).normalize());
+    model.quaternion.copy(scale0.turn).multiply(scale0.quat);
+    const midNow = vT0.addVectors(vA, vB).multiplyScalar(0.5);
+    model.position.copy(scale0.pos).sub(scale0.mid).multiplyScalar(s / scale0.s).applyQuaternion(scale0.turn).add(midNow);
   }
   model.updateMatrixWorld();
 

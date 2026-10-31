@@ -2,6 +2,7 @@
 // El mando y la mano viven en el espacio de agarre (gripSpace) y usan las medidas reales del
 // Touch Plus de Quest. Los dedos se mueven con los sensores de contacto del mando.
 import * as THREE from 'three';
+import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
 
 const INK = 0x141210;
 const COLORS = {
@@ -489,74 +490,34 @@ class Flat {
   }
 }
 
-// Piezas de un icono: círculos [x, y, rx, ry, color] o polígonos { p: [[x, y]…], c: color }.
-// Primero una pasada negra algo más gorda; así los trozos se unen en una sola silueta.
-function drawIcon(flat, parts, ink = 0.0018) {
-  const grown = (p) => {
-    const cx = p.reduce((t, q) => t + q[0], 0) / p.length, cy = p.reduce((t, q) => t + q[1], 0) / p.length;
-    return p.map(([x, y]) => {
-      const dx = x - cx, dy = y - cy, l = Math.hypot(dx, dy) || 1;
-      return [x + (dx / l) * ink * 1.3, y + (dy / l) * ink * 1.3];
-    });
-  };
-  for (const a of parts) {
-    if (a.noInk) continue;
-    if (Array.isArray(a)) flat.circle(a[0], a[1], a[2] + ink, a[3] + ink, INK);
-    else flat.poly(grown(a.p), INK);
+// Iconos: un SVG de relleno por cada pétalo, en app/iconos/. Para cambiar uno, se cambia el archivo.
+const ICON_FILES = {
+  inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
+  'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid',
+};
+const ICON_SIZE = 0.058, SUB_ICON_SIZE = 0.036;
+const INK_ON = new Set([COLORS.yellow, COLORS.paper, COLORS.pink]); // en estos pétalos, el icono va en negro
+
+async function loadIcon(p, size) {
+  const url = new URL(`./iconos/${ICON_FILES[p.id]}.svg`, import.meta.url);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const flat = new Flat();
+  const hex = INK_ON.has(p.color) ? INK : COLORS.white;
+  for (const path of new SVGLoader().parse(await res.text()).paths) {
+    if (path.userData?.style?.fill === 'none') continue;
+    for (const shape of SVGLoader.createShapes(path)) flat.shape(shape, hex);
   }
-  for (const a of parts) {
-    if (Array.isArray(a)) flat.circle(a[0], a[1], a[2], a[3], a[4]);
-    else flat.poly(a.p, a.c);
-  }
+  // Sea cual sea su tamaño original: centrado, derecho (en SVG la Y va hacia abajo) y a la medida.
+  const geo = flat.geometry();
+  geo.computeBoundingBox();
+  const box = geo.boundingBox, w = box.max.x - box.min.x, h = box.max.y - box.min.y;
+  const k = size / (Math.max(w, h) || 1);
+  geo.translate(-(box.min.x + box.max.x) / 2, -(box.min.y + box.max.y) / 2, 0);
+  geo.scale(k, -k, 1);
+  p.icon.geometry.dispose();
+  p.icon.geometry = geo;
 }
-const rect = (x, y, w, h, c, rot = 0) => {
-  const co = Math.cos(rot), si = Math.sin(rot);
-  return { c, p: [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([a, b]) => [x + a * co - b * si, y + a * si + b * co]) };
-};
-const dots = (list, c) => list.map(([x, y, r]) => Object.assign([x, y, r, r, c], { noInk: true }));
-const { white: WHITE, pink: PINK, blue: BLUE, yellow: YELLOW, hand: HAND } = COLORS;
-const ICONS = {
-  inflate: () => [[-0.017, -0.004, 0.015, 0.014, WHITE], [0.001, 0.007, 0.018, 0.017, WHITE], [0.018, -0.004, 0.014, 0.013, WHITE], [0.001, -0.009, 0.021, 0.011, WHITE]],
-  move: () => [
-    { c: YELLOW, p: [[-0.036, -0.015], [-0.006, -0.015], [-0.021, 0.018]] },
-    rect(0.026, -0.002, 0.016, 0.016, WHITE),
-    [0.011, -0.002, 0.014, 0.012, HAND],
-    rect(0.012, 0.012, 0.018, 0.009, HAND, 1),
-  ],
-  paint: () => [
-    rect(0.009, -0.011, 0.024, 0.034, WHITE),
-    { c: WHITE, p: [[-0.003, 0.006], [0.021, 0.006], [0.016, 0.014], [0.002, 0.014]] },
-    rect(0.009, 0.018, 0.009, 0.009, BLUE),
-    ...dots([[-0.008, 0.02, 0.0028], [-0.016, 0.026, 0.0032], [-0.017, 0.015, 0.0032], [-0.027, 0.03, 0.0028], [-0.028, 0.02, 0.0032], [-0.026, 0.008, 0.0028]], WHITE),
-  ],
-  add: () => [
-    [0, -0.019, 0.023, 0.0085, WHITE], [0.002, -0.008, 0.017, 0.0075, WHITE], [-0.001, 0.003, 0.012, 0.0068, WHITE], [0.001, 0.012, 0.0072, 0.0058, WHITE],
-    { c: WHITE, p: [[-0.005, 0.015], [0.006, 0.015], [0.002, 0.03]] },
-  ],
-  remove: () => [
-    rect(-0.009, -0.004, 0.03, 0.021, PINK, 0.32),
-    rect(0.015, 0.004, 0.019, 0.021, BLUE, 0.32),
-    ...dots([[0.025, 0.021, 0.0028], [0.012, 0.027, 0.0028], [0.032, 0.012, 0.0024]], PINK),
-  ],
-  flatten: () => [
-    [0, -0.015, 0.028, 0.008, WHITE],
-    rect(0, -0.003, 0.046, 0.009, BLUE),
-    rect(0, 0.012, 0.009, 0.022, BLUE),
-  ],
-  grab: () => [
-    [-0.015, -0.01, 0.017, 0.016, WHITE],
-    { c: WHITE, p: [[-0.018, 0.005], [-0.003, -0.018], [0.027, 0.023]] },
-    { c: INK, noInk: true, p: [[0.018, 0.012], [0.03, 0.026], [0.033, 0.009]] },
-  ],
-  sym: () => [
-    { c: INK, p: [[-0.006, -0.018], [-0.006, 0.018], [-0.03, 0]] },
-    { c: WHITE, p: [[0.006, -0.018], [0.006, 0.018], [0.03, 0]] },
-    ...[-0.024, -0.012, 0, 0.012, 0.024].map((y) => Object.assign(rect(0, y, 0.0034, 0.0075, INK), { noInk: true })),
-  ],
-  'shape:sphere': () => [[0, 0, 0.015, 0.015, WHITE]],
-  'shape:cube': () => [rect(0, 0, 0.027, 0.027, WHITE)],
-  'shape:pyramid': () => [{ c: WHITE, p: [[-0.017, -0.013], [0.017, -0.013], [0, 0.017]] }],
-};
 
 // El reloj de la flor: arriba las de siempre, abajo las demás.
 export const FLOWER = [
@@ -596,9 +557,7 @@ function makePetal(def, len, wid, order) {
   const fill = new Flat();
   fill.shape(new THREE.Shape(petalPoints(len, wid)), def.color);
   const face = new THREE.Mesh(fill.geometry(), flatMat());
-  const pic = new Flat();
-  drawIcon(pic, ICONS[def.id]());
-  const icon = new THREE.Mesh(pic.geometry(), flatMat());
+  const icon = new THREE.Mesh(new THREE.BufferGeometry(), flatMat());
   const holder = new THREE.Group();
   holder.position.y = len * 0.64;
   holder.add(icon);
@@ -643,6 +602,8 @@ export class Flower {
       this.group.add(p.root);
       return p;
     });
+    this.petals.forEach((p) => loadIcon(p, ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
+    this.subPetals.forEach((p) => loadIcon(p, SUB_ICON_SIZE).catch((e) => console.warn('Icono', p.id, e)));
     // Nombre de lo que señalas.
     this.canvas = document.createElement('canvas');
     this.canvas.width = 640;
