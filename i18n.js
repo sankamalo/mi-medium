@@ -9,6 +9,15 @@ try { const s = localStorage.getItem('plastilinaLang'); if (LANGS.includes(s)) l
 // español: [inglés, tailandés]
 const D = {
   // Herramientas
+  'Aplan.': ['Flat', 'แบน'], 'Pellizcar': ['Pinch', 'บีบ'], 'Pellizc.': ['Pinch', 'บีบ'], 'Hendidura': ['Crease', 'ทำร่อง'], 'Hend.': ['Crease', 'ร่อง'], 'Arrast.': ['Drag', 'ลาก'],
+  'Simetría Y': ['Symmetry Y', 'สมมาตร Y'], 'Simetría Z': ['Symmetry Z', 'สมมาตร Z'], 'Radial': ['Radial', 'รัศมี'],
+  'Pincel': ['Brush', 'พู่กัน'], 'Pincel ▸': ['Brush ▸', 'พู่กัน ▸'], 'FORMA': ['SHAPE', 'รูปทรง'], 'BORDE': ['EDGE', 'ขอบ'], 'TEXTURA': ['TEXTURE', 'พื้นผิว'], 'TRAZO': ['STROKE', 'เส้น'], 'SIMETRÍA': ['SYMMETRY', 'สมมาตร'], 'COPIAS DE LA RADIAL': ['RADIAL COPIES', 'จำนวนสำเนา'],
+  'Borde': ['Edge', 'ขอบ'], 'Textura': ['Texture', 'พื้นผิว'], 'Trazo': ['Stroke', 'เส้น'],
+  'Suave': ['Soft', 'นุ่ม'], 'Normal': ['Normal', 'ปกติ'], 'Duro': ['Hard', 'แข็ง'],
+  'Liso': ['Plain', 'เรียบ'], 'Rugoso': ['Rough', 'ขรุขระ'], 'Puntos': ['Dots', 'จุด'], 'Rayas': ['Stripes', 'ลาย'], 'Escamas': ['Scales', 'เกล็ด'],
+  'Libre': ['Free', 'อิสระ'], 'Recto': ['Straight', 'ตรง'],
+  'Textura: en Añadir, Quitar, Inflar y Pintar.': ['Texture: on Add, Remove, Inflate and Paint.', 'พื้นผิว: ใช้กับ เพิ่ม ลบออก ทำให้พอง และระบายสี'],
+  'Trazo recto: aprieta en el inicio, suelta en el final.': ['Straight stroke: press at the start, release at the end.', 'เส้นตรง: กดที่จุดเริ่ม ปล่อยที่จุดจบ'],
   'Añadir': ['Add', 'เพิ่ม'], 'Quitar': ['Remove', 'ลบออก'], 'Suavizar': ['Smooth', 'ทำให้เรียบ'], 'Suaviz.': ['Smooth', 'เรียบ'],
   'Inflar': ['Inflate', 'ทำให้พอง'], 'Aplanar': ['Flatten', 'ทำให้แบน'], 'Arrastrar': ['Drag', 'ลาก'], 'Pintar': ['Paint', 'ระบายสี'],
   'Mover capa': ['Move layer', 'ย้ายเลเยอร์'], 'Mover': ['Move', 'ย้าย'],
@@ -85,9 +94,9 @@ const D = {
   'Nueva capa (N)': ['New layer (N)', 'เลเยอร์ใหม่ (N)'], 'Rellenar la capa con una esfera': ['Fill the layer with a sphere', 'เติมเลเยอร์ด้วยทรงกลม'], 'Vaciar la capa': ['Clear the layer', 'ล้างเลเยอร์'], 'Borrar la capa': ['Delete the layer', 'ลบเลเยอร์'],
   'Más rápido': ['Faster', 'เร็วกว่า'], 'Más detalle, más lento': ['More detail, slower', 'ละเอียดกว่า ช้ากว่า'], 'Malla nueva + detalle horneado, en este dispositivo (R)': ['New mesh + baked detail, on this device (R)', 'ตาข่ายใหม่ + รายละเอียดที่เบก บนอุปกรณ์นี้ (R)'],
   'QuadriFlow en Blender: sigue mejor la forma (necesita el Mac)': ['QuadriFlow in Blender (needs the Mac)', 'QuadriFlow ใน Blender (ต้องใช้ Mac)'], 'Mandar el modelo por WhatsApp, correo…': ['Send the model by WhatsApp, email…', 'ส่งโมเดลทาง WhatsApp, อีเมล…'],
-  'Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas · Botón central: mover vista · Rueda: zoom · SHIFT: suavizar · CTRL: invertir · ALT+clic: coger color · [ ]: tamaño · 1–8: herramientas (8 = arrastrar) · B: forma del pincel · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer':
-    ['Left click on the model: sculpt · Left click outside: orbit · Right click: tool dial · Middle button: pan · Wheel: zoom · SHIFT: smooth · CTRL: invert · ALT+click: pick color · [ ]: size · 1–8: tools (8 = drag) · B: brush shape · G: move layer (drag · Shift+drag = rotate · wheel on the layer = scale) · P: paint · W: show mesh · X: symmetry · N: new layer · TAB: next layer · R: remesh · E: to Blender · Cmd+Z: undo',
-      'คลิกซ้ายบนโมเดล: ปั้น · คลิกซ้ายด้านนอก: หมุน · คลิกขวา: วงเครื่องมือ · ปุ่มกลาง: เลื่อนมุมมอง · ลูกกลิ้ง: ซูม · SHIFT: ทำให้เรียบ · CTRL: กลับด้าน · ALT+คลิก: เลือกสี · [ ]: ขนาด · 1–8: เครื่องมือ (8 = ลาก) · B: รูปทรงแปรง · G: ย้ายเลเยอร์ (ลาก · Shift+ลาก = หมุน · ลูกกลิ้งบนเลเยอร์ = ปรับขนาด) · P: ระบายสี · W: แสดงตาข่าย · X: สมมาตร · N: เลเยอร์ใหม่ · TAB: เลเยอร์ถัดไป · R: Remesh · E: ส่งไป Blender · Cmd+Z: เลิกทำ'],
+  'Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas · Botón central: mover vista · Rueda: zoom · SHIFT: suavizar · CTRL: invertir · ALT+clic: coger color · [ ]: tamaño · 1–9 y 0: herramientas (8 = arrastrar) · B: forma del pincel · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer':
+    ['Left click on the model: sculpt · Left click outside: orbit · Right click: tool dial · Middle button: pan · Wheel: zoom · SHIFT: smooth · CTRL: invert · ALT+click: pick color · [ ]: size · 1–9, 0: tools (8 = drag) · B: brush shape · G: move layer (drag · Shift+drag = rotate · wheel on the layer = scale) · P: paint · W: show mesh · X: symmetry · N: new layer · TAB: next layer · R: remesh · E: to Blender · Cmd+Z: undo',
+      'คลิกซ้ายบนโมเดล: ปั้น · คลิกซ้ายด้านนอก: หมุน · คลิกขวา: วงเครื่องมือ · ปุ่มกลาง: เลื่อนมุมมอง · ลูกกลิ้ง: ซูม · SHIFT: ทำให้เรียบ · CTRL: กลับด้าน · ALT+คลิก: เลือกสี · [ ]: ขนาด · 1–9, 0: เครื่องมือ (8 = ลาก) · B: รูปทรงแปรง · G: ย้ายเลเยอร์ (ลาก · Shift+ลาก = หมุน · ลูกกลิ้งบนเลเยอร์ = ปรับขนาด) · P: ระบายสี · W: แสดงตาข่าย · X: สมมาตร · N: เลเยอร์ใหม่ · TAB: เลเยอร์ถัดไป · R: Remesh · E: ส่งไป Blender · Cmd+Z: เลิกทำ'],
   // Espejo y cámara externa
   'LA PLASTILINA · ESPEJO': ['LA PLASTILINA · MIRROR', 'LA PLASTILINA · กระจกสะท้อน'], 'Esperando a las gafas…': ['Waiting for the headset…', 'กำลังรอแว่น…'], 'En directo': ['Live', 'สด'],
   'Tus ojos': ['Your eyes', 'สายตาคุณ'], 'Cámara libre': ['Free camera', 'กล้องอิสระ'], 'Giro': ['Orbit', 'หมุนรอบ'], 'Webcam': ['Webcam', 'เว็บแคม'], 'Calibrar': ['Calibrate', 'ปรับเทียบ'], 'Mandos': ['Controllers', 'คอนโทรลเลอร์'],

@@ -12,6 +12,45 @@ const smooth = (t) => (t >= 1 ? 0 : (1 - t) * (1 - t) * (1 + 2 * t));
 // Inflar: meseta plana en el centro y borde suave → bulto redondo en vez de pico.
 const plateau = (t) => (t >= 1 ? 0 : t <= 0.45 ? 1 : smooth((t - 0.45) / 0.55));
 
+// Borde del pincel: cómo cae su fuerza del centro (t = 0) hacia fuera (t = 1). Sin nada, `smooth`.
+const EDGE = {
+  soft: (t) => { const w = smooth(t); return w * w; },
+  hard: (t) => (t >= 1 ? 0 : t <= 0.72 ? 1 : smooth((t - 0.72) / 0.28)),
+};
+
+// Textura del pincel: un dibujo fijo en el espacio, de -1 (hundido) a 1 (saliente). Se mide en
+// "periodos": como no depende del trazo, repetir una pasada no lo emborrona.
+const hash3 = (x, y, z) => {
+  const v = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return v - Math.floor(v);
+};
+function noise3(x, y, z) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const fade = (t) => t * t * (3 - 2 * t);
+  const u = fade(x - x0), v = fade(y - y0), w = fade(z - z0);
+  const l = (a, b, t) => a + (b - a) * t;
+  const c = (i, j, k) => hash3(x0 + i, y0 + j, z0 + k);
+  return l(l(l(c(0, 0, 0), c(1, 0, 0), u), l(c(0, 1, 0), c(1, 1, 0), u), v),
+    l(l(c(0, 0, 1), c(1, 0, 1), u), l(c(0, 1, 1), c(1, 1, 1), u), v), w);
+}
+export const TEXTURES = {
+  rough: (x, y, z) => (noise3(x, y, z) * 0.65 + noise3(x * 2.3, y * 2.3, z * 2.3) * 0.35) * 2 - 1,
+  dots: (x, y, z) => {
+    const d = Math.hypot(x - Math.round(x), y - Math.round(y), z - Math.round(z));
+    return d <= 0.2 ? 1 : d >= 0.38 ? -1 : 1 - 2 * ((d - 0.2) / 0.18);
+  },
+  stripes: (x, y, z) => Math.sin(y * Math.PI * 2),
+  // Bolitas en dos redes intercaladas: cada una es una escama redonda, con surco entre ellas.
+  scales: (x, y, z) => {
+    const fx = x - Math.floor(x), fy = y - Math.floor(y), fz = z - Math.floor(z);
+    let d2 = (fx - 0.5) ** 2 + (fy - 0.5) ** 2 + (fz - 0.5) ** 2;
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) for (let k = 0; k < 2; k++) {
+      d2 = Math.min(d2, (fx - i) ** 2 + (fy - j) ** 2 + (fz - k) ** 2);
+    }
+    return 1 - 2 * Math.min(1, d2 / 0.31);
+  },
+};
+
 // Pirámide de base cuadrada (lado 1, base en y = 0, altura h). De Inigo Quilez.
 function sdPyramid(px, py, pz, h) {
   const m2 = h * h + 0.25;
@@ -297,10 +336,22 @@ export class SDFGrid {
   // Devuelve la caja de muestras modificadas {lo, hi} o null.
   // opts: { shape: 'sphere' | 'cube' | 'pyramid', rot: matriz 3x3 (9 números, por columnas) } para
   // añadir/quitar con forma. 'grab' (arrastrar) lleva el barro de a hasta b con caída suave.
+  // También en opts: edge ('soft' | 'hard'), texture (nombre en TEXTURES) y frame (matriz 3x3 de la
+  // copia de simetría, para que la textura salga reflejada igual que la forma).
+  // 'pinch' junta el barro hacia la línea del trazo; 'crease' además hunde un surco.
   applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
     const { n, h, band, nb, bricks, colors, fill } = this;
     const shape = (tool === 'add' || tool === 'remove') && opts?.shape && opts.shape !== 'sphere' ? opts.shape : null;
-    const reach = shape ? r * SHAPE_REACH[shape] : r;
+    const tex = opts?.texture ? TEXTURES[opts.texture] : null;
+    const period = Math.max(r * 0.7, 6 * h);
+    const amp = tex ? Math.min(r * 0.22, band * 0.7) : 0;
+    const F = opts?.frame;
+    const texAt = (px, py, pz) => (F
+      ? tex((px * F[0] + py * F[1] + pz * F[2]) / period, (px * F[3] + py * F[4] + pz * F[5]) / period, (px * F[6] + py * F[7] + pz * F[8]) / period)
+      : tex(px / period, py / period, pz / period));
+    const falloff = EDGE[opts?.edge] || smooth;
+    const puff = opts?.edge === 'hard' ? EDGE.hard : opts?.edge === 'soft' ? smooth : plateau;
+    const reach = (shape ? r * SHAPE_REACH[shape] : r) + amp;
     // Arrastrar mira hacia atrás (de dónde viene el barro): la caja crece en -delta.
     const back = tool === 'grab' ? [2 * a[0] - b[0], 2 * a[1] - b[1], 2 * a[2] - b[2]] : a;
     const lo = [0, 0, 0], hi = [0, 0, 0];
@@ -343,7 +394,7 @@ export class SDFGrid {
     let src = null;
     const sx = hi[0] - lo[0] + 1, sy = hi[1] - lo[1] + 1, sz = hi[2] - lo[2] + 1;
     let srcC = null;
-    if (op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab') {
+    if (op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab' || op === 'pinch' || op === 'crease') {
       src = new Float32Array(sx * sy * sz);
       if (op === 'grab') srcC = new Uint8Array(sx * sy * sz * 4);
       this.copyRegion(lo[0], lo[1], lo[2], sx, sy, sz, src, srcC);
@@ -398,12 +449,13 @@ export class SDFGrid {
               for (let x = x0; x <= x1; x++) {
                 const px = -0.5 + x * h;
                 const dist = segDist(px, py, pz);
-                const w = smooth(dist / r);
+                const w = falloff(dist / r);
                 const li = (x & 7) | ((y & 7) << 3) | ((z & 7) << 6);
                 let d = bk[li];
                 switch (op) {
                   case 'add': {
-                    const s = shape ? shapeDist(px, py, pz) : dist - r;
+                    let s = shape ? shapeDist(px, py, pz) : dist - r;
+                    if (tex && Math.abs(s) < band + amp) s -= amp * texAt(px, py, pz);
                     if (s < d) {
                       d = s;
                       if (rgb && s < band) {
@@ -414,10 +466,16 @@ export class SDFGrid {
                     }
                     break;
                   }
-                  case 'remove': d = Math.max(d, shape ? -shapeDist(px, py, pz) : r - dist); break;
+                  case 'remove': {
+                    let s = shape ? shapeDist(px, py, pz) : dist - r;
+                    if (tex && Math.abs(s) < band + amp) s -= amp * texAt(px, py, pz);
+                    d = Math.max(d, -s);
+                    break;
+                  }
                   case 'inflate': case 'deflate': {
                     // Empuja la superficie hacia fuera (o dentro) y la relaja un poco: queda redonda.
-                    const wp = plateau(dist / r);
+                    let wp = puff(dist / r);
+                    if (tex && wp > 0) wp *= 0.5 + 0.5 * texAt(px, py, pz);
                     if (wp > 0) {
                       const X = x - lo[0], Y = y - lo[1], Z = z - lo[2];
                       const j = X + sx * (Y + sy * Z);
@@ -431,7 +489,7 @@ export class SDFGrid {
                   }
                   case 'grab': {
                     // Cada punto toma el barro de donde venía: x - w·delta (caída alrededor de a).
-                    const wg = smooth(Math.hypot(px - a[0], py - a[1], pz - a[2]) / r);
+                    const wg = falloff(Math.hypot(px - a[0], py - a[1], pz - a[2]) / r);
                     if (wg > 0) {
                       const fx = x - lo[0] - (wg * gdx) / h, fy = y - lo[1] - (wg * gdy) / h, fz = z - lo[2] - (wg * gdz) / h;
                       d = srcAt(fx, fy, fz);
@@ -445,6 +503,18 @@ export class SDFGrid {
                     }
                     break;
                   }
+                  case 'pinch': case 'crease':
+                    if (w > 0) {
+                      // Cada punto toma el barro de más lejos de la línea: la superficie se aprieta hacia ella.
+                      let tl = ab2 > 0 ? ((px - a[0]) * abx + (py - a[1]) * aby + (pz - a[2]) * abz) / ab2 : 0;
+                      tl = tl < 0 ? 0 : tl > 1 ? 1 : tl;
+                      const dir = op === 'pinch' && invert ? -1 : 1;
+                      const f = (dir * Math.min(0.5, w * k * (op === 'crease' ? 0.12 : 0.22))) / h;
+                      d = srcAt(x - lo[0] + (px - a[0] - abx * tl) * f, y - lo[1] + (py - a[1] - aby * tl) * f, z - lo[2] + (pz - a[2] - abz * tl) * f);
+                      // Hendidura: un surco más estrecho que el pincel (invertida, una cresta).
+                      if (op === 'crease') d += (invert ? -1 : 1) * falloff(dist / (r * 0.6)) * k * h * 0.5;
+                    }
+                    break;
                   case 'flatten':
                     if (w > 0) {
                       const target = (px - b[0]) * pn[0] + (py - b[1]) * pn[1] + (pz - b[2]) * pn[2];
@@ -463,7 +533,7 @@ export class SDFGrid {
                     }
                     break;
                   case 'paint':
-                    if (w > 0 && d < band && d > -band) {
+                    if (w > 0 && d < band && d > -band && (!tex || texAt(px, py, pz) > 0)) {
                       if (!cb) cb = colors[bi] = new Uint8Array(B3 * 4);
                       const j = li * 4;
                       const f = Math.min(1, w * k * 0.5);

@@ -48,6 +48,8 @@
     .swatch.on { border-color: #fff; }
     button.on { background: var(--acc); }
     #shapes button { padding: 8px 2px; font-size: 13px; }
+    .opts { flex-wrap: nowrap; gap: 4px; }
+    .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 11px; }
     label.check { justify-content: flex-start; gap: 8px; font-size: 13px; }
     #spec { display: none; position: fixed; top: 12px; right: 12px; width: 280px; padding: 12px 14px; border-radius: 12px;
       background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
@@ -122,6 +124,25 @@
       <button data-shape="cube" title="Pincel cubo">■ Cubo</button>
       <button data-shape="pyramid" title="Pincel pirámide">▲ Pirámide</button>
     </div>
+    <div class="sec">Borde</div>
+    <div class="row opts">
+      <button data-opt="edge:soft">Suave</button><button data-opt="edge:even">Normal</button><button data-opt="edge:hard">Duro</button>
+    </div>
+    <div class="sec">Textura</div>
+    <div class="row opts">
+      <button data-opt="tex:plain">Liso</button><button data-opt="tex:rough">Rugoso</button><button data-opt="tex:dots">Puntos</button><button data-opt="tex:stripes">Rayas</button><button data-opt="tex:scales">Escamas</button>
+    </div>
+    <div class="sec">Trazo</div>
+    <div class="row opts">
+      <button data-opt="stroke:free">Libre</button><button data-opt="stroke:line" title="L">Recto</button>
+    </div>
+    <div class="sec">Simetría</div>
+    <div class="row opts">
+      <button data-opt="sym:x">X</button><button data-opt="sym:y">Y</button><button data-opt="sym:z">Z</button><button data-opt="sym:radial">Radial</button>
+    </div>
+    <div class="row opts">
+      <button data-opt="radial:3">3</button><button data-opt="radial:4">4</button><button data-opt="radial:5">5</button><button data-opt="radial:6">6</button><button data-opt="radial:8">8</button>
+    </div>
     <div class="row">
       <button id="btnSym" title="X">Simetría</button>
       <button id="btnWire" title="W">Ver malla</button>
@@ -172,7 +193,7 @@
   <div id="help">
     Clic izq. sobre el modelo: esculpir · Clic izq. fuera: girar · Clic der.: dial de herramientas ·
     Botón central: mover vista · Rueda: zoom · SHIFT: suavizar · CTRL: invertir · ALT+clic: coger color · [ ]: tamaño ·
-    1–8: herramientas (8 = arrastrar) · B: forma del pincel · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer
+    1–9 y 0: herramientas (8 = arrastrar) · B: forma del pincel · G: mover capa (arrastra · Shift+arrastra = girar · rueda sobre la capa = escalar) · P: pintar · W: ver malla · X: simetría · N: nueva capa · TAB: siguiente capa · R: remesh · E: a Blender · Cmd+Z: deshacer
   </div>
   <div id="spec">
     <b>LA PLASTILINA · ESPEJO</b> <span id="specStatus">Esperando a las gafas…</span>

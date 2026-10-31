@@ -19,7 +19,7 @@ const CHUNK = 32;
 const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
 const UNDO_BYTES = ON_QUEST ? 300e6 : 800e6;
 const BRICK_BYTES = 512 * 4;
-const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab'];
+const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab', 'pinch', 'crease'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
 const PALETTE = [
   '#f2efe9', '#cfc6bb', '#8a8580', '#2b2b2e', '#e8b796', '#c47a5a', '#7a4a33', '#e04f4f',
@@ -33,6 +33,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere',
+  symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
   color: '#cfc6bb', bakeSize: 2048,
 };
 
@@ -89,9 +90,14 @@ const cursor = new THREE.Mesh(
 );
 cursor.visible = false;
 model.add(cursor);
-const cursorMirror = cursor.clone();
-cursorMirror.material = cursor.material;
-model.add(cursorMirror);
+// Un cursor por cada copia de simetría (se colocan solos, ver syncCursorCopies).
+const cursorCopies = Array.from({ length: 15 }, () => {
+  const c = cursor.clone();
+  c.material = cursor.material;
+  c.matrixAutoUpdate = false;
+  model.add(c);
+  return c;
+});
 // Forma del cursor = huella del pincel (a escala r): esfera, cubo o pirámide.
 const CURSOR_GEO = {
   sphere: cursor.geometry,
@@ -100,18 +106,15 @@ const CURSOR_GEO = {
 };
 function updateCursorShape() {
   const sh = shapeActive() ? state.shape : 'sphere';
-  if (cursor.geometry !== CURSOR_GEO[sh]) cursor.geometry = cursorMirror.geometry = CURSOR_GEO[sh];
+  if (cursor.geometry !== CURSOR_GEO[sh]) cursor.geometry = CURSOR_GEO[sh];
   if (sh === 'sphere') {
     cursor.quaternion.identity();
-    cursorMirror.quaternion.identity();
     return;
   }
   const e = brushRot();
   if (!e) return;
   rotM.set(e[0], e[3], e[6], 0, e[1], e[4], e[7], 0, e[2], e[5], e[8], 0, 0, 0, 0, 1);
   cursor.quaternion.setFromRotationMatrix(rotM);
-  const q = cursor.quaternion;
-  cursorMirror.quaternion.set(q.x, -q.y, -q.z, q.w);
 }
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -445,6 +448,8 @@ function beginStroke() {
   strokeRec = pushStroke(active);
   strokePrev = null;
   lazy = null;
+  lineStroke = null;
+  meltPath = null;
 }
 
 // Estabilizador ("cuerda"): el pincel va detrás de la mano/ratón a una distancia fija y solo
@@ -503,11 +508,165 @@ function brushRot() {
 }
 const shapeActive = () => (activeTool() === 'add' || activeTool() === 'remove') && state.shape !== 'sphere';
 
+// ---------- Simetría ----------
+// Cada copia es una matriz 3x3 (por columnas): espejos en X, Y, Z y giros alrededor del eje vertical.
+const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const mul3 = (a, b) => {
+  const o = [];
+  for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) {
+    o.push(a[r] * b[3 * c] + a[3 + r] * b[3 * c + 1] + a[6 + r] * b[3 * c + 2]);
+  }
+  return o;
+};
+const xf3 = (m, p) => [m[0] * p[0] + m[3] * p[1] + m[6] * p[2], m[1] * p[0] + m[4] * p[1] + m[7] * p[2], m[2] * p[0] + m[5] * p[1] + m[8] * p[2]];
+let symCopies = [];
+const symM4 = [];
+function rebuildSym() {
+  let list = [I3];
+  const mirror = (on, m) => { if (on) list = list.flatMap((x) => [x, mul3(m, x)]); };
+  if (state.radial) {
+    list = Array.from({ length: state.radialN }, (_, i) => {
+      const a = (i * 2 * Math.PI) / state.radialN, c = Math.cos(a), s = Math.sin(a);
+      return [c, 0, -s, 0, 1, 0, s, 0, c];
+    });
+  }
+  mirror(state.sym, [-1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  mirror(state.symY, [1, 0, 0, 0, -1, 0, 0, 0, 1]);
+  mirror(state.symZ, [1, 0, 0, 0, 1, 0, 0, 0, -1]);
+  symCopies = list.slice(1);
+  symCopies.forEach((m, i) => {
+    symM4[i] = (symM4[i] || new THREE.Matrix4()).set(m[0], m[3], m[6], 0, m[1], m[4], m[7], 0, m[2], m[5], m[8], 0, 0, 0, 0, 1);
+  });
+}
+const symOn = () => state.sym || state.symY || state.symZ || state.radial;
+
+// Llama a fn con el tramo original y con el de cada copia. Las que caen encima de otra (sobre el
+// plano del espejo o en el eje) se saltan: si no, ese punto recibiría el pincel dos veces.
+function forCopies(a, b, fn) {
+  fn(a, b, null);
+  if (!symCopies.length) return;
+  const seen = [b], lim = active.grid.h * 0.5;
+  for (const m of symCopies) {
+    const qb = xf3(m, b);
+    if (seen.some((q) => Math.hypot(q[0] - qb[0], q[1] - qb[1], q[2] - qb[2]) < lim)) continue;
+    seen.push(qb);
+    fn(xf3(m, a), qb, m);
+  }
+}
+function syncCursorCopies() {
+  cursor.updateMatrix();
+  cursorCopies.forEach((c, i) => {
+    c.visible = cursor.visible && i < symCopies.length;
+    if (!c.visible) return;
+    c.geometry = cursor.geometry;
+    c.matrix.multiplyMatrices(symM4[i], cursor.matrix);
+    c.matrixWorldNeedsUpdate = true;
+  });
+}
+
+// Lo que se puede elegir del pincel, para pintar qué botón está encendido en cualquier sitio.
+function optionOn(id) {
+  const [k, v] = id.split(':');
+  if (k === 'edge') return state.edge === v;
+  if (k === 'tex') return state.texture === v;
+  if (k === 'stroke') return state.line === (v === 'line');
+  if (k === 'radial') return state.radial && state.radialN === +v;
+  if (id === 'sym') return symOn();
+  if (id === 'sym:x') return state.sym;
+  if (id === 'sym:y') return state.symY;
+  if (id === 'sym:z') return state.symZ;
+  if (id === 'sym:radial') return state.radial;
+  if (k === 'shape') return state.shape === v;
+  return state.tool === id;
+}
+
+// Opciones de la pincelada (null si no hay ninguna: el mensaje al espejo sigue siendo pequeño).
+function brushOpts(tool, rot, m) {
+  const o = {};
+  if (rot) { o.shape = state.shape; o.rot = m ? mul3(m, rot) : rot; }
+  if (state.edge !== 'even') o.edge = state.edge;
+  if (state.texture !== 'plain' && TEXTURED.has(tool)) {
+    o.texture = state.texture;
+    if (m) o.frame = m;
+  }
+  return Object.keys(o).length ? o : null;
+}
+const TEXTURED = new Set(['add', 'remove', 'inflate', 'paint']);
+
+// Trazo recto: al apretar se fija el principio, una línea te enseña el camino y al soltar se aplica.
+let lineStroke = null;
+function trackLine(p, pressure, tool) {
+  if (!lineStroke) lineStroke = { from: [p[0], p[1], p[2]], pressure, tool };
+  lineStroke.to = [p[0], p[1], p[2]];
+  lineStroke.pressure = Math.max(lineStroke.pressure, pressure);
+  const arr = ropeGeo.attributes.position.array;
+  arr.set(lineStroke.from, 0);
+  arr.set(lineStroke.to, 3);
+  ropeGeo.attributes.position.needsUpdate = true;
+  rope.visible = true;
+}
+function endStroke() {
+  commitLine();
+  meltStroke();
+}
+// Borde suave en añadir/quitar: al soltar, unas pasadas de alisado por donde ha ido el trazo funden
+// lo nuevo con lo que había. Va al final porque cada pincelada volvería a dejar el corte marcado.
+let meltPath = null;
+function meltStroke() {
+  const path = meltPath;
+  meltPath = null;
+  if (!path) return;
+  let len = 0;
+  for (let i = 1; i < path.length; i++) len += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1], path[i][2] - path[i - 1][2]);
+  const gap = Math.max(state.radius * 0.5, len / 150);
+  const stamps = [path[0]];
+  let left = 0;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i], l = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    for (let t = gap - left; t < l; t += gap) stamps.push([a[0] + ((b[0] - a[0]) * t) / l, a[1] + ((b[1] - a[1]) * t) / l, a[2] + ((b[2] - a[2]) * t) / l]);
+    left = (left + l) % gap;
+  }
+  stamps.push(path[path.length - 1]);
+  for (let pass = 0; pass < 3; pass++) {
+    stamps.forEach((p) => forCopies(p, p, (qa, qb) => brushCall(active, 'smooth', qa, qb, state.radius * 1.4, 1, false, 1 / 60, null, { edge: 'hard' })));
+  }
+}
+function commitLine() {
+  if (!lineStroke) return;
+  const { from, to, pressure, tool } = lineStroke;
+  lineStroke = null;
+  rope.visible = false;
+  // Añadir y quitar son de golpe: un solo tramo. Los demás se van acumulando, así que se recorre
+  // la línea a paso fijo (sin pasarse de 400 pasos para no congelar las gafas al soltar).
+  const instant = tool === 'add' || tool === 'remove';
+  const len = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+  const steps = instant ? 1 : Math.max(1, Math.min(400, Math.ceil(len / (state.radius * 0.2))));
+  let a = from;
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps, b = [from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f, from[2] + (to[2] - from[2]) * f];
+    brushStep(tool, a, b, 1 / 60, pressure);
+    a = b;
+  }
+}
+
+// Un tramo del pincel, en el original y en todas sus copias de simetría.
+function brushStep(tool, a, p, dt, pressure) {
+  const s = state.strength * pressure;
+  const paint = { rgb: hexToRgb(state.color), base: active.base };
+  const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
+  const rot = (tool === 'add' || tool === 'remove') && state.shape !== 'sphere' ? brushRot() : null;
+  if (state.edge === 'soft' && (tool === 'add' || tool === 'remove')) (meltPath ||= [[a[0], a[1], a[2]]]).push([p[0], p[1], p[2]]);
+  forCopies(a, p, (qa, qb, m) => {
+    brushCall(active, tool, qa, qb, state.radius, s, state.invert, dt, usePaint, brushOpts(tool, rot, m));
+  });
+}
+
 function applyAt(p, dt, pressure = 1) {
   const tool = activeTool();
   const a = strokePrev || p;
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
   const moved = Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
+  if (state.line && tool !== 'grab') return trackLine(p, pressure, lineStroke?.tool || tool);
   if (strokePrev && moved < state.radius * 0.05 && (tool === 'add' || tool === 'remove')) return;
   if (tool === 'grab') {
     // Arrastrar: lleva el barro con la mano en pasos pequeños (elástico, sin romperse).
@@ -516,29 +675,13 @@ function applyAt(p, dt, pressure = 1) {
     const steps = Math.ceil(moved / (state.radius * 0.2));
     for (let i = 1; i <= steps; i++) {
       const q0 = strokePrev, q1 = [a[0] + (p[0] - a[0]) * (i / steps), a[1] + (p[1] - a[1]) * (i / steps), a[2] + (p[2] - a[2]) * (i / steps)];
-      brushCall(active, 'grab', q0, q1, state.radius, 1, false, dt, null);
-      if (state.sym && Math.abs(q0[0]) > active.grid.h * 0.5) {
-        brushCall(active, 'grab', [-q0[0], q0[1], q0[2]], [-q1[0], q1[1], q1[2]], state.radius, 1, false, dt, null);
-      }
+      forCopies(q0, q1, (qa, qb) => brushCall(active, 'grab', qa, qb, state.radius, 1, false, dt, null, brushOpts('grab')));
       strokePrev = q1;
     }
     return;
   }
   strokePrev = [p[0], p[1], p[2]];
-  const s = state.strength * pressure;
-  const paint = {
-    rgb: hexToRgb(state.color),
-    base: active.base,
-  };
-  const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
-  const rot = shapeActive() ? brushRot() : null;
-  const opts = rot ? { shape: state.shape, rot } : null;
-  brushCall(active, tool, a, p, state.radius, s, state.invert, dt, usePaint, opts);
-  if (state.sym && Math.abs(p[0]) > active.grid.h * 0.5) {
-    // Espejo en X: la forma también se refleja.
-    const mOpts = opts ? { shape: opts.shape, rot: rot.map((v, i) => (i % 3 === 0 ? -v : v)) } : null;
-    brushCall(active, tool, [-a[0], a[1], a[2]], [-p[0], p[1], p[2]], state.radius, s, state.invert, dt, usePaint, mOpts);
-  }
+  brushStep(tool, a, p, dt, pressure);
 }
 
 function changeRes(dir) {
@@ -565,7 +708,7 @@ function resetLayer(shape) {
 
 function choose(id) {
   switch (id) {
-    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': case 'grab':
+    case 'add': case 'remove': case 'smooth': case 'flatten': case 'inflate': case 'paint': case 'move': case 'grab': case 'pinch': case 'crease':
       state.tool = id;
       break;
     case 'shape:sphere': case 'shape:cube': case 'shape:pyramid':
@@ -575,7 +718,34 @@ function choose(id) {
       break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
-    case 'sym': state.sym = !state.sym; toast(state.sym ? 'Simetría ON' : 'Simetría OFF'); break;
+    case 'sym': {
+      // El pétalo entero: si hay alguna, las apaga todas; si no, la de siempre (X).
+      const on = !symOn();
+      state.symY = state.symZ = state.radial = false;
+      state.sym = on;
+      rebuildSym();
+      toast(on ? 'Simetría ON' : 'Simetría OFF');
+      break;
+    }
+    // Radial con espejos X o Z saldrían demasiadas copias: son excluyentes. Radial + Y sí se puede.
+    case 'sym:x': state.sym = !state.sym; if (state.sym) state.radial = false; rebuildSym(); break;
+    case 'sym:y': state.symY = !state.symY; rebuildSym(); break;
+    case 'sym:z': state.symZ = !state.symZ; if (state.symZ) state.radial = false; rebuildSym(); break;
+    case 'sym:radial':
+      state.radial = !state.radial;
+      if (state.radial) state.sym = state.symZ = false;
+      rebuildSym();
+      break;
+    case 'radial:3': case 'radial:4': case 'radial:5': case 'radial:6': case 'radial:8':
+      state.radialN = +id.slice(7);
+      state.radial = true;
+      state.sym = state.symZ = false;
+      rebuildSym();
+      break;
+    case 'edge:soft': case 'edge:even': case 'edge:hard': state.edge = id.slice(5); break;
+    case 'tex:plain': case 'tex:rough': case 'tex:dots': case 'tex:stripes': case 'tex:scales': state.texture = id.slice(4); break;
+    case 'stroke:free': state.line = false; break;
+    case 'stroke:line': state.line = true; break;
     case 'wire':
       state.wire = !state.wire;
       layers.forEach((L) => L.setWire(state.wire));
@@ -829,6 +999,7 @@ $('btnSym').onclick = () => choose('sym');
 $('btnWire').onclick = () => choose('wire');
 document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => (b.onclick = () => { state.bakeSize = +b.dataset.bake; updateHud(); }));
 document.querySelectorAll('#shapes [data-shape]').forEach((b) => (b.onclick = () => choose('shape:' + b.dataset.shape)));
+document.querySelectorAll('#hud [data-opt]').forEach((b) => (b.onclick = () => choose(b.dataset.opt)));
 $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
@@ -873,7 +1044,7 @@ function sceneLoad() {
 function infoText() {
   const { quads, mb } = sceneLoad();
   const k = quads >= 1e6 ? (quads / 1e6).toFixed(1) + 'M' : Math.round(quads / 1000) + 'k';
-  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${state.sym ? t(' · simetría') : ''}${state.wire ? t(' · malla') : ''}`;
+  return `${active.name} · ${active.grid.n}³ · ${k} quads · ${mb.toFixed(0)} MB${symOn() ? t(' · simetría') : ''}${state.wire ? t(' · malla') : ''}`;
 }
 
 function renderLayers() {
@@ -926,7 +1097,8 @@ function updateHud() {
   quadsIn.value = state.quads;
   colorIn.value = state.color;
   $('btnPaint').classList.toggle('on', state.tool === 'paint');
-  $('btnSym').classList.toggle('on', state.sym);
+  $('btnSym').classList.toggle('on', symOn());
+  document.querySelectorAll('#hud [data-opt]').forEach((b) => b.classList.toggle('on', optionOn(b.dataset.opt)));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
@@ -1321,6 +1493,7 @@ addEventListener('pointerup', (e) => {
   }
   if (sculpting) {
     sculpting = false;
+    endStroke();
     controls.enabled = true;
   }
   if (moveOp.L && moveOp.mode !== 'wheel' && !renderer.xr.isPresenting) {
@@ -1346,7 +1519,9 @@ addEventListener('keydown', (e) => {
     e.shiftKey ? redo() : undo();
   } else if (e.key === '[') { state.radius = clampRadius(state.radius / 1.15); updateHud(); }
   else if (e.key === ']') { state.radius = clampRadius(state.radius * 1.15); updateHud(); }
-  else if (k >= '1' && k <= '8') choose(TOOL_KEYS[+k - 1]);
+  else if (k >= '1' && k <= '9') choose(TOOL_KEYS[+k - 1]);
+  else if (k === '0') choose('crease');
+  else if (k === 'l') choose(state.line ? 'stroke:free' : 'stroke:line');
   else if (k === 'b') choose('shape:' + { sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape]);
   else if (k === 'g') choose('move');
   else if (k === 'p') choose('paint');
@@ -1416,7 +1591,8 @@ async function startXR(mode) {
       hud3d.visible = false;
       panel3d.visible = false;
       ray.visible = false;
-      cursor.visible = cursorMirror.visible = false;
+      cursor.visible = false;
+      syncCursorCopies();
     });
   } catch (e) {
     console.error(e);
@@ -1526,6 +1702,7 @@ panel3d.visible = false;
 
 function buildPanel() {
   if (panelPage === 'obras') return buildObrasPage();
+  if (panelPage === 'pincel') return buildBrushPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push({ type: 'label', x: M, y: 44, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), color: TOOL_COLORS[activeTool()], size: 40 });
@@ -1546,18 +1723,11 @@ function buildPanel() {
     text: () => (state.stab ? Math.round(state.stab * 100) + '%' : t('no')),
   });
   const tools = TOOL_KEYS;
-  const tw = (IW - (tools.length - 1) * 8) / tools.length;
+  const tw = (IW - 4 * 8) / 5;
   tools.forEach((tl, i) => W.push({
-    type: 'button', x: M + i * (tw + 8), y: 318, w: tw, h: 64, size: 18,
+    type: 'button', x: M + (i % 5) * (tw + 8), y: 318 + Math.floor(i / 5) * 66, w: tw, h: 58, size: 22,
     label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[tl] || label(tl),
     active: () => state.tool === tl, onClick: () => choose(tl),
-  }));
-  // Forma del pincel de Añadir / Quitar.
-  const shw = (IW - 2 * 8) / 3;
-  ['sphere', 'cube', 'pyramid'].forEach((sh, i) => W.push({
-    type: 'button', x: M + i * (shw + 8), y: 394, w: shw, h: 52, size: 22,
-    label: `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`, active: () => state.shape === sh,
-    onClick: () => choose('shape:' + sh),
   }));
   W.push({ type: 'label', x: M, y: 483, text: 'COLOR', size: 22 });
   const sw = (IW - 7 * 8) / 8;
@@ -1566,8 +1736,11 @@ function buildPanel() {
     color: hex, active: () => state.color === hex, onClick: () => setColor(hex),
   }));
   const yc = 503 + 2 * (sw * 0.7 + 8) + 4;
-  W.push({ type: 'button', x: M, y: yc, w: IW, h: 56, label: 'Traer el espacio aquí', size: 24,
+  const hw = (IW - 8) / 2;
+  W.push({ type: 'button', x: M, y: yc, w: hw, h: 56, label: 'Traer el espacio aquí', size: 22,
     onClick: () => placeWorkspace(true) });
+  W.push({ type: 'button', x: M + hw + 8, y: yc, w: hw, h: 56, label: 'Pincel ▸', size: 24,
+    onClick: () => { panelPage = 'pincel'; drawPanel(); } });
   const yl = yc + 92;
   W.push({ type: 'label', x: M, y: yl, text: 'CAPAS', size: 22 });
   W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
@@ -1605,6 +1778,31 @@ function buildPanel() {
   }));
   W.push({ type: 'label', x: PW / 2, y: PH - 34, align: 'center', size: 20, weight: 500,
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
+  return W;
+}
+// Página del pincel: forma, borde, textura, trazo y simetría.
+function buildBrushPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M;
+  W.push({ type: 'label', x: M, y: 44, text: 'Pincel', size: 36 });
+  W.push({ type: 'button', x: PW - M - 160, y: 18, w: 160, h: 54, label: '◂ Volver', size: 22,
+    onClick: () => { panelPage = 'main'; drawPanel(); } });
+  let y = 110;
+  const row = (title, items, h = 76) => {
+    W.push({ type: 'label', x: M, y, text: title, size: 24 });
+    const w = (IW - (items.length - 1) * 8) / items.length;
+    items.forEach(([id, text], i) => W.push({ type: 'button', x: M + i * (w + 8), y: y + 24, w, h, label: text, size: 24,
+      active: () => optionOn(id), onClick: () => choose(id) }));
+    y += h + 72;
+  };
+  row('FORMA', ['sphere', 'cube', 'pyramid'].map((sh) => ['shape:' + sh, `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`]));
+  row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
+  row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
+  row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
+  row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial']]);
+  row('COPIAS DE LA RADIAL', [3, 4, 5, 6, 8].map((n) => ['radial:' + n, String(n)]));
+  W.push({ type: 'label', x: M, y: y + 6, size: 22, weight: 500, text: 'Textura: en Añadir, Quitar, Inflar y Pintar.' });
+  W.push({ type: 'label', x: M, y: y + 42, size: 22, weight: 500, text: 'Trazo recto: aprieta en el inicio, suelta en el final.' });
   return W;
 }
 function buildObrasPage() {
@@ -1660,7 +1858,7 @@ function openFlower(tipW, mode) {
   const head = renderer.xr.getCamera().getWorldPosition(vA);
   const at = rigs.right.group.localToWorld(vB.set(0, 0, -0.025));
   at.addScaledVector(vT0.copy(at).sub(head).normalize(), 0.04);
-  flower.open(at, head, (id) => (id === 'sym' ? state.sym : id.startsWith('shape:') ? (state.shape || 'sphere') === id.slice(6) : state.tool === id), tipW);
+  flower.open(at, head, optionOn, tipW);
 }
 function closeFlower(pick) {
   xr.menuOpen = false;
@@ -1787,7 +1985,7 @@ function xrFrame(dt) {
     }
   }
 
-  cursor.visible = cursorMirror.visible = false;
+  cursor.visible = false;
   ray.visible = false;
   if (!gpR) return;
 
@@ -1854,11 +2052,6 @@ function xrFrame(dt) {
   cursor.scale.setScalar(state.radius);
   updateCursorShape();
   cursor.visible = true;
-  if (state.sym) {
-    cursorMirror.position.set(-tipL[0], tipL[1], tipL[2]);
-    cursorMirror.scale.setScalar(state.radius);
-    cursorMirror.visible = true;
-  }
   if (trig > 0.08) xr.follow = false;
   if (state.tool === 'move') {
     xrMove(right, gpR, tipL, trigDown);
@@ -1875,10 +2068,10 @@ function xrFrame(dt) {
     }
     const q = stabilize(tipL);
     cursor.position.fromArray(q);
-    if (state.sym) cursorMirror.position.set(-q[0], q[1], q[2]);
     applyAt(q, dt, 0.3 + 0.7 * trig);
     gpR.hapticActuators?.[0]?.pulse?.(0.05 * trig, 16);
   } else {
+    if (xr.stroking) endStroke();
     xr.stroking = false;
     rope.visible = false;
   }
@@ -2313,17 +2506,15 @@ renderer.setAnimationLoop(() => {
     if (sculpting) hit = strokePoint(hit);
     updateCursorShape();
     cursor.visible = !!hit;
-    cursorMirror.visible = !!hit && state.sym;
     if (hit && sculpting) hit = stabilize(hit);
     else rope.visible = false;
     if (hit) {
       cursor.position.set(hit[0], hit[1], hit[2]);
       cursor.scale.setScalar(state.radius);
-      cursorMirror.position.set(-hit[0], hit[1], hit[2]);
-      cursorMirror.scale.setScalar(state.radius);
       if (sculpting) applyAt(hit, dt);
     }
   }
+  syncCursorCopies();
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.

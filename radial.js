@@ -14,15 +14,19 @@ export const TOOL_COLORS = {
   grab: '#ff7ab8',
   paint: '#ff9f43',
   move: '#4fd1c5',
+  pinch: '#7ee0a0',
+  crease: '#8aa8ff',
 };
 
 export const TOP = [
   { id: 'add', label: 'Añadir', icon: '+' },
   { id: 'remove', label: 'Quitar', icon: '−' },
-  { id: 'smooth', label: 'Suavizar', icon: '≈' },
+  { id: 'smooth', label: 'Suavizar', short: 'Suaviz.', icon: '≈' },
   { id: 'inflate', label: 'Inflar', icon: '◉' },
-  { id: 'flatten', label: 'Aplanar', icon: '▬' },
-  { id: 'grab', label: 'Arrastrar', icon: '↝' },
+  { id: 'flatten', label: 'Aplanar', short: 'Aplan.', icon: '▬' },
+  { id: 'grab', label: 'Arrastrar', short: 'Arrast.', icon: '↝' },
+  { id: 'pinch', label: 'Pellizcar', short: 'Pellizc.', icon: '⇥' },
+  { id: 'crease', label: 'Hendidura', short: 'Hend.', icon: '⌄' },
   { id: 'paint', label: 'Pintar', icon: '✎' },
   { id: 'move', label: 'Mover capa', short: 'Mover', icon: '✥' },
 ];
@@ -30,7 +34,7 @@ export const TOP = [
 export const BOTTOM = [
   { id: 'resUp', label: '+ Resolución', icon: '▦' },
   { id: 'undo', label: 'Deshacer', icon: '↶' },
-  { id: 'sym', label: 'Simetría X', icon: '⇋' },
+  { id: 'sym', label: 'Simetría', icon: '⇋' },
   { id: 'resDown', label: '− Resolución', icon: '▢' },
 ];
 
@@ -46,6 +50,7 @@ export const LABELS = {
   ...Object.fromEntries([...TOP, ...BOTTOM, ...SHAPES].map((i) => [i.id, i.label])),
   wire: 'Ver malla', remesh: 'Remesh quads', export: 'A Blender', save: 'Guardar', share: 'Compartir',
   layerNew: 'Nueva capa', layerNext: 'Capa siguiente',
+  'sym:x': 'Simetría X', 'sym:y': 'Simetría Y', 'sym:z': 'Simetría Z', 'sym:radial': 'Radial',
 };
 
 const DWELL_MS = 450;
@@ -139,7 +144,7 @@ export class RadialMenu {
       const isShape = it.id.startsWith('shape:');
       const active = isShape
         ? state.tool === 'add' && (state.shape || 'sphere') === it.shape
-        : it.id === state.tool || (it.id === 'sym' && state.sym);
+        : it.id === state.tool || (it.id === 'sym' && (state.sym || state.symY || state.symZ || state.radial));
       const hl = it.id === this.highlight;
       const color = isShape ? TOOL_COLORS.add : TOOL_COLORS[it.id];
       ctx.beginPath();

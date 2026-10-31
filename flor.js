@@ -493,6 +493,7 @@ class Flat {
 // Iconos: un SVG de relleno por cada pétalo, en app/iconos/. Para cambiar uno, se cambia el archivo.
 const ICON_FILES = {
   inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
+  pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial',
   'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid',
 };
 const ICON_SIZE = 0.058, SUB_ICON_SIZE = 0.036;
@@ -521,20 +522,31 @@ async function loadIcon(p, size) {
 
 // El reloj de la flor: arriba las de siempre, abajo las demás.
 export const FLOWER = [
-  { id: 'inflate', angle: -90, color: COLORS.blue },
-  { id: 'move', angle: -45, color: COLORS.green },
+  { id: 'inflate', angle: -72, color: COLORS.blue },
+  { id: 'move', angle: -36, color: COLORS.green },
   { id: 'paint', angle: 0, color: COLORS.red },
-  { id: 'add', angle: 45, color: COLORS.yellow },
-  { id: 'remove', angle: 90, color: COLORS.paper },
-  { id: 'flatten', angle: 135, color: COLORS.red },
-  { id: 'grab', angle: 180, color: COLORS.yellow },
-  { id: 'sym', angle: -135, color: COLORS.pink },
+  { id: 'add', angle: 36, color: COLORS.yellow },
+  { id: 'remove', angle: 72, color: COLORS.paper },
+  { id: 'crease', angle: 108, color: COLORS.blue },
+  { id: 'pinch', angle: 144, color: COLORS.green },
+  { id: 'flatten', angle: 180, color: COLORS.red },
+  { id: 'grab', angle: -144, color: COLORS.yellow },
+  { id: 'sym', angle: -108, color: COLORS.pink },
 ];
-const SHAPES3 = [
-  { id: 'shape:sphere', off: -34 },
-  { id: 'shape:cube', off: 0 },
-  { id: 'shape:pyramid', off: 34 },
-];
+// Si te quedas un momento sobre estos pétalos, salen sus opciones por fuera.
+const SUBS = {
+  add: [
+    { id: 'shape:sphere', off: -34 },
+    { id: 'shape:cube', off: 0 },
+    { id: 'shape:pyramid', off: 34 },
+  ],
+  sym: [
+    { id: 'sym:x', off: -45 },
+    { id: 'sym:y', off: -15 },
+    { id: 'sym:z', off: 15 },
+    { id: 'sym:radial', off: 45 },
+  ],
+};
 const SUB_LEN = 0.078, SUB_WID = 0.066, SUB_R = R0 + LEN * 1.12;
 const DWELL = 0.42;
 const wrap = (a) => ((a + 540) % 360) - 180;
@@ -593,10 +605,9 @@ export class Flower {
       this.group.add(p.root);
       return p;
     });
-    const parent = this.petals.find((p) => p.id === 'add');
-    this.subPetals = SHAPES3.map((f, i) => {
+    this.subPetals = Object.entries(SUBS).flatMap(([parent, list]) => list.map((f) => ({ ...f, parent }))).map((f, i) => {
       const p = makePetal({ ...f, color: COLORS.blue }, SUB_LEN, SUB_WID, 950 + i * 2);
-      p.ang = parent.angle + f.off;
+      p.ang = this.petals.find((q) => q.id === f.parent).angle + f.off;
       p.body.position.y = SUB_R;
       p.root.visible = false;
       this.group.add(p.root);
@@ -656,15 +667,16 @@ export class Flower {
     this.pStrength = Math.max(0, Math.min(1, (d - DEAD) / 0.035));
     let id = null;
     if (d >= DEAD) {
-      const rel = wrap(a - 45);
-      if (this.sub && d > SUB_R - 0.012 && Math.abs(rel) < 58 && d < SUB_R + SUB_LEN * 1.8) {
-        id = SHAPES3.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
+      const subs = SUBS[this.sub];
+      const rel = subs ? wrap(a - this.petals.find((p) => p.id === this.sub).angle) : 0;
+      if (subs && d > SUB_R - 0.012 && Math.abs(rel) < Math.max(...subs.map((s) => Math.abs(s.off))) + 24 && d < SUB_R + SUB_LEN * 1.8) {
+        id = subs.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
       } else if (d <= OUTER) {
         id = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b)).id;
       }
     }
     // El submenú se cierra en cuanto te vas a otro pétalo o sales de la flor.
-    if (this.sub && id !== 'add' && !id?.startsWith('shape:')) this.setSub(false);
+    if (this.sub && id !== this.sub && !SUBS[this.sub].some((s) => s.id === id)) this.setSub(false);
     return this.setHighlight(id);
   }
 
@@ -689,12 +701,13 @@ export class Flower {
     return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.sub ? SUB_R + SUB_LEN * 1.8 : OUTER);
   }
 
+  // on: el id del pétalo cuyas opciones se abren, o false para cerrarlas.
   setSub(on) {
     if (on === this.sub) return;
     this.sub = on;
     this.subAge = 0;
     for (const p of this.subPetals) {
-      p.root.visible = on;
+      p.root.visible = p.parent === on;
       p.size = p.sizeV = 0;
     }
   }
@@ -730,7 +743,7 @@ export class Flower {
   update(dt) {
     const step = Math.min(dt, 1 / 40);
     this.age += dt;
-    if (this.highlight === 'add' && !this.sub && this.age - this.since > DWELL) this.setSub(true);
+    if (SUBS[this.highlight] && !this.sub && this.age - this.since > DWELL) this.setSub(this.highlight);
     this.subAge = (this.subAge || 0) + dt;
     const opening = Math.min(1, this.age / 0.16);
     const s = this.pStrength;
@@ -752,8 +765,8 @@ export class Flower {
       p.holder.rotation.z = p.ang * DEG; // el icono siempre de pie
     }
     if (this.sub) {
-      const parent = this.petals.find((q) => q.id === 'add');
-      this.subPetals.forEach((p) => {
+      const parent = this.petals.find((q) => q.id === this.sub);
+      this.subPetals.filter((p) => p.parent === this.sub).forEach((p) => {
         const hot = p.id === this.highlight;
         const sizeTarget = Math.min(1, this.subAge / 0.1) * (hot ? 1.18 : 1);
         spring(p, 'size', sizeTarget, step);
@@ -764,7 +777,7 @@ export class Flower {
       });
     }
     const hot = this.find(this.highlight);
-    this.label.visible = !!hot && !(this.sub && hot.id === 'add'); // no tapar las formas
+    this.label.visible = !!hot && hot.id !== this.sub; // no tapar las opciones
     if (hot) {
       const a = hot.ang * DEG;
       const base = hot.off !== undefined ? SUB_R : R0;
