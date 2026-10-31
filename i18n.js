@@ -114,6 +114,8 @@ const D = {
   'Puedes quedarte con la anterior, que es la que ves ahora.': ['You can keep the previous one, which is what you see now.', 'คุณเลือกใช้อันก่อนหน้าได้ ซึ่งคืออันที่เห็นอยู่ตอนนี้'],
   'Horizontal': ['Horizontal', 'แนวนอน'], 'Vertical (redes)': ['Vertical (social)', 'แนวตั้ง (โซเชียล)'], 'Encuadre': ['Framing', 'จัดเฟรม'],
   'No se puede cambiar el formato mientras grabas': ['You cannot change the format while recording', 'เปลี่ยนรูปแบบระหว่างบันทึกไม่ได้'],
+  'Seguir casco': ['Follow headset', 'ติดตามแว่น'], 'El plano vertical te sigue': ['The vertical frame follows you', 'เฟรมแนวตั้งติดตามคุณ'],
+  'Calibra la cámara para que el plano pueda seguir el casco': ['Calibrate the camera so the frame can follow the headset', 'ปรับเทียบกล้องเพื่อให้เฟรมติดตามแว่นได้'],
   'Cámara calibrada. Retoca con las flechas si hace falta': ['Camera calibrated. Fine-tune with the arrow keys if needed', 'ปรับเทียบกล้องแล้ว ใช้ปุ่มลูกศรปรับละเอียดได้ถ้าจำเป็น'],
   'No llegan los mandos de las gafas': ['The headset controllers are not arriving', 'ไม่ได้รับข้อมูลคอนโทรลเลอร์จากแว่น'], 'Calculando…': ['Calculating…', 'กำลังคำนวณ…'], 'Sin micro: se graba sin sonido': ['No mic: recording without sound', 'ไม่มีไมค์: บันทึกแบบไม่มีเสียง'], 'Grabación descargada: {0}': ['Recording downloaded: {0}', 'ดาวน์โหลดวิดีโอแล้ว: {0}'], 'Grabación guardada en {0}': ['Recording saved in {0}', 'บันทึกวิดีโอไว้ที่ {0}'],
 };

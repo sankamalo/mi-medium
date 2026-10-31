@@ -2167,6 +2167,10 @@ function setFormat(vertical) {
   $('cropRow').classList.toggle('hidden', spec.view !== 'webcam' || !vertical);
   if (webcam.active) webcam.layout();
   else fitWindow();
+  warnFollow();
+}
+function warnFollow() {
+  if (webcam.active && spec.vertical && webcam.follow && !webcam.calib) toast('Calibra la cámara para que el plano pueda seguir el casco', 5000);
 }
 function setSpecBg(name) {
   const names = Object.keys(BGS);
@@ -2209,6 +2213,7 @@ function spectatorFrame(dt) {
     const d = webcam.delayed();
     if (d) applyPose(d);
     webcam.applyCamera();
+    webcam.followHead(d?.head, dt);
     handMeshes.forEach((h, i) => (h.visible = webcam.showCtrls && !!d?.hands[i]));
     return;
   }
@@ -2259,6 +2264,13 @@ if (SPECTATOR) {
   document.querySelectorAll('#spec [data-format]').forEach((b) => (b.onclick = () => setFormat(b.dataset.format === 'v')));
   $('camCrop').value = webcam.cropX * 100;
   $('camCrop').oninput = (e) => webcam.setCrop(e.target.value / 100);
+  const showFollow = () => {
+    $('camFollow').classList.toggle('on', webcam.follow);
+    $('cropManual').classList.toggle('hidden', webcam.follow);
+    $('camCrop').value = webcam.cropX * 100;
+  };
+  $('camFollow').onclick = () => { webcam.setFollow(!webcam.follow); showFollow(); warnFollow(); };
+  showFollow();
   let savedFormat = 'h';
   try { savedFormat = localStorage.getItem('plastilinaFormato') || 'h'; } catch {}
   setFormat(savedFormat === 'v');

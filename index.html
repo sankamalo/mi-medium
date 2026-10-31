@@ -202,7 +202,10 @@
       <button data-format="h" title="V">Horizontal</button>
       <button data-format="v" title="V">Vertical (redes)</button>
     </div>
-    <label id="cropRow" class="check hidden">Encuadre <input id="camCrop" type="range" min="0" max="100" step="1"></label>
+    <div id="cropRow" class="hidden">
+      <div class="row"><button id="camFollow" title="El plano vertical te sigue">Seguir casco</button></div>
+      <label id="cropManual" class="check">Encuadre <input id="camCrop" type="range" min="0" max="100" step="1"></label>
+    </div>
     <div class="row">
       <button id="recBtn" title="R">● Grabar</button>
       <label class="check"><input type="checkbox" id="recMic"> Micro</label>
