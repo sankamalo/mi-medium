@@ -665,10 +665,6 @@ async function remeshBlender(L) {
 const $ = (id) => document.getElementById(id);
 
 // ---------- Exportar a Blender ----------
-async function sendToMac(name, blob) {
-  const r = await fetch(API + '/api/export?name=' + encodeURIComponent(name), { method: 'POST', body: blob });
-  if (!r.ok) throw new Error(r.status);
-}
 
 function exportObjects() {
   return layers
@@ -730,19 +726,27 @@ function exportName() {
 let exporting = false;
 async function exportModel() {
   if (exporting) return;
-  // Sin el Mac a mano (sin Wi-Fi, o la app instalada desde GitHub): compartir el archivo.
-  if (!(await checkServer())) return shareModel();
+  // La app instalada desde GitHub sin el Mac a mano: compartir el archivo. Entrando por el
+  // enlace del Mac queda en cola aunque se haya cortado la Wi-Fi.
+  const online = await checkServer();
+  if (!online && !MAC_APP) return shareModel();
   exporting = true;
   toast('Exportando…');
   try {
     const objects = exportObjects();
     if (!objects.length) throw new Error('nada visible');
-    const base = exportName();
     const glb = await buildGLB(objects);
-    await sendToMac(base + '.obj', new Blob([toOBJ(objects)], { type: 'text/plain' }));
-    await sendToMac(base + '.glb', new Blob([glb], { type: 'model/gltf-binary' }));
-    const total = objects.reduce((a, o) => a + o.mesh.quads.length / 4, 0);
-    toast(t('Guardado en el Mac: {0} capa(s) · {1} quads', objects.length, total));
+    const obj = await new Blob([toOBJ(objects)]).arrayBuffer();
+    // Guardado y exportado van juntos a la carpeta de la obra.
+    await saveObra(false, true);
+    const o = obras.find((x) => x.id === obraId);
+    const stamp = exportName();
+    await idbSet(`envio:${stamp}:obj`, { id: o.id, stamp, kind: 'obj', data: obj });
+    await idbSet(`envio:${stamp}:glb`, { id: o.id, stamp, kind: 'glb', data: glb });
+    const sent = await syncToMac();
+    const total = objects.reduce((a, x) => a + x.mesh.quads.length / 4, 0);
+    toast(sent ? t('En el Mac, en obras/{0}: {1} capa(s) · {2} quads', o.name, objects.length, total)
+      : t('Guardado en las gafas: irá al Mac cuando se conecte'));
   } catch (e) {
     console.error(e);
     exporting = false;
@@ -2376,6 +2380,86 @@ const obraDirty = () => sceneSig() !== obraSig;
 const obraName = () => obras.find((o) => o.id === obraId)?.name || t('sin guardar');
 const fmtDate = (d) => new Date(d).toLocaleString(getLang(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
+// ---------- Copia en el Mac ----------
+// Cada obra guardada y cada exportación pasan al Mac en cuanto está al alcance. Lo pendiente se
+// deduce de lo guardado en las gafas, así que un corte de Wi-Fi solo lo retrasa.
+const MAC_APP = !!API || !location.hostname.endsWith('github.io');
+let syncing = null;
+function syncToMac() {
+  if (!syncing) syncing = runSync().finally(() => { syncing = null; });
+  return syncing;
+}
+async function postObra(o, kind, date, body, stamp = '') {
+  const q = new URLSearchParams({ id: o.id, name: o.name, kind, date, stamp });
+  const r = await fetch(`${API}/api/obra?${q}`, { method: 'POST', body });
+  if (!r.ok) throw new Error(r.status);
+}
+async function runSync() {
+  if (SPECTATOR || !server.ok) return false;
+  try {
+    for (const o of obras) {
+      if (o.remote) continue;
+      if (o.sentDate !== o.date) {
+        const date = o.date, buf = await idbGet('obra:' + o.id);
+        if (!buf) continue;
+        await postObra(o, 'escena', date, buf);
+        o.sentDate = date;
+        o.sentName = o.name;
+        await idbSet('obras', obras);
+      } else if (o.sentName !== o.name) {
+        await postObra(o, 'nombre', o.date, '');
+        o.sentName = o.name;
+        await idbSet('obras', obras);
+      }
+    }
+    for (const key of await idbKeys()) {
+      if (!String(key).startsWith('envio:')) continue;
+      const e = await idbGet(key), o = obras.find((x) => x.id === e.id) || { id: e.id, name: 'Obra' };
+      await postObra(o, e.kind, o.date || 0, e.data, e.stamp);
+      await idbDel(key);
+    }
+    return true;
+  } catch (e) {
+    console.warn('copia en el Mac', e);
+    return false;
+  }
+}
+// Lo que hay en el Mac y no en esta dirección (otra Wi-Fi, o el enlace de antes) también se ve aquí.
+async function fetchMacObras() {
+  if (SPECTATOR || !server.ok) return;
+  try {
+    const list = await (await fetch(API + '/api/obras', { cache: 'no-store' })).json();
+    const gone = (await idbGet('obrasBorradas')) || [];
+    for (const r of list) {
+      if (gone.includes(r.id)) continue;
+      const o = obras.find((x) => x.id === r.id);
+      if (!o) obras.push({ ...r, remote: true, sentDate: r.date, sentName: r.name });
+      else if (r.date > o.date) Object.assign(o, { date: r.date, size: r.size, name: r.name, remote: true, sentDate: r.date, sentName: r.name });
+    }
+    obras.sort((a, b) => b.date - a.date);
+    await idbSet('obras', obras);
+    updateHud();
+    if (panel3d.visible) drawPanel();
+  } catch (e) {
+    console.warn('obras del Mac', e);
+  }
+}
+// La escultura en curso también, aunque no pulses Guardar: la obra "Autoguardado".
+const AUTO_ID = 1;
+let autoSig = '';
+async function autoCopy() {
+  if (SPECTATOR || !server.ok || sculpting || layers.some((L) => L.busy)) return;
+  const sig = sceneSig();
+  if (sig === autoSig || !obraDirty()) return;
+  try {
+    const date = Date.now();
+    await postObra({ id: AUTO_ID, name: t('Autoguardado') }, 'escena', date, packScene());
+    autoSig = sig;
+  } catch (e) {
+    console.warn('autoguardado en el Mac', e);
+  }
+}
+
 async function saveObra(asNew = false, quiet = false) {
   if (sculpting) return;
   let o = !asNew && obras.find((x) => x.id === obraId);
@@ -2395,6 +2479,7 @@ async function saveObra(asNew = false, quiet = false) {
     obraSig = sceneSig();
     await idbSet('escenaMeta', { obraId, dirty: false });
     if (!quiet) toast(t('Guardado: {0} (en las gafas)', o.name));
+    syncToMac().then((sent) => { if (sent && !quiet) toast(t('Guardado: {0} (también en el Mac)', o.name)); });
   } catch (e) {
     console.error(e);
     toast(t('No se pudo guardar: {0}', e.message));
@@ -2410,6 +2495,19 @@ function resetHistory() {
 async function openObra(id) {
   if (id === obraId) return;
   if (obraDirty()) await saveObra(false, true);
+  const o = obras.find((x) => x.id === id);
+  if (o?.remote) { // está en el Mac: se trae a las gafas
+    try {
+      toast('Trayendo la obra del Mac…');
+      const r = await fetch(`${API}/api/obra?id=${id}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      await idbSet('obra:' + id, await r.arrayBuffer());
+      o.remote = false;
+      await idbSet('obras', obras);
+    } catch {
+      return toast('Esa obra está en el Mac y ahora no llego a él');
+    }
+  }
   const buf = await idbGet('obra:' + id);
   if (!buf) return toast('No encuentro esa obra');
   applySnapshot(buf);
@@ -2443,6 +2541,8 @@ async function deleteObra(id) {
   await idbDel('obra:' + id);
   obras = obras.filter((x) => x !== o);
   await idbSet('obras', obras);
+  // La copia del Mac se queda, por seguridad, pero no vuelve a aparecer aquí.
+  await idbSet('obrasBorradas', [...((await idbGet('obrasBorradas')) || []), id]);
   if (obraId === id) { obraId = null; obraSig = ''; }
   updateHud();
 }
@@ -2486,6 +2586,11 @@ async function loadObras() {
 if (!SPECTATOR) {
   (params.has('nuevo') ? Promise.resolve() : restoreScene()).then(loadObras).then(() => {
     setInterval(autosave, 3000);
+    setInterval(syncToMac, 15000);
+    setInterval(autoCopy, 120000);
+    const whenOnline = (ok) => { if (ok) fetchMacObras().then(syncToMac); };
+    server.listeners.push(whenOnline);
+    whenOnline(server.ok);
     addEventListener('visibilitychange', () => document.hidden && autosave());
   });
 }

@@ -117,6 +117,11 @@ const D = {
   'Seguir casco': ['Follow headset', 'ติดตามแว่น'], 'El plano vertical te sigue': ['The vertical frame follows you', 'เฟรมแนวตั้งติดตามคุณ'],
   'Calibra la cámara para que el plano pueda seguir el casco': ['Calibrate the camera so the frame can follow the headset', 'ปรับเทียบกล้องเพื่อให้เฟรมติดตามแว่นได้'],
   '+ Mandos': ['+ Controllers', '+ คอนโทรลเลอร์'], 'El plano también sigue los mandos que estés moviendo': ['The frame also follows the controllers you are moving', 'เฟรมติดตามคอนโทรลเลอร์ที่คุณกำลังขยับด้วย'],
+  'En el Mac, en obras/{0}: {1} capa(s) · {2} quads': ['On the Mac, in obras/{0}: {1} layer(s) · {2} quads', 'อยู่บน Mac ใน obras/{0}: {1} เลเยอร์ · {2} quads'],
+  'Guardado en las gafas: irá al Mac cuando se conecte': ['Saved on the headset: it will go to the Mac when connected', 'บันทึกในแว่นแล้ว: จะส่งไป Mac เมื่อเชื่อมต่อ'],
+  'Guardado: {0} (también en el Mac)': ['Saved: {0} (also on the Mac)', 'บันทึกแล้ว: {0} (อยู่บน Mac ด้วย)'],
+  'Autoguardado': ['Autosave', 'บันทึกอัตโนมัติ'], 'Trayendo la obra del Mac…': ['Getting the work from the Mac…', 'กำลังดึงผลงานจาก Mac…'],
+  'Esa obra está en el Mac y ahora no llego a él': ['That work is on the Mac and I cannot reach it now', 'ผลงานนั้นอยู่บน Mac และตอนนี้เชื่อมต่อไม่ได้'],
   'Cámara calibrada. Retoca con las flechas si hace falta': ['Camera calibrated. Fine-tune with the arrow keys if needed', 'ปรับเทียบกล้องแล้ว ใช้ปุ่มลูกศรปรับละเอียดได้ถ้าจำเป็น'],
   'No llegan los mandos de las gafas': ['The headset controllers are not arriving', 'ไม่ได้รับข้อมูลคอนโทรลเลอร์จากแว่น'], 'Calculando…': ['Calculating…', 'กำลังคำนวณ…'], 'Sin micro: se graba sin sonido': ['No mic: recording without sound', 'ไม่มีไมค์: บันทึกแบบไม่มีเสียง'], 'Grabación descargada: {0}': ['Recording downloaded: {0}', 'ดาวน์โหลดวิดีโอแล้ว: {0}'], 'Grabación guardada en {0}': ['Recording saved in {0}', 'บันทึกวิดีโอไว้ที่ {0}'],
 };
