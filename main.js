@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { SDFGrid } from './sdf.js';
+import { SDFGrid, BLADE } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { toFBX } from './fbx.js';
@@ -244,6 +244,7 @@ const cursorCopies = Array.from({ length: 15 }, () => {
 });
 // Forma del cursor = huella del pincel (a escala r): esfera, cubo o pirámide.
 const CURSOR_GEO = {
+  blade: new THREE.BoxGeometry(BLADE.thin * 2, BLADE.tall * 2, BLADE.long * 2),
   sphere: cursor.geometry,
   cube: new THREE.BoxGeometry(1.5, 1.5, 1.5, 2, 2, 2),
   pyramid: new THREE.ConeGeometry(Math.SQRT2, 2, 4, 1).rotateY(Math.PI / 4).translate(0, 0.4, 0),
@@ -716,9 +717,7 @@ let lastEdit = 0;
 const noteEdit = () => { lastEdit = performance.now(); };
 const entryBytes = (e) => (e.rec ? e.rec.size * BRICK_BYTES * 2 : e.bytes);
 
-let strokeSeq = 0;
 function pushStroke(L) {
-  strokeSeq++;
   noteEdit();
   const rec = new Map();
   undoStack.push({ layer: L, grid: L.grid, rec });
@@ -1117,6 +1116,12 @@ function brushRot(frame = spinner) {
   }
   return Array.from(e, (v) => Math.round(v * 1e4) / 1e4);
 }
+// Cada herramienta su forma: un sello de Añadir no se cuela en Quitar. Las de modelar llevan la suya.
+const shapeBy = { add: 'sphere', remove: 'sphere' };
+Object.defineProperty(state, 'shape', {
+  get: () => (clayTool === 'tool:cuter' ? 'blade' : clayTool ? 'sphere' : shapeBy[state.tool === 'remove' ? 'remove' : 'add']),
+  set: (v) => { shapeBy[state.tool === 'remove' ? 'remove' : 'add'] = v; },
+});
 const shapeActive = () => (activeTool() === 'add' || activeTool() === 'remove') && state.shape !== 'sphere';
 
 // ---------- Simetría ----------
@@ -1214,7 +1219,7 @@ function syncCursorCopies() {
 // Al volver a una herramienta normal, el tamaño y el borde vuelven a como estaban.
 const CLAY_TOOLS = {
   'tool:palillo': { tool: 'remove', radius: 0.008, edge: 'even' },
-  'tool:cuter': { tool: 'remove', radius: 0.016, edge: 'hard' },
+  'tool:cuter': { tool: 'remove', radius: 0.03, edge: 'hard' },
   'tool:cuchara': { tool: 'remove', radius: 0.045, edge: 'soft' },
   'tool:dedo': { tool: 'smooth', radius: 0.03, edge: 'even' },
   'tool:rodillo': { tool: 'flatten', radius: 0.07, edge: 'even' },
@@ -1257,7 +1262,6 @@ function brushOpts(tool, rot, c) {
   if (state.edge !== 'even') o.edge = state.edge;
   if (texOf(tool) !== 'plain' && TEXTURED.has(tool)) {
     o.texture = texOf(tool);
-    o.sid = strokeSeq;
     if (c) { o.frame = c.m; o.shift = c.t; }
   }
   return Object.keys(o).length ? o : null;
@@ -2298,6 +2302,7 @@ function drawPreview() {
   const sh = shapeActive() ? state.shape : 'sphere';
   g.beginPath();
   if (sh === 'cube') g.rect(c - R * 0.75, c - R * 0.75, R * 1.5, R * 1.5);
+  else if (sh === 'blade') g.rect(c - R * 0.1, c - R * 0.9, R * 0.2, R * 1.8);
   else if (sh === 'pyramid') { g.moveTo(c, c - R * 1.1); g.lineTo(c + R, c + R * 0.75); g.lineTo(c - R, c + R * 0.75); g.closePath(); }
   else g.arc(c, c, R, 0, Math.PI * 2);
   g.fill();
@@ -3371,8 +3376,9 @@ function pickFlower(h) {
     setColor(flower.wheelHex);
     return;
   }
-  // Las texturas se eligen en el pétalo de Inflar: es donde se ven en relieve.
+  // Las texturas se eligen en el pétalo de Inflar, y las formas y sellos en el de Añadir.
   if (h.startsWith('tex:')) choose('inflate');
+  if (h.startsWith('shape:') || STAMPS.has(h)) choose('add');
   choose(h);
 }
 
@@ -4499,5 +4505,5 @@ changeLang(getLang());
 exportUi();
 bgUi();
 setBg(bg.id);
-window.__miMedium = { brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
