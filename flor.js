@@ -98,27 +98,45 @@ const FINGERS = [
     open: [-112, -134, -152], closed: [-172, -236, -282] },
 ];
 
+// Cuerpo del mando de una pieza: cabeza y mango se funden, sin juntas ni bultos.
+let bodyGeo = null;
+function controllerBody(center) {
+  if (bodyGeo) return bodyGeo;
+  const c = center.clone().addScaledVector(FACE, -0.0165), back = FWD.clone().negate();
+  const axis = new THREE.Vector3(0, Math.cos(Math.PI / 2 + 0.06), Math.sin(Math.PI / 2 + 0.06));
+  const mid = new THREE.Vector3(0.0105, 0.001, 0.027);
+  const handle = { a: mid.clone().addScaledVector(axis, -0.033).toArray(), b: mid.clone().addScaledVector(axis, 0.033).toArray(), r: 0.0185 };
+  const d = new THREE.Vector3();
+  const sdf = (p) => {
+    d.set(p[0] - c.x, p[1] - c.y, p[2] - c.z);
+    const headD = ellDist([d.dot(SIDE), d.dot(back), d.dot(FACE)], [0, 0, 0], [0.036, 0.034, 0.019]);
+    return smin(headD, segDist(p, handle), 0.016);
+  };
+  const net = surfaceNets(sdf, [-0.06, -0.06, -0.09], [0.06, 0.05, 0.09], 0.002);
+  bodyGeo = new THREE.BufferGeometry();
+  bodyGeo.setAttribute('position', new THREE.BufferAttribute(net.positions, 3));
+  bodyGeo.setAttribute('normal', new THREE.BufferAttribute(net.normals, 3));
+  bodyGeo.setIndex(net.indices);
+  return bodyGeo;
+}
+
 function buildController() {
   const g = new THREE.Group();
   const center = P_A.clone().add(P_B).add(P_STICK).multiplyScalar(1 / 3);
-  const head = piece(lumps(ellipsoid(0.036, 0.034, 0.019)), COLORS.blue);
-  head.position.copy(center).addScaledVector(FACE, -0.0165);
-  head.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(SIDE, vA.copy(FWD).negate(), FACE));
-  const handle = piece(lumps(new THREE.CapsuleGeometry(0.0185, 0.066, 4, 14)), COLORS.blue);
-  handle.position.set(0.0105, 0.001, 0.027);
-  handle.rotation.x = Math.PI / 2 + 0.06;
-  const band = piece(new THREE.TorusGeometry(0.0195, 0.0032, 8, 18), COLORS.yellow);
+  const body = piece(controllerBody(center), COLORS.blue);
+  const faceQ = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(SIDE, vA.copy(FWD).negate(), FACE));
+  const band = piece(new THREE.TorusGeometry(0.0195, 0.0032, 12, 32), COLORS.yellow);
   band.position.set(0.0105, 0.004, 0.058);
   band.rotation.x = 0.06;
-  const trigger = piece(lumps(new THREE.CapsuleGeometry(0.0095, 0.012, 3, 10)), COLORS.red);
+  const trigger = piece(new THREE.CapsuleGeometry(0.0095, 0.012, 6, 18), COLORS.red);
   trigger.position.copy(P_TRIGGER);
   trigger.rotation.set(0.5, 0, 0);
-  const squeeze = piece(lumps(ellipsoid(0.006, 0.012, 0.015)), COLORS.yellow);
+  const squeeze = piece(ellipsoid(0.006, 0.012, 0.015, 24, 18), COLORS.yellow);
   squeeze.position.copy(P_SQUEEZE);
   const btn = (p, hex) => {
-    const b = piece(ellipsoid(0.0064, 0.0064, 0.0034, 12, 8), hex);
+    const b = piece(ellipsoid(0.0064, 0.0064, 0.0034, 20, 12), hex);
     b.position.copy(p);
-    b.quaternion.copy(head.quaternion);
+    b.quaternion.copy(faceQ);
     return b;
   };
   const a = btn(P_A, COLORS.yellow), b = btn(P_B, COLORS.green);
@@ -126,11 +144,11 @@ function buildController() {
   stick.position.copy(P_STICK).addScaledVector(FACE, -0.013);
   stick.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(SIDE, FACE, FWD));
   const stick0 = stick.quaternion.clone();
-  const shaft = piece(new THREE.CylinderGeometry(0.004, 0.0055, 0.015, 10).translate(0, 0.0075, 0), COLORS.white, null);
-  const cap = piece(ellipsoid(0.0098, 0.004, 0.0098, 14, 10), COLORS.red);
+  const shaft = piece(new THREE.CylinderGeometry(0.004, 0.0055, 0.015, 16).translate(0, 0.0075, 0), COLORS.white, null);
+  const cap = piece(ellipsoid(0.0098, 0.004, 0.0098, 24, 12), COLORS.red);
   cap.position.y = 0.0155;
   stick.add(shaft, cap);
-  g.add(head, handle, band, trigger, squeeze, a, b, stick);
+  g.add(body, band, trigger, squeeze, a, b, stick);
   return { group: g, a, b, trigger, squeeze, stick, stick0, trigger0: P_TRIGGER.clone(), squeeze0: P_SQUEEZE.clone() };
 }
 
@@ -239,6 +257,7 @@ const WRIST = { a: [0.046, 0.04, 0.03], b: [0.05, 0.08, 0.03], r: 0.019 };
 const T0 = new THREE.Vector3(0.033, 0.029, -0.013);
 const L1 = 0.031, L2 = 0.03;
 const THUMB_REST = new THREE.Vector3(0.012, 0.03, -0.045); // pulgar levantado, al modelar
+const BEND = 0.28; // parte de cada falange que se reparte el hueso del medio: la articulación se curva
 const FAN = [9, 3, -3, -9]; // al modelar, dedos abiertos en abanico para que no se peguen
 
 function solveThumb(target, elbow) {
@@ -274,13 +293,13 @@ function buildHandGeometry(boneOf) {
   groups.forEach((g) => g.segs.forEach((s) => { grow(s.a, s.r); grow(s.b, s.r); }));
   grow(WRIST.a, WRIST.r); grow(WRIST.b, WRIST.r);
   grow(PALM_C, Math.max(...PALM_R)); grow(HEEL_C, Math.max(...HEEL_R));
-  const net = surfaceNets(sdf, lo, hi, 0.003);
+  const net = surfaceNets(sdf, lo, hi, 0.0025);
 
   // Pesos: cada vértice sigue a los huesos de su dedo y, cerca de la base, a la palma.
   const n = net.positions.length / 3;
   const skinIndex = new Uint16Array(n * 4), skinWeight = new Float32Array(n * 4);
   const p = [0, 0, 0];
-  const W = (d) => 1 / (Math.max(d, 0) + 0.002) ** 4;
+  const W = (d) => 1 / (Math.max(d, 0) + 0.003) ** 3; // reparto suave: las curvas no se pellizcan
   for (let v = 0; v < n; v++) {
     p[0] = net.positions[v * 3]; p[1] = net.positions[v * 3 + 1]; p[2] = net.positions[v * 3 + 2];
     let best = null, bd = Infinity;
@@ -325,10 +344,10 @@ function buildHand() {
     });
     return { base, joints, def };
   });
-  const th1 = new THREE.Bone(), th2 = new THREE.Bone();
-  root.add(th1, th2);
-  bones.push(th1, th2);
-  return { root, bones, groups, fingers, th1, th2 };
+  const th1 = new THREE.Bone(), thm = new THREE.Bone(), th2 = new THREE.Bone();
+  root.add(th1, thm, th2);
+  bones.push(th1, thm, th2);
+  return { root, bones, groups, fingers, th1, thm, th2, rest: null };
 }
 
 function poseFinger(f, c) {
@@ -340,12 +359,20 @@ function poseFinger(f, c) {
     prev = ang;
   });
 }
+const thD1 = new THREE.Vector3(), thD2 = new THREE.Vector3(), thDm = new THREE.Vector3(), thQ = new THREE.Quaternion();
 function poseThumb(h, target, elbow) {
   const d = solveThumb(target, elbow);
+  thD1.copy(elbow).sub(T0).normalize();
+  thD2.copy(T0).addScaledVector(vA, d).sub(elbow).normalize();
   h.th1.position.copy(T0);
-  aimY(h.th1, vT.copy(elbow).sub(T0));
-  h.th2.position.copy(elbow);
-  aimY(h.th2, vB.copy(T0).addScaledVector(vA, d).sub(elbow));
+  h.thm.position.copy(T0).addScaledVector(thD1, L1 * (1 - BEND));
+  h.th2.position.copy(elbow).addScaledVector(thD2, L2 * BEND);
+  thDm.copy(h.th2.position).sub(h.thm.position).normalize();
+  // Giran lo mínimo desde la postura en que se modeló: así el dedo no se retuerce ni da saltos.
+  [[h.th1, thD1], [h.thm, thDm], [h.th2, thD2]].forEach(([bone, dir], i) => {
+    if (h.rest) bone.quaternion.copy(thQ.setFromUnitVectors(h.rest[i].dir, dir)).multiply(h.rest[i].q);
+    else aimY(bone, dir);
+  });
 }
 
 export { surfaceNets };
@@ -363,6 +390,7 @@ export function createControllerRig(handedness) {
   const elbow = new THREE.Vector3();
   hand.fingers.forEach((f) => poseFinger(f, 0));
   poseThumb(hand, THUMB_REST, elbow);
+  hand.rest = [[hand.th1, thD1], [hand.thm, thDm], [hand.th2, thD2]].map(([b, dir]) => ({ dir: dir.clone(), q: b.quaternion.clone() }));
   hand.root.updateMatrixWorld(true);
   if (!handData) {
     const wp = (o) => o.getWorldPosition(new THREE.Vector3()).toArray();
@@ -375,8 +403,9 @@ export function createControllerRig(handedness) {
       })),
     }));
     groups.push({ segs: [
-      { a: T0.toArray(), b: elbow.toArray(), r: 0.0102, bone: hand.bones.indexOf(hand.th1) },
-      { a: elbow.toArray(), b: hand.th2.localToWorld(new THREE.Vector3(0, L2, 0)).toArray(), r: 0.0094, bone: hand.bones.indexOf(hand.th2) },
+      { a: T0.toArray(), b: hand.thm.position.toArray(), r: 0.0102, bone: hand.bones.indexOf(hand.th1) },
+      { a: hand.thm.position.toArray(), b: hand.th2.position.toArray(), r: 0.0098, bone: hand.bones.indexOf(hand.thm) },
+      { a: hand.th2.position.toArray(), b: hand.th2.localToWorld(new THREE.Vector3(0, L2 * (1 - BEND), 0)).toArray(), r: 0.0094, bone: hand.bones.indexOf(hand.th2) },
     ] });
     handData = buildHandGeometry({ groups });
   }
@@ -569,7 +598,7 @@ const SUB_HOLE = 0.04, SUB_REACH = SUB_LEN * 1.35; // dentro del agujero sigues 
 const WHEEL_LEN = 0.18, WHEEL_WID = 0.165, WHEEL_AT = 0.115, WHEEL_R = 0.055, WHEEL_GRACE = 0.03;
 // Centro blanco, color puro a media altura, oscuro hacia el borde.
 const WHEEL_PURE = 0.74, WHEEL_DARK = 0.88;
-function wheelColor(u, v) {
+export function wheelColor(u, v) {
   const r = Math.min(1, Math.hypot(u, v));
   const h = ((Math.atan2(v, u) / (Math.PI * 2)) + 1) % 1;
   const sat = Math.min(1, r / WHEEL_PURE), val = r <= WHEEL_PURE ? 1 : 1 - ((r - WHEEL_PURE) / (1 - WHEEL_PURE)) * WHEEL_DARK;
@@ -577,7 +606,7 @@ function wheelColor(u, v) {
   return '#' + [5, 3, 1].map((n) => Math.round(f(n) * 255).toString(16).padStart(2, '0')).join('');
 }
 // El punto de la rueda más parecido a un color.
-function wheelSpot(hex) {
+export function wheelSpot(hex) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
   const max = Math.max(r, g, b), d = max - Math.min(r, g, b);
   const sat = max ? d / max : 0;
@@ -586,6 +615,9 @@ function wheelSpot(hex) {
   return [Math.cos((h / 6) * Math.PI * 2) * rad, Math.sin((h / 6) * Math.PI * 2) * rad];
 }
 const DWELL = 0.42;
+// Un segundo encima de una opción la elige sin apretar nada. Al cruzar la frontera entre dos
+// pétalos, el de ahora aguanta un poco: sin esto, el temblor de la mano reiniciaba la espera.
+const HOLD = 1, STICKY = 7;
 // El pétalo grande de los sellos: un círculo sobre la flor, con dos anillos de dibujitos.
 const STAMP_DISC = 0.245, STAMP_THUMB = 0.034, STAMP_HOLE = 0.05;
 const STAMP_RINGS = [{ r: 0.098, n: 8 }, { r: 0.188, n: 14 }];
@@ -626,7 +658,8 @@ function setOrder(p, o) {
   p.line.renderOrder = o;
   p.face.renderOrder = o + 0.1;
   p.icon.renderOrder = o + 0.2;
-  if (p.markerRing) { p.markerRing.renderOrder = o + 0.3; p.markerDot.renderOrder = o + 0.4; }
+  // La marca de la rueda va por encima del mando y de la mano, para verla mientras eliges.
+  if (p.markerRing) { p.markerRing.renderOrder = RIG_ORDER + 1; p.markerDot.renderOrder = RIG_ORDER + 2; }
 }
 
 export class Flower {
@@ -677,6 +710,14 @@ export class Flower {
     this.label.renderOrder = 1000;
     this.label.visible = false;
     this.group.add(this.label);
+    // Debajo del nombre, la barra de esos segundos de espera.
+    this.holdBar = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.128, 0.0045).translate(0.064, 0, 0),
+      new THREE.MeshBasicMaterial({ color: COLORS.yellow, depthTest: false, depthWrite: false, toneMapped: false }),
+    );
+    this.holdBar.position.set(-0.064, -0.0185, 0);
+    this.holdBar.renderOrder = 1001;
+    this.label.add(this.holdBar);
   }
 
   buildStampDisc() {
@@ -763,8 +804,8 @@ export class Flower {
       return new THREE.Mesh(f.geometry(), flatMat());
     };
     p.marker = new THREE.Group();
-    p.markerRing = disc(0.0088, INK);
-    p.markerDot = disc(0.0062, COLORS.white);
+    p.markerRing = disc(0.0125, INK);
+    p.markerDot = disc(0.0092, COLORS.white);
     p.marker.add(p.markerRing, p.markerDot);
     p.holder.add(p.marker);
     setOrder(p, p.order);
@@ -792,6 +833,8 @@ export class Flower {
     this.age = 0;
     this.sub = false;
     this.pStrength = this.pStrengthV = 0;
+    this.fired = false;
+    this.wheelAt = null;
     this.isActive = isActive;
     this.openStamps(false);
     this.setWheel(color, ...wheelSpot(color));
@@ -823,7 +866,11 @@ export class Flower {
     if (d >= DEAD) {
       id = this.sub ? this.hoverSub(x, -y) : null;
       if (id) this.pAngle = this.petals.find((p) => p.id === this.sub).angle; // los pétalos no se mueven mientras eliges
-      else if (d <= OUTER) id = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b)).id;
+      else if (d <= OUTER) {
+        const best = this.petals.reduce((b, p) => (Math.abs(wrap(a - p.angle)) < Math.abs(wrap(a - b.angle)) ? p : b));
+        const cur = this.petals.find((p) => p.id === this.highlight);
+        id = cur && Math.abs(wrap(a - cur.angle)) - Math.abs(wrap(a - best.angle)) < STICKY ? cur.id : best.id;
+      }
     }
     // El submenú se cierra en cuanto te vas a otro pétalo o sales de la flor.
     if (this.sub && id !== this.sub && !SUBS[this.sub].some((s) => s.id === id)) this.setSub(false);
@@ -857,13 +904,20 @@ export class Flower {
       if (r * WHEEL_R > WHEEL_R + WHEEL_GRACE) return null;
       const k = Math.min(1, 1 / (r || 1));
       this.setWheel(wheelColor(u * k, v * k), u * k, v * k);
+      // En la rueda, la espera cuenta desde que dejas de moverte por los colores.
+      if (!this.wheelAt || Math.hypot(u - this.wheelAt.u, v - this.wheelAt.v) > 0.08) {
+        this.wheelAt = { u, v };
+        this.since = this.age;
+      }
       return list[0].id;
     }
     const dx = x - c.x, dy = y - c.y, dist = Math.hypot(dx, dy);
     if (dist < SUB_HOLE || dist > SUB_REACH) return null;
     const rel = wrap(Math.atan2(dx, dy) / DEG - c.ang);
     if (Math.abs(rel) > Math.abs(list[0].off) + 28) return null;
-    return list.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b)).id;
+    const best = list.reduce((b, s) => (Math.abs(rel - s.off) < Math.abs(rel - b.off) ? s : b));
+    const cur = list.find((s) => s.id === this.highlight);
+    return cur && Math.abs(rel - cur.off) - Math.abs(rel - best.off) < STICKY ? cur.id : best.id;
   }
 
   // La parte gorda del pétalo que tiene las opciones abiertas.
@@ -896,17 +950,20 @@ export class Flower {
     return this.hover((ax / l) * r, (ay / l) * r);
   }
 
-  // Punto del mundo. relative: medido desde donde estaba la punta al abrir (la mano que abre);
-  // si no, tal cual cae sobre la flor (la otra mano, por encima de los pétalos).
-  hoverWorld(world, relative = true) {
-    const p = this.group.worldToLocal(vT.copy(world));
-    if (relative) p.sub(this.zero);
+  // Lo que tus ojos ven debajo de la punta: la línea del ojo a la punta, cortada con la flor.
+  rayPoint(eye, tip) {
+    const e = this.group.worldToLocal(vA.copy(eye)), q = this.group.worldToLocal(vB.copy(tip));
+    const dz = q.z - e.z, k = Math.abs(dz) > 1e-5 ? -e.z / dz : 1;
+    return vT.set(e.x + (q.x - e.x) * k, e.y + (q.y - e.y) * k, q.z);
+  }
+  hoverRay(eye, tip) {
+    const p = this.rayPoint(eye, tip);
     return this.hover(p.x, -p.y);
   }
 
-  // ¿Esta mano está por encima de los pétalos?
-  isOver(world) {
-    const p = this.group.worldToLocal(vT.copy(world));
+  // ¿Esta punta está por encima de los pétalos?
+  isOver(eye, tip) {
+    const p = this.rayPoint(eye, tip);
     const d = Math.hypot(p.x, p.y);
     return Math.abs(p.z) < 0.13 && d > DEAD && d < (this.stampsOpen ? STAMP_DISC + 0.05 : this.sub ? 0.34 : OUTER);
   }
@@ -960,6 +1017,11 @@ export class Flower {
       this.openStamps(true);
       this.setHighlight(null);
     }
+    // Las opciones finales (no las que abren otra flor) se eligen solas al quedarte encima.
+    const leaf = this.highlight && !SUBS[this.highlight] && this.highlight !== 'shape:more';
+    const held = leaf ? (this.age - this.since) / HOLD : 0;
+    this.holdBar.scale.x = Math.max(0.0001, Math.min(1, held));
+    if (held >= 1) this.fired = true;
     if (this.stampsOpen) {
       const k = 1 - Math.exp(-dt * 18);
       for (const s of this.slots) {
@@ -984,9 +1046,8 @@ export class Flower {
       // Con otra flor abierta, los demás pétalos se encogen para dejarle sitio.
       const room = this.sub && p.id !== this.sub ? 0.78 : 1;
       const sizeTarget = opening * room * (1 + 0.1 * near + (hot ? 0.12 : 0));
-      // Los vecinos se apartan, y el señalado se inclina un poco hacia la mano.
-      const away = 24 * (delta / 55) * Math.exp(-((delta / 55) ** 2));
-      const angTarget = p.angle + (away - delta * 0.28 * near) * s;
+      // Solo cambian de tamaño: si se movieran, lo que ves bajo la punta no sería lo que señalas.
+      const angTarget = p.angle;
       if (dt > 0) {
         spring(p, 'ang', angTarget, step);
         spring(p, 'size', sizeTarget, step);

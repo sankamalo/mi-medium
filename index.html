@@ -238,8 +238,9 @@
     </div>
     <div class="row">
       <button id="btnExport" title="E">Enviar a Blender</button>
-      <button id="btnImport" title="FBX, OBJ, GLB">Importar</button>
-      <input id="fileRef" type="file" accept=".fbx,.obj,.glb" hidden>
+      <button id="btnImport" title="FBX, OBJ, GLB, PNG, JPG">Importar</button>
+      <input id="fileRef" type="file" accept=".fbx,.obj,.glb,.png,.jpg,.jpeg,.webp,image/*" hidden>
+      <button id="btnPhoto" title="Con la cámara del dispositivo: la foto aparece como referencia">Sacar foto</button>
     </div>
     <div id="refBox" hidden>
       <div class="sec">Referencia <button class="mini" id="refHide">Ocultar</button></div>
@@ -247,9 +248,16 @@
       <label><span>Tamaño de la referencia</span> <input type="range" id="refSize" min="0" max="1" step="0.01"></label>
       <label><span>Transparencia</span> <input type="range" id="refOpacity" min="0" max="0.9" step="0.05"></label>
     </div>
+    <div class="sec">Exportar</div>
+    <div class="row" id="fmtRow"></div>
+    <label><span>Quads al exportar</span> <input type="range" id="exportQuads" min="0" max="1" step="0.01" value="0"> <span id="exportQuadsVal"></span></label>
     <div class="row">
       <button id="btnShare" title="Mandar el modelo por WhatsApp, correo…">Compartir (WhatsApp…)</button>
     </div>
+    <div class="sec">Fondo</div>
+    <div class="row" id="bgRow"></div>
+    <label><span>Girar la luz</span> <input type="range" id="bgRot" min="0" max="1" step="0.01" value="0"></label>
+    <label><span>Cuánto se ve el fondo</span> <input type="range" id="bgShow" min="0.1" max="1" step="0.01" value="0.6"></label>
     <div class="row">
       <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
       <button id="btnVR" disabled>Gafas: VR</button>

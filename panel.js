@@ -135,6 +135,12 @@ export class CanvasPanel {
         disc(r, CERA.ink);
         if (on) { disc(r - 5, CERA.yellow); disc(r - 13, CERA.ink); disc(r - 17, w.color); }
         else disc(r - (hov ? 8 : 5), w.color);
+        // Círculo con un +: abre la rueda de color.
+        if (w.plus) {
+          g.fillStyle = CERA.ink;
+          g.fillRect(cx - r * 0.5, cy - 3, r, 6);
+          g.fillRect(cx - 3, cy - r * 0.5, 6, r);
+        }
       } else if (w.type === 'slider') {
         const v = w.get();
         g.fillStyle = text;

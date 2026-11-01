@@ -4,13 +4,14 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { SDFGrid } from './sdf.js';
 import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, srgbToLinear } from './mesher.js';
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
-import { createControllerRig, Flower, surfaceNets } from './flor.js';
+import { toFBX } from './fbx.js';
+import { createControllerRig, Flower, surfaceNets, wheelColor, wheelSpot } from './flor.js';
 import { CanvasPanel, CERA } from './panel.js';
 import { parseModel, refType, REF_TYPES } from './referencia.js';
 import { STAMPS, addOwnStamp, removeOwnStamp, stampFromGrid, stampThumb } from './sellos.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
-import { remeshSDF, bakeMesh, meshArea } from './remesh.js';
+import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang } from './i18n.js';
 
@@ -40,7 +41,7 @@ const state = {
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
-  color: '#cfc6bb', bakeSize: 2048, lathe: false, latheSpeed: 0.5,
+  exportFmt: 'obj', exportT: 0, exportNow: 0, color: '#cfc6bb', bakeSize: 2048, lathe: false, latheSpeed: 0.5,
 };
 
 // Obras guardadas: lista [{ id, name, date, size }], la abierta (null = nunca guardada)
@@ -69,7 +70,8 @@ scene.background = deskBg;
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.01, 50);
 camera.position.set(0.4, 0.3, 1.15);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3d48, 1.4));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x3a3d48, 1.4);
+scene.add(hemi);
 const key = new THREE.DirectionalLight(0xffffff, 1.8);
 key.position.set(1, 2, 1.5);
 scene.add(key);
@@ -421,6 +423,15 @@ class Layer {
     f.voxels.visible = true;
     this.f = f;
   }
+  // Se queda con una copia de los fotogramas de otra capa (sin gastar memoria nueva).
+  adoptFrames(src) {
+    this.disposeFrame(this.f);
+    this.group.remove(this.f.voxels);
+    this.frames = src.frames.map((f) => this.copyFrame(f));
+    this.frames.forEach((f) => this.group.add(f.voxels));
+    this.f = this.frames[src.frames.indexOf(src.f)];
+    this.f.voxels.visible = true;
+  }
   // Memoria aproximada de los fotogramas: lo compartido cuenta una vez.
   frameBytes() {
     const seen = new Set();
@@ -436,6 +447,7 @@ class Layer {
   get base() { return hexToRgb(this.color); }
 
   setBase(hex) {
+    settleBake(this);
     this.color = hex;
     this.frames.forEach((f) => this.rebuildFrame(f));
     this.changed();
@@ -538,6 +550,7 @@ class Layer {
   }
 
   merged() {
+    settleBake(this);
     this.flush();
     return mergeChunks(this.chunks.filter(Boolean).map((c) => c.m));
   }
@@ -620,6 +633,7 @@ class Layer {
   }
 
   dispose() {
+    settleBake(this);
     this.frames.forEach((f) => this.disposeFrame(f));
     this.clearRemesh();
     spinner.remove(this.group);
@@ -652,6 +666,7 @@ function nextLayer() {
 }
 
 function deleteLayer(L, ask = true) {
+  settleBake(L);
   if (layers.length === 1) return toast('No puedes borrar la única capa');
   if (ask && !confirm(t('¿Borrar {0}? No se puede deshacer.', L.name))) return;
   for (const s of [undoStack, redoStack]) {
@@ -673,9 +688,14 @@ function setLayerBase(L, hex) {
 // ---------- Deshacer ----------
 // Los trazos guardan solo los bloques que tocan; los cambios de resolución guardan la rejilla entera.
 const undoStack = [], redoStack = [];
+// Lo pesado de fondo (autoguardar) espera a que dejes de trabajar un momento.
+let lastEdit = 0;
+const noteEdit = () => { lastEdit = performance.now(); };
 const entryBytes = (e) => (e.rec ? e.rec.size * BRICK_BYTES * 2 : e.bytes);
 
 function pushStroke(L) {
+  settleBake(L);
+  noteEdit();
   const rec = new Map();
   undoStack.push({ layer: L, grid: L.grid, rec });
   clearRedo();
@@ -683,6 +703,7 @@ function pushStroke(L) {
   return rec;
 }
 function pushFull(L) {
+  noteEdit();
   undoStack.push({ layer: L, grid: L.grid, full: L.grid.state(), bytes: L.grid.bytes() });
   clearRedo();
   trimUndo();
@@ -719,6 +740,8 @@ function clearRedo() {
 }
 function swapEntry(e) {
   const L = e.layer;
+  settleBake(L);
+  noteEdit();
   if (e.frameOp) {
     if (e.present) L.removeFrame(e.f);
     else L.insertFrame(e.f, e.at);
@@ -745,6 +768,75 @@ function swapEntry(e) {
   live.structure();
   return cur;
 }
+// ---------- Fondo del entorno ----------
+// Un color plano, o la luz de un lugar real (HDRI de Poly Haven, CC0): se ve difuminado de fondo e
+// ilumina el modelo. Es una preferencia tuya: vale para todas las obras.
+const BG_COLORS = [['dark', 'Oscuro', '#15171c'], ['gray', 'Gris', '#6a6e74'], ['cream', 'Crema', '#e9e0cc'], ['night', 'Azul noche', '#16233f']];
+const BG_HDRI = [['studio', 'Estudio', 'studio_small_09'], ['sunset', 'Atardecer', 'venice_sunset'], ['sky', 'Cielo', 'kloofendal_48d_partly_cloudy_puresky'], ['forest', 'Bosque', 'forest_slope']];
+const bg = { id: 'dark', rot: 0, show: 0.6, ar: false };
+try { Object.assign(bg, JSON.parse(localStorage.getItem('plastilinaFondo') || '{}'), { ar: false }); } catch {}
+const hdriMaps = new Map();
+let pmrem = null;
+async function hdriMap(id) {
+  if (hdriMaps.has(id)) return hdriMaps.get(id);
+  const file = BG_HDRI.find((h) => h[0] === id)[2];
+  const { RGBELoader } = await import('three/addons/loaders/RGBELoader.js');
+  const tex = await new RGBELoader().loadAsync(new URL(`./vendor/hdri/${file}_1k.hdr`, import.meta.url).href);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  // El cálculo no debe verse afectado por la vista de las gafas.
+  const wasXR = renderer.xr.enabled;
+  renderer.xr.enabled = false;
+  pmrem ??= new THREE.PMREMGenerator(renderer);
+  const map = pmrem.fromEquirectangular(tex).texture;
+  renderer.xr.enabled = wasXR;
+  tex.dispose();
+  hdriMaps.set(id, map);
+  return map;
+}
+function applyBg() {
+  const map = hdriMaps.get(bg.id), color = BG_COLORS.find((c) => c[0] === bg.id);
+  // Con HDRI la luz viene de la imagen; las lámparas de siempre se quedan en un apoyo.
+  scene.environment = map || null;
+  hemi.intensity = map ? 0.3 : 1.4;
+  key.intensity = map ? 0.5 : 1.8;
+  rim.intensity = map ? 0.1 : 0.7;
+  if (map) {
+    scene.environmentRotation.y = scene.backgroundRotation.y = bg.rot * Math.PI * 2;
+    scene.backgroundBlurriness = 0.75;
+    scene.backgroundIntensity = bg.show;
+  }
+  if (SPECTATOR) return; // el espejo elige su propio fondo (croma, blanco...)
+  scene.background = bg.ar ? null : map || new THREE.Color(color?.[2] || BG_COLORS[0][2]);
+}
+async function setBg(id) {
+  try {
+    if (BG_HDRI.some((h) => h[0] === id)) await hdriMap(id);
+  } catch (e) {
+    console.warn('Fondo', e);
+    return toast('No he podido cargar el fondo', 4000);
+  }
+  bg.id = id;
+  bgChanged();
+}
+function bgChanged() {
+  applyBg();
+  try { localStorage.setItem('plastilinaFondo', JSON.stringify({ id: bg.id, rot: bg.rot, show: bg.show })); } catch {}
+  if (live.emitting) live.hub.send({ t: 'bg', id: bg.id, rot: bg.rot, show: bg.show });
+  bgUi();
+  if (panel3d.visible) drawPanel();
+}
+function bgUi() {
+  $('bgRow').replaceChildren(...[...BG_COLORS, ...BG_HDRI].map(([id, name]) => {
+    const b = document.createElement('button');
+    b.textContent = t(name);
+    b.classList.toggle('on', bg.id === id);
+    b.onclick = () => setBg(id);
+    return b;
+  }));
+  $('bgRot').value = bg.rot;
+  $('bgShow').value = bg.show;
+}
+
 // ---------- Animación ----------
 // Fotograma a fotograma, como el stop motion: no hay interpolación. Un solo reloj para toda la obra;
 // cada capa repite su propio bucle, así que una capa de 4 y otra de 7 se van desfasando.
@@ -811,6 +903,7 @@ function goToFrame(L, f) {
   afterFrames();
 }
 function setPlaying(v) {
+  settleAll();
   if (v && !layers.some((L) => L.frames.length > 1)) return toast('Añade más fotogramas para poder reproducir');
   anim.playing = v;
   anim.acc = 0;
@@ -821,6 +914,7 @@ function setPlaying(v) {
 }
 function stepFrame(d, canAdd = false) {
   if (sculpting || xr.stroking) return;
+  settleAll();
   if (anim.playing) setPlaying(false);
   const n = active.frames.length, i = frameIndex();
   if (canAdd && d > 0 && i === n - 1) return addFrame(true);
@@ -832,6 +926,7 @@ function stepFrame(d, canAdd = false) {
 }
 function addFrame(copy) {
   if (sculpting || xr.stroking) return;
+  settleBake(active);
   if (anim.playing) setPlaying(false);
   const L = active, from = frameIndex(L), at = from + 1;
   L.clearRemesh();
@@ -849,6 +944,7 @@ function addFrame(copy) {
 }
 function deleteFrame() {
   if (sculpting || xr.stroking) return;
+  settleBake(active);
   const L = active;
   if (L.frames.length < 2) return toast('No puedes borrar el único fotograma');
   if (anim.playing) setPlaying(false);
@@ -1382,6 +1478,11 @@ const saveRefState = () => idbSet('refActiva', ref.name ? { name: ref.name, size
 function clearRef() {
   if (ref.obj) {
     ref.obj.traverse((o) => o.geometry?.dispose());
+    if (ref.image) {
+      ref.image.map.dispose();
+      ref.image.dispose();
+      ref.image = null;
+    }
     refRoot.remove(ref.obj);
   }
   ref.obj = ref.name = null;
@@ -1407,7 +1508,8 @@ async function showRef(name, saved) {
     const obj = await parseModel(name, buf);
     clearRef();
     let tris = 0;
-    obj.traverse((o) => { if (o.isMesh) { o.material = refMat; tris += (o.geometry.index?.count ?? o.geometry.attributes.position.count) / 3; } });
+    const image = obj.userData.image || null;
+    obj.traverse((o) => { if (o.isMesh) { if (!image) o.material = refMat; tris += (o.geometry.index?.count ?? o.geometry.attributes.position.count) / 3; } });
     if (tris > 600000) toast(t('Este modelo es muy pesado: puede ir lento en las gafas'), 5000);
     const box = new THREE.Box3().setFromObject(obj), c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
     const big = Math.max(sz.x, sz.y, sz.z) || 1;
@@ -1417,8 +1519,9 @@ async function showRef(name, saved) {
     ref.obj = obj;
     ref.name = name;
     ref.size = saved?.size ?? 1;
-    ref.opacity = saved?.opacity ?? 0.4;
-    refMat.opacity = 1 - ref.opacity;
+    ref.opacity = saved?.opacity ?? (image ? 0 : 0.4);
+    ref.image = image;
+    (image || refMat).opacity = 1 - ref.opacity;
     refRoot.add(obj);
     refRoot.position.fromArray(saved?.pos ?? [0, 0, 0]);
     refRoot.quaternion.fromArray(saved?.q ?? [0, 0, 0, 1]);
@@ -1432,7 +1535,7 @@ async function showRef(name, saved) {
   refUi();
 }
 async function importRef(file) {
-  if (!REF_TYPES.includes(refType(file.name))) return toast(t('Solo FBX, OBJ o GLB'), 4000);
+  if (!REF_TYPES.includes(refType(file.name))) return toast(t('Solo FBX, OBJ, GLB o imágenes'), 4000);
   const name = file.name.replace(/[^\w .-]/g, '_');
   const buf = await file.arrayBuffer();
   // Antes de guardarlo: si no se puede abrir, no entra en la lista.
@@ -1473,9 +1576,64 @@ function refUi() {
   $('refOpacity').value = ref.opacity;
   if (panel3d.visible) drawPanel();
 }
+// Sacar foto: la cámara del dispositivo, con una cuenta atrás de 3 s para encuadrar. La foto queda
+// en la lista de referencias, delante de ti. Si el navegador no da la cámara, se dice claro.
+let photoBusy = false;
+async function takeRefPhoto() {
+  if (photoBusy) return;
+  if (!navigator.mediaDevices?.getUserMedia) return toast('Este navegador no deja usar la cámara', 6000);
+  photoBusy = true;
+  let stream = null, view = null, tex = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+    const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true, playsInline: true });
+    await video.play();
+    // Lo que ve la cámara, a la derecha del panel (donde la rueda de color).
+    tex = new THREE.VideoTexture(video);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    view = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.28 * (video.videoHeight / (video.videoWidth || 1))), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    view.position.set(0.12 + 0.14 + 0.012, 0.1, 0.002);
+    wheelPanel.visible = false;
+    panel3d.add(view);
+    for (let n = 3; n > 0; n--) {
+      toast(t('Foto en {0}…', n), 1000);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    c.getContext('2d').drawImage(video, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.88));
+    const buf = await blob.arrayBuffer();
+    const name = 'foto-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.jpg';
+    await addRefToList(name, buf);
+    if (server.ok) fetch(API + '/api/ref?name=' + encodeURIComponent(name), { method: 'POST', body: buf }).catch(() => {});
+    // Delante de ti, de cara a ti.
+    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    const head = cam.getWorldPosition(new THREE.Vector3()), dir = cam.getWorldDirection(new THREE.Vector3());
+    const at = head.clone().addScaledVector(dir, 0.5);
+    const face = new THREE.Object3D();
+    face.position.copy(at);
+    face.lookAt(head);
+    model.updateMatrixWorld();
+    const q = model.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(face.quaternion);
+    await showRef(name, { pos: model.worldToLocal(at).toArray(), q: q.toArray(), size: 1, opacity: 0, shown: true });
+    ctrlBuzz();
+    toast('Foto lista: coge la bola azul para colocarla', 5000);
+  } catch (e) {
+    console.warn('Cámara', e);
+    toast('No puedo usar la cámara aquí: sal de VR, pulsa Sacar foto y acepta el permiso', 7000);
+  }
+  stream?.getTracks().forEach((tr) => tr.stop());
+  if (view) { panel3d.remove(view); view.geometry.dispose(); view.material.dispose(); }
+  tex?.dispose();
+  photoBusy = false;
+}
+const ctrlBuzz = () => ctrls.forEach((c) => c.userData.src?.gamepad?.hapticActuators?.[0]?.pulse?.(0.7, 60));
+
 function setRefShown(on) { refRoot.visible = on && !!ref.obj; saveRefState(); refUi(); }
 function setRefSize(s) { ref.size = s; layoutRef(); saveRefState(); }
-function setRefOpacity(v) { ref.opacity = v; refMat.opacity = 1 - v; saveRefState(); }
+function setRefOpacity(v) { ref.opacity = v; (ref.image || refMat).opacity = 1 - v; saveRefState(); }
 async function loadRefs() {
   try {
     ref.list = (await idbGet('refs')) || [];
@@ -1641,6 +1799,51 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- Exportar a Blender ----------
 
+// Quads al exportar: a la izquierda del todo, tal cual está; si no, se rehace la malla con esa cantidad.
+const EXPORT_FORMATS = ['obj', 'fbx', 'glb'];
+const exportTarget = () => (state.exportT < 0.02 ? 0 : Number((1000 * 200 ** ((state.exportT - 0.02) / 0.98)).toPrecision(2)));
+const exportQuadsText = () => (exportTarget() ? exportTarget().toLocaleString() : t('Sin cambiar'));
+function exportUi() {
+  $('fmtRow').replaceChildren(...EXPORT_FORMATS.map((f) => {
+    const b = document.createElement('button');
+    b.textContent = f.toUpperCase();
+    b.classList.toggle('on', state.exportFmt === f);
+    b.onclick = () => { state.exportFmt = f; exportUi(); };
+    return b;
+  }));
+  $('exportQuads').value = state.exportT;
+  $('exportQuadsVal').textContent = exportQuadsText();
+}
+function exportBase() {
+  state.exportNow = exportObjects().reduce((a, o) => a + o.mesh.quads.length / 4, 0);
+}
+// Las capas con la cantidad de quads pedida, sin tocar lo que hay en la obra: se reparte según el tamaño.
+async function exportMeshes() {
+  const target = exportTarget();
+  if (!target) return exportObjects();
+  const list = layers.filter((L) => L.visible).map((L) => ({ L, mesh: L.merged() })).filter((x) => x.mesh.quads.length);
+  list.forEach((x) => { x.area = meshArea(x.mesh.positions, x.mesh.quads); });
+  const total = list.reduce((a, x) => a + x.area, 0) || 1, out = [];
+  for (const { L, area, mesh } of list) {
+    const prog = (stage, f) => toast(`${L.name} · ${t(stage)}… ${Math.round(f * 100)}%`, 3000);
+    const want = Math.max(100, Math.round((target * area) / total)), have = mesh.quads.length / 4;
+    // Bajar: malla nueva. Subir por encima de la rejilla: partir cada quad en cuatro las veces que haga falta.
+    let low;
+    if (want > have * 1.5) {
+      low = { positions: mesh.positions, quads: mesh.quads };
+      for (let q = have; q * 2 < want; q *= 4) low = subdivideQuads(L.grid, low.positions, low.quads);
+      if (!low.normals) low.normals = mesh.normals;
+    } else low = await remeshSDF(L.grid, area, want, prog, want > (area / (2 * L.grid.h) ** 2) * 0.9 ? 'fine' : 'flow');
+    const p = low.positions, colors = new Float32Array(p.length), base = L.base;
+    for (let i = 0; i < p.length; i += 3) {
+      const c = L.grid.sampleColor(p[i], p[i + 1], p[i + 2]) || base;
+      colors[i] = c[0] / 255; colors[i + 1] = c[1] / 255; colors[i + 2] = c[2] / 255;
+    }
+    out.push({ name: L.name.replace(/[^\w-]+/g, '_'), mesh: { positions: p, normals: low.normals, quads: low.quads, colors }, bake: null });
+  }
+  return out;
+}
+
 function exportObjects() {
   return layers
     .filter((L) => L.visible)
@@ -1737,14 +1940,27 @@ async function exportModel() {
 // acepta el bueno, se prueba con otro tipo o como .txt (Blender lo abre igual).
 let shareFiles = null;
 async function shareModel() {
-  const objects = exportObjects();
+  let objects;
+  try {
+    toast('Rehaciendo la malla…', 2000);
+    objects = await exportMeshes();
+  } catch (e) {
+    console.error(e);
+    return toast(t('Remesh falló: {0}', e.message));
+  }
   if (!objects.length) return toast('No hay nada visible que exportar');
   // El menú de compartir no se puede abrir dentro de la vista inmersiva: se sale primero.
   if (renderer.xr.isPresenting) await renderer.xr.getSession().end();
   const base = exportName();
   const baked = objects.some((o) => o.bake);
   let files;
-  if (baked) {
+  if (state.exportFmt === 'fbx') {
+    const fbx = toFBX(objects);
+    files = [
+      new File([fbx], base + '.fbx', { type: 'application/octet-stream' }),
+      new File([fbx], base + '.fbx', { type: 'model/fbx' }),
+    ];
+  } else if (baked || state.exportFmt === 'glb') {
     const glb = await buildGLB(objects);
     files = [
       new File([glb], base + '.glb', { type: 'model/gltf-binary' }),
@@ -1816,6 +2032,10 @@ $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
+$('bgRot').oninput = (e) => { bg.rot = +e.target.value; bgChanged(); };
+$('bgShow').oninput = (e) => { bg.show = +e.target.value; bgChanged(); };
+$('btnPhoto').onclick = () => takeRefPhoto();
+$('exportQuads').oninput = (e) => { state.exportT = +e.target.value; exportUi(); };
 $('btnFramePrev').onclick = () => stepFrame(-1);
 $('btnFrameNext').onclick = () => stepFrame(1);
 $('btnFramePlay').onclick = () => setPlaying(!anim.playing);
@@ -2114,6 +2334,7 @@ function dragMoveDesktop() {
 const moveOp = { L: null, mode: 'move', p0: new THREE.Vector3(), n: new THREE.Vector3(), x0: 0, y0: 0, start: new THREE.Matrix4(), scale: 1, toastT: 0 };
 
 function beginMove(L) {
+  settleBake(L);
   moveOp.L = L;
   moveOp.scale = 1;
   if (L !== active) setActive(L);
@@ -2149,25 +2370,156 @@ function endMove() {
   if (moved && layers.includes(L)) {
     const hadRemesh = !!L.remesh;
     pushFull(L);
-    // Que quepa donde la has dejado: se mide la caja que ocupa una vez movida.
-    const box = L.grid.occupied();
-    if (box) {
-      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-      for (let c = 0; c < 8; c++) {
-        const p = new THREE.Vector3((c & 1 ? box.hi : box.lo)[0], (c & 2 ? box.hi : box.lo)[1], (c & 4 ? box.hi : box.lo)[2]).applyMatrix4(m).toArray();
-        p.forEach((v, a) => { lo[a] = Math.min(lo[a], v); hi[a] = Math.max(hi[a], v); });
-      }
-      L.fit(lo, hi, 0);
-    }
-    L.grid.applyTransform(m.invert().elements, s);
-    L.rebuildAll();
-    L.flush(); // todo de golpe, para que no parpadee en la posición vieja
-    live.structure();
+    const msg = bakeMove(L);
+    live.move(L, msg);
     if (hadRemesh) toast('Capa movida: el remesh se descarta (vuelve a lanzarlo)');
+    return;
   }
   L.group.position.set(0, 0, 0);
   L.group.quaternion.identity();
   L.group.scale.set(1, 1, 1);
+}
+
+// Cómo pasar lo movido a la rejilla sin que se note: lo calcula otro hilo mientras la capa sigue en
+// pantalla con su transformación; cuando acaba, se cambia de golpe. Si hace falta antes (vas a
+// esculpir, guardar...), settleBake lo termina aquí mismo.
+let bakeWorker = null, bakeSeq = 0;
+const bakeJobs = new Map(), bakeReady = [];
+function getBakeWorker() {
+  if (bakeWorker) return bakeWorker;
+  bakeWorker = new Worker(new URL('./bake-worker.js', import.meta.url), { type: 'module' });
+  bakeWorker.onmessage = ({ data }) => {
+    const job = bakeJobs.get(data.id);
+    if (!job) return;
+    if (data.error) {
+      console.warn('Horneado', data.error);
+      settleBake(job.L);
+      return;
+    }
+    job.result = data;
+    job.grid = SDFGrid.deserialize(data.meta, data.buf, 0).grid;
+    job.next = 0;
+    job.built = [];
+    bakeReady.push(job);
+  };
+  bakeWorker.onerror = (e) => {
+    console.warn('Horneado', e.message);
+    [...bakeJobs.values()].forEach((job) => settleBake(job.L));
+  };
+  return bakeWorker;
+}
+// La transformación del grupo de la capa pasa a su rejilla. Devuelve lo que necesita el espejo.
+function bakeMove(L, onDone) {
+  L.group.updateMatrix();
+  const m = L.group.matrix.clone(), s = L.group.scale.x;
+  const box = L.grid.occupied();
+  let lo = null, hi = null;
+  if (box) {
+    lo = [Infinity, Infinity, Infinity];
+    hi = [-Infinity, -Infinity, -Infinity];
+    for (let c = 0; c < 8; c++) {
+      const p = new THREE.Vector3((c & 1 ? box.hi : box.lo)[0], (c & 2 ? box.hi : box.lo)[1], (c & 4 ? box.hi : box.lo)[2]).applyMatrix4(m).toArray();
+      p.forEach((v, a) => { lo[a] = Math.min(lo[a], v); hi[a] = Math.max(hi[a], v); });
+    }
+    L.fit(lo, hi, 0);
+  }
+  const inv = Array.from(m.invert().elements);
+  const job = { id: ++bakeSeq, L, f: L.f, inv, s, onDone };
+  L.bakeJob = job;
+  bakeJobs.set(job.id, job);
+  try {
+    const ser = L.grid.serialize();
+    const size = ser.parts.reduce((a, p) => a + Math.ceil(p.byteLength / 4) * 4, 0);
+    const out = new Uint8Array(size);
+    let off = 0;
+    for (const p of ser.parts) {
+      out.set(new Uint8Array(p), off);
+      off += Math.ceil(p.byteLength / 4) * 4;
+    }
+    getBakeWorker().postMessage({ id: job.id, meta: ser.meta, buf: out.buffer, inv, scale: s, base: L.base, chunk: CHUNK }, [out.buffer]);
+  } catch (e) {
+    console.warn('Horneado', e);
+    settleBake(L);
+  }
+  return { inv, s, lo, hi };
+}
+function bakeSwap(job) {
+  const { L, f } = job;
+  f.chunks.forEach((ch) => ch && disposeMesh(f.voxels, ch));
+  f.grid.setState(job.grid.state());
+  f.C = Math.ceil((f.grid.n - 1) / CHUNK);
+  f.chunks = new Array(f.C ** 3).fill(null);
+  f.dirty.clear();
+  for (const [ci, r] of job.built) {
+    addMesh(f.voxels, r);
+    f.chunks[ci] = r;
+  }
+  bakeEnd(job);
+  L.changed();
+}
+function bakeEnd(job) {
+  const { L } = job;
+  bakeJobs.delete(job.id);
+  const i = bakeReady.indexOf(job);
+  if (i >= 0) bakeReady.splice(i, 1);
+  L.bakeJob = null;
+  L.group.position.set(0, 0, 0);
+  L.group.quaternion.identity();
+  L.group.scale.set(1, 1, 1);
+  paintOnion();
+  job.onDone?.();
+}
+// Las mallas que ya ha hecho el otro hilo se preparan poco a poco y se enseñan todas a la vez.
+function pumpBakes(budgetMs) {
+  const job = bakeReady[0];
+  if (!job) return;
+  const t0 = performance.now(), list = job.result.meshes;
+  while (job.next < list.length) {
+    const { ci, m } = list[job.next++];
+    const r = buildMesh(m.positions, m.normals, m.colors, m.quads, clay);
+    r.m = m;
+    job.built.push([ci, r]);
+    if (performance.now() - t0 > budgetMs) return;
+  }
+  bakeSwap(job);
+}
+// Si hay que tocar la capa ya, se acaba el trabajo aquí mismo.
+function settleBake(L) {
+  const job = L.bakeJob;
+  if (!job) return;
+  if (job.result) {
+    const list = job.result.meshes;
+    while (job.next < list.length) {
+      const { ci, m } = list[job.next++];
+      const r = buildMesh(m.positions, m.normals, m.colors, m.quads, clay);
+      r.m = m;
+      job.built.push([ci, r]);
+    }
+    bakeSwap(job);
+    return;
+  }
+  const { f, inv, s } = job;
+  f.grid.applyTransform(inv, s);
+  L.rebuildFrame(f);
+  L.flush(Infinity, f);
+  bakeEnd(job);
+  L.changed();
+}
+const settleAll = () => layers.forEach(settleBake);
+
+// Agarrando una capa: deja una copia exacta donde está ahora y sigues con la original en la mano.
+function duplicateHeld() {
+  const L = moveOp.L;
+  if (!L) return;
+  const N = new Layer(2, 'empty', { name: t('{0} copia', L.name), color: L.color, grid: L.grid.share() });
+  N.adoptFrames(L);
+  N.group.position.copy(L.group.position);
+  N.group.quaternion.copy(L.group.quaternion);
+  N.group.scale.copy(L.group.scale);
+  layers.push(N);
+  toast(t('{0} creada', N.name), 1500);
+  updateHud();
+  bakeMove(N, () => live.structure());
 }
 
 const mouse = { x: 0, y: 0, ndc: new THREE.Vector2(), inside: false };
@@ -2459,7 +2811,8 @@ async function startXR(mode) {
     const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor'] });
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
-    scene.background = mode === 'immersive-ar' ? null : new THREE.Color(0x15171c);
+    bg.ar = mode === 'immersive-ar';
+    applyBg();
     model.position.set(0, 1.1, -0.6);
     model.quaternion.identity();
     model.scale.setScalar(WS.scale);
@@ -2469,7 +2822,8 @@ async function startXR(mode) {
     hud3d.visible = true;
     live.structure();
     session.addEventListener('end', () => {
-      scene.background = deskBg;
+      bg.ar = false;
+      applyBg();
       model.position.set(0, 0, 0);
       model.quaternion.identity();
       model.scale.setScalar(1);
@@ -2577,6 +2931,7 @@ function drawHud3D() {
 
 // ---------- Panel de la mano izquierda (gafas) ----------
 const PW = 768, PH = 1668;
+let delLayerUntil = 0;
 let panelPage = 'main'; // 'main' | 'obras'
 const panel = new CanvasPanel(PW, PH, buildPanel);
 const panelTex = new THREE.CanvasTexture(panel.canvas);
@@ -2585,9 +2940,66 @@ const panel3d = new THREE.Mesh(
   new THREE.PlaneGeometry(0.24, 0.24 * (PH / PW)),
   new THREE.MeshBasicMaterial({ map: panelTex, transparent: true }),
 );
-panel3d.position.set(0.02, 0.19, -0.06);
+// Empieza donde acaba el mando: ni el mando ni la mano tapan nada.
+panel3d.position.set(0.02, 0.36, -0.11);
 panel3d.rotation.x = -0.35;
 panel3d.visible = false;
+// La rueda de color, en un menú a la derecha del panel. Se abre con el círculo del + de COLOR.
+const wheelCanvas = document.createElement('canvas');
+wheelCanvas.width = wheelCanvas.height = 384;
+{
+  const g = wheelCanvas.getContext('2d'), n = 384, img = g.createImageData(n, n);
+  g.fillStyle = CERA.ink;
+  g.fillRect(0, 0, n, n);
+  const bg = g.getImageData(0, 0, n, n).data;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const i = (x + y * n) * 4, u = (x + 0.5) / n * 2 - 1, v = 1 - (y + 0.5) / n * 2;
+    const r = Math.hypot(u, v) / 0.94;
+    if (r > 1) { img.data[i] = bg[i]; img.data[i + 1] = bg[i + 1]; img.data[i + 2] = bg[i + 2]; img.data[i + 3] = 255; continue; }
+    const hex = wheelColor(u / 0.94, v / 0.94);
+    img.data[i] = parseInt(hex.slice(1, 3), 16); img.data[i + 1] = parseInt(hex.slice(3, 5), 16); img.data[i + 2] = parseInt(hex.slice(5, 7), 16); img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+const wheelTex = new THREE.CanvasTexture(wheelCanvas);
+wheelTex.colorSpace = THREE.SRGBColorSpace;
+const WHEEL_SIZE = 0.2;
+const wheelPanel = new THREE.Mesh(new THREE.PlaneGeometry(WHEEL_SIZE, WHEEL_SIZE), new THREE.MeshBasicMaterial({ map: wheelTex, toneMapped: false }));
+wheelPanel.position.set(0.12 + WHEEL_SIZE / 2 + 0.012, 0.24 * (PH / PW) / 2 - WHEEL_SIZE / 2 - 0.09, 0);
+wheelPanel.visible = false;
+panel3d.add(wheelPanel);
+const wheelMark = new THREE.Mesh(new THREE.CircleGeometry(0.009, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
+const wheelMarkRing = new THREE.Mesh(new THREE.RingGeometry(0.009, 0.0125, 24), new THREE.MeshBasicMaterial({ color: 0x141210, toneMapped: false }));
+wheelMark.position.z = wheelMarkRing.position.z = 0.001;
+wheelPanel.add(wheelMark, wheelMarkRing);
+const placeWheelAt = (u, v) => {
+  wheelMark.position.x = wheelMarkRing.position.x = u * 0.94 * WHEEL_SIZE / 2;
+  wheelMark.position.y = wheelMarkRing.position.y = v * 0.94 * WHEEL_SIZE / 2;
+};
+function placeWheelMark(hex) {
+  const [u, v] = wheelSpot(hex);
+  placeWheelAt(u, v);
+  wheelMark.material.color.set(hex);
+}
+// El rayo sobre la rueda. Mientras aprietas, el color cambia sin redibujar todo el panel a cada paso.
+let wheelSetAt = 0;
+function wheelPointer(uv, down) {
+  const u = (uv.x * 2 - 1) / 0.94, v = (uv.y * 2 - 1) / 0.94, k = Math.min(1, 1 / (Math.hypot(u, v) || 1));
+  if (!down) {
+    if (xr.wheelHex) { setColor(xr.wheelHex); xr.wheelHex = null; }
+    return;
+  }
+  const hex = wheelColor(u * k, v * k);
+  placeWheelAt(u * k, v * k);
+  wheelMark.material.color.set(hex);
+  xr.wheelHex = hex;
+  const now = performance.now();
+  if (now - wheelSetAt > 200) {
+    wheelSetAt = now;
+    state.color = hex;
+    cursor.material.color.set(hex);
+  }
+}
 // Las letras van con la app; el lienzo no las coge solo, hay que pedirlas antes de dibujar.
 Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => document.fonts.load(f, 'Aก')))
   .then(() => { if (panel3d.visible) drawPanel(); }, () => {});
@@ -2601,6 +3013,8 @@ function buildPanel() {
   if (panelPage === 'refs') return buildRefPage();
   if (panelPage === 'material') return buildMaterialPage();
   if (panelPage === 'anim') return buildAnimPage();
+  if (panelPage === 'bg') return buildBgPage();
+  if (panelPage === 'export') return buildExportPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 548, CERA.blue));
@@ -2627,16 +3041,20 @@ function buildPanel() {
     label: { move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[tl] || label(tl),
     active: () => state.tool === tl, onClick: () => choose(tl),
   }));
-  const hw = (IW - 2 * 10) / 3;
+  const hw = (IW - 3 * 10) / 4;
   W.push({ type: 'button', x: M, y: 480, w: hw, h: 58, label: 'Traer aquí', size: 24, group: 'nav',
     onClick: () => placeWorkspace(true) });
   W.push({ type: 'button', x: M + hw + 10, y: 480, w: hw, h: 58, label: 'Pincel ▸', size: 24, group: 'nav',
     onClick: () => { panelPage = 'pincel'; drawPanel(); } });
   W.push({ type: 'button', x: M + 2 * (hw + 10), y: 480, w: hw, h: 58, label: 'Material ▸', size: 24, group: 'nav',
     onClick: () => { panelPage = 'material'; drawPanel(); } });
+  W.push({ type: 'button', x: M + 3 * (hw + 10), y: 480, w: hw, h: 58, label: 'Fondo ▸', size: 24, group: 'nav',
+    onClick: () => { panelPage = 'bg'; drawPanel(); } });
 
   W.push(panelBlock(564, 556, CERA.paper));
   W.push({ type: 'label', x: M, y: 600, head: true, text: 'COLOR', size: 28 });
+  W.push({ type: 'swatch', plus: true, x: PW - M - 48, y: 570, w: 48, h: 48, color: CERA.white, active: () => wheelPanel.visible,
+    onClick: () => { wheelPanel.visible = !wheelPanel.visible; if (wheelPanel.visible) placeWheelMark(state.color); } });
   const sw = (IW - 7 * 8) / 8;
   PALETTE.forEach((hex, i) => W.push({
     type: 'swatch', x: M + (i % 8) * (sw + 8), y: 622 + Math.floor(i / 8) * (sw + 8), w: sw, h: sw,
@@ -2644,8 +3062,18 @@ function buildPanel() {
   }));
   const yl = 834;
   W.push({ type: 'label', x: M, y: yl, head: true, text: 'CAPAS', size: 28 });
-  W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
-  W.push({ type: 'button', x: PW - M - 150 - 10 - 190, y: yl - 26, w: 190, h: 50, label: 'Animar ▸', size: 22, onClick: () => { panelPage = 'anim'; drawPanel(); } });
+  // Quitar pide un segundo toque: dentro de las gafas no hay ventana de confirmar.
+  const armed = performance.now() < delLayerUntil;
+  W.push({ type: 'button', x: PW - M - 134, y: yl - 26, w: 134, h: 50, label: '+ Capa', size: 22, group: 'lay', onClick: newLayer });
+  W.push({ type: 'button', x: PW - M - 134 - 8 - 134, y: yl - 26, w: 134, h: 50, label: armed ? '¿Seguro?' : '− Capa', size: 22, group: 'lay', active: () => armed, onClick: () => {
+    if (performance.now() < delLayerUntil) { delLayerUntil = 0; deleteLayer(active, false); }
+    else {
+      delLayerUntil = performance.now() + 3000;
+      setTimeout(() => panel3d.visible && drawPanel(), 3050);
+    }
+    drawPanel();
+  } });
+  W.push({ type: 'button', x: PW - M - 2 * 134 - 16 - 150, y: yl - 26, w: 150, h: 50, label: 'Animar ▸', size: 22, group: 'lay', onClick: () => { panelPage = 'anim'; drawPanel(); } });
   layers.slice(-4).forEach((L, i) => {
     const y = yl + 36 + i * 60;
     W.push({ type: 'button', x: M, y, w: IW - 96, h: 50, label: `${L.name}  ·  ${L.frames.length > 1 ? t('{0} fot.', L.frames.length) : L.grid.res + '³'}${L.remesh ? '  ⊞' : ''}`, plain: true,
@@ -2658,7 +3086,7 @@ function buildPanel() {
   W.push({ type: 'label', x: M, y: 1160, head: true, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 26, max: IW });
   const ow = (IW - 3 * 10) / 4;
   [['Guardar', () => saveObra()], ['Obras ▸', () => { panelPage = 'obras'; drawPanel(); }],
-    ['Nueva', newObra], ['Compartir', shareModel]]
+    ['Nueva', newObra], ['Exportar ▸', () => { exportBase(); panelPage = 'export'; drawPanel(); }]]
     .forEach(([l, f], i) => W.push({ type: 'button', x: M + i * (ow + 10), y: 1188, w: ow, h: 62, label: l, size: 24, group: 'obra',
       active: () => i === 0 && obraDirty(), onClick: f }));
 
@@ -2756,6 +3184,38 @@ function buildStampsPage() {
   if (ownStamps.length) W.push({ type: 'button', x: M, y: yText + 64, w: IW, h: 66, size: 24, label: 'Borrar mi último sello', onClick: () => choose('stamp:delete') });
   return W;
 }
+// Página del fondo: colores planos, luz de lugares reales y su giro.
+function buildBgPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, bw = (IW - 10) / 2;
+  W.push(panelBlock(8, 720, CERA.paper));
+  pageHead(W, 'Fondo');
+  const list = (title, items, y) => {
+    W.push({ type: 'label', x: M, y, head: true, size: 26, text: title });
+    items.forEach(([id, name, c], i) => W.push({ type: 'button', x: M + (i % 2) * (bw + 10), y: y + 22 + Math.floor(i / 2) * 70, w: bw, h: 60, size: 26, plain: true,
+      group: 'bg', label: name, dot: c[0] === '#' ? c : undefined, active: () => bg.id === id, onClick: () => setBg(id) }));
+  };
+  list('Color plano', BG_COLORS, 130);
+  list('Luz de un lugar real', BG_HDRI, 340);
+  W.push({ type: 'slider', x: M, y: 590, w: IW, h: 30, label: 'Girar la luz', get: () => bg.rot, set: (v) => { bg.rot = v; bgChanged(); }, text: () => Math.round(bg.rot * 360) + '°' });
+  W.push({ type: 'slider', x: M, y: 670, w: IW, h: 30, label: 'Cuánto se ve el fondo', get: () => (bg.show - 0.1) / 0.9, set: (v) => { bg.show = 0.1 + v * 0.9; bgChanged(); }, text: () => Math.round(bg.show * 100) + '%' });
+  return W;
+}
+// Página de exportar: formato, quads y a dónde.
+function buildExportPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, fw = (IW - 20) / 3;
+  W.push(panelBlock(8, 490, CERA.red));
+  pageHead(W, 'Exportar');
+  EXPORT_FORMATS.forEach((f, i) => W.push({ type: 'button', x: M + i * (fw + 10), y: 120, w: fw, h: 70, size: 30, group: 'fmt', label: f.toUpperCase(),
+    active: () => state.exportFmt === f, onClick: () => { state.exportFmt = f; exportUi(); drawPanel(); } }));
+  W.push({ type: 'slider', x: M, y: 268, w: IW, h: 30, label: 'Quads al exportar', get: () => state.exportT, set: (v) => { state.exportT = v; exportUi(); }, text: exportQuadsText });
+  W.push({ type: 'label', x: M, y: 334, size: 24, max: IW, text: t('Ahora: {0} quads', (state.exportNow || 0).toLocaleString()) });
+  const bw = (IW - 10) / 2;
+  W.push({ type: 'button', x: M, y: 372, w: bw, h: 70, size: 26, group: 'to', label: 'Compartir', onClick: () => shareModel() });
+  W.push({ type: 'button', x: M + bw + 10, y: 372, w: bw, h: 70, size: 26, group: 'to', label: 'A Blender', onClick: () => choose('export') });
+  return W;
+}
 // Página de animación: la tira de fotogramas de la capa activa y los mandos para reproducir.
 function buildAnimPage() {
   const W = [];
@@ -2797,9 +3257,10 @@ function openRefPage() { panelPage = 'refs'; drawPanel(); refreshMacRefs(); }
 function buildRefPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M, names = refNames().slice(0, 8);
-  const yList = 108, yCtl = yList + Math.max(1, names.length) * 72 + 76;
+  const yList = 184, yCtl = yList + Math.max(1, names.length) * 72 + 76;
   W.push(panelBlock(8, yCtl + 330, CERA.ink));
   pageHead(W, 'Referencia');
+  W.push({ type: 'button', x: M, y: 104, w: IW, h: 64, size: 26, label: 'Sacar foto', onClick: () => takeRefPhoto() });
   if (!names.length) W.push({ type: 'label', x: M, y: yList + 22, size: 24, wrap: IW, text: 'Aún no hay modelos. Importa uno fuera de VR, o déjalo en la carpeta referencias del Mac.' });
   names.forEach((n, i) => W.push({ type: 'button', x: M, y: yList + i * 72, w: IW, h: 60, size: 26, plain: true, label: n,
     active: () => ref.name === n, onClick: () => showRef(n) }));
@@ -2846,7 +3307,8 @@ function drawPanel() {
 }
 
 const xr = {
-  bPrev: false, frameFlick: 0, menuPrev: false, menuOpen: false, menuMode: null, stroking: false, grabMode: 'none',
+  bPrev: false, frameFlick: 0, flowerHand: 'right', flowerR: new THREE.Vector3(), flowerL: new THREE.Vector3(), dupPrev: false,
+  menuPrev: false, menuOpen: false, menuMode: null, stroking: false, grabMode: 'none',
   xPrev: false, yPrev: false, lStickPrev: false, rStickPrev: false, trigPrev: false, flick: 0,
 };
 const grabOffset = new THREE.Matrix4();
@@ -2861,10 +3323,13 @@ function openFlower(tipW, mode) {
   xr.menuMode = mode;
   xr.menuOpenedFrame = true; // el mismo clic que lo abre no debe cerrarlo
   // La flor sale de la cabeza del mando, un poco por detrás de él visto desde tus ojos.
+  // Justo detrás de la punta, vista desde tus ojos: la punta queda en el centro de la flor.
   const head = renderer.xr.getCamera().getWorldPosition(vA);
-  const at = rigs.right.group.localToWorld(vB.set(0, 0, -0.025));
-  at.addScaledVector(vT0.copy(at).sub(head).normalize(), 0.04);
+  const at = vB.copy(tipW).addScaledVector(vT0.copy(tipW).sub(head).normalize(), 0.04);
   flower.open(at, head, optionOn, tipW, state.color);
+  xr.flowerHand = 'right';
+  xr.flowerR.copy(tipW);
+  xr.flowerL.set(0, -99, 0);
 }
 function closeFlower(pick) {
   xr.menuOpen = false;
@@ -2977,7 +3442,14 @@ function xrFrame(dt) {
   // Mando izquierdo: clic stick = panel · stick ←/→ = deshacer/rehacer · stick ↑/↓ = fuerza
   //                  gatillo = suavizar · X (mantener) = invertir · Y = deshacer
   if (gpL) {
-    const soft = (gpL.buttons[0]?.value || 0) > 0.5;
+    // Agarrando una capa, el gatillo izquierdo deja una copia donde está; si no, suaviza.
+    const lTrigger = (gpL.buttons[0]?.value || 0) > 0.5;
+    if (lTrigger && !xr.dupPrev && moveOp.L) {
+      duplicateHeld();
+      gpL.hapticActuators?.[0]?.pulse?.(0.7, 50);
+    }
+    xr.dupPrev = lTrigger;
+    const soft = lTrigger && !moveOp.L;
     if (soft !== state.smoothHold) { state.smoothHold = soft; updateHud(); }
     const inv = !!gpL.buttons[4]?.pressed, Y = !!gpL.buttons[5]?.pressed;
     if (inv !== state.invert) { state.invert = inv; updateHud(); }
@@ -3017,6 +3489,16 @@ function xrFrame(dt) {
   if (panel3d.visible && !xr.stroking) {
     panelRay.ray.origin.setFromMatrixPosition(right.matrixWorld);
     panelRay.ray.direction.set(0, 0, -1).transformDirection(right.matrixWorld);
+    const wheelHit = wheelPanel.visible && panelRay.intersectObject(wheelPanel, false)[0];
+    if (wheelHit) {
+      ray.visible = true;
+      ray.scale.z = wheelHit.distance;
+      wheelPointer(wheelHit.uv, trigDown);
+      if (panel.pointer(null, null, trigDown)) drawPanel();
+      xr.trigPrev = trigDown;
+      return;
+    }
+    if (xr.wheelHex) wheelPointer({ x: 0.5, y: 0.5 }, false);
     const hit = panelRay.intersectObject(panel3d, false)[0];
     if (hit) {
       ray.visible = true;
@@ -3040,12 +3522,33 @@ function xrFrame(dt) {
     else if (ab && !xr.menuPrev) openFlower(tipW, 'hold');
   }
   if (xr.menuOpen) {
-    // Señala el stick, o la otra mano si está por encima, o la mano que abrió la flor.
+    // Manda lo último que se ha movido: el stick o una de las dos puntas. Una mano quieta nunca le
+    // quita el sitio a la otra, y lo elegido con el stick se queda aunque lo sueltes.
+    const eye = renderer.xr.getCamera().getWorldPosition(vA);
     const tipLeft = left ? left.localToWorld(TIP.clone()) : null;
-    const otherHand = Math.hypot(ax, ay) <= 0.5 && tipLeft && flower.isOver(tipLeft);
-    const moved = Math.hypot(ax, ay) > 0.5 ? flower.hoverDir(ax, ay) : otherHand ? flower.hoverWorld(tipLeft, false) : flower.hoverWorld(tipW, true);
-    if (moved && flower.highlight) (otherHand ? gpL : gpR).hapticActuators?.[0]?.pulse?.(0.25, 12);
+    if (tipLeft && tipLeft.distanceTo(xr.flowerL) > 0.015) {
+      xr.flowerL.copy(tipLeft);
+      if (flower.isOver(eye, tipLeft)) xr.flowerHand = 'left';
+    }
+    if (tipW.distanceTo(xr.flowerR) > 0.015) {
+      xr.flowerR.copy(tipW);
+      xr.flowerHand = 'right';
+    }
+    if (Math.hypot(ax, ay) > 0.5) xr.flowerHand = 'stick';
+    const hand = xr.flowerHand;
+    if (hand === 'left' && !flower.isOver(eye, tipLeft)) xr.flowerHand = 'right';
+    const moved = xr.flowerHand === 'stick' ? Math.hypot(ax, ay) > 0.5 && flower.hoverDir(ax, ay)
+      : xr.flowerHand === 'left' ? flower.hoverRay(eye, tipLeft) : flower.hoverRay(eye, tipW);
+    if (moved && flower.highlight) (xr.flowerHand === 'left' ? gpL : gpR).hapticActuators?.[0]?.pulse?.(0.25, 12);
     flower.update(dt);
+    if (flower.fired) {
+      gpR.hapticActuators?.[0]?.pulse?.(0.7, 50);
+      closeFlower(true);
+      xr.rStickPrev = rStick;
+      xr.menuPrev = ab;
+      xr.trigPrev = trigDown;
+      return;
+    }
     const lTrig = (gpL?.buttons[0]?.value || 0) > 0.5;
     const lDown = lTrig && !xr.lTrigPrev;
     xr.lTrigPrev = lTrig;
@@ -3205,6 +3708,11 @@ const live = {
     if (!this.emitting) return;
     this.hub.send({ t: 'anim', f: anim.frame, play: anim.playing, fps: anim.fps });
   },
+  // Capa movida: el espejo la mueve igual, sin volver a mandar toda la obra.
+  move(L, m) {
+    if (!this.emitting) return;
+    this.hub.send({ t: 'mv', l: L.id, ...m });
+  },
   // Fotograma nuevo o borrado: el espejo hace lo mismo, sin volver a mandar toda la obra.
   frameOp(L, op, from, at) {
     if (!this.emitting) return;
@@ -3279,6 +3787,16 @@ async function applyRemote(m) {
     L.fit(m.a, m.b, m.r);
     const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, stampOpts(m.o));
     if (res) L.markDirty(res.lo, res.hi);
+  } else if (m.t === 'bg') {
+    bg.rot = m.rot;
+    bg.show = m.show;
+    setBg(m.id);
+  } else if (m.t === 'mv') {
+    const L = synced && layerById(m.l);
+    if (!L) return;
+    if (m.lo) L.fit(m.lo, m.hi, 0);
+    L.grid.applyTransform(m.inv, m.s);
+    L.rebuildAll();
   } else if (m.t === 'anim') {
     if (!synced) return;
     Object.assign(anim, { frame: m.f, playing: m.play, fps: m.fps });
@@ -3304,7 +3822,8 @@ async function applyRemote(m) {
 
 // Escena completa (todas las capas) en un binario: espejo y autoguardado.
 function packScene() {
-  const meta = { active: active.id, look: state.look, layers: [], anim: { frame: anim.frame, fps: anim.fps, playing: anim.playing } };
+  settleAll();
+  const meta = { active: active.id, look: state.look, bg: { id: bg.id, rot: bg.rot, show: bg.show }, layers: [], anim: { frame: anim.frame, fps: anim.fps, playing: anim.playing } };
   const parts = [];
   for (const L of layers) {
     const s = L.frames.length > 1 ? SDFGrid.serializeFrames(L.frames.map((f) => f.grid)) : L.grid.serialize();
@@ -3351,6 +3870,11 @@ function applySnapshot(buf) {
   }
   active = layerById(meta.active) || layers[0];
   onionFrames = [];
+  if (SPECTATOR && meta.bg) {
+    bg.rot = meta.bg.rot;
+    bg.show = meta.bg.show;
+    setBg(meta.bg.id);
+  }
   Object.assign(anim, { frame: meta.anim?.frame || 0, fps: meta.anim?.fps || 8, acc: 0, playing: SPECTATOR && !!meta.anim?.playing });
   showFrames();
   setLook(meta.look || LOOK_DEFAULT);
@@ -3628,12 +4152,15 @@ renderer.setAnimationLoop(() => {
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
+  // En el casco cada imagen tiene unos 13 ms: el remallado no puede comérselos todos.
+  const inXR = renderer.xr.isPresenting;
   if (active.dirty.size) {
-    active.flush(30);
+    active.flush(inXR ? 9 : 30);
     if (active.frames.length > 1) paintOnion();
   }
-  for (const L of layers) if (L !== active && L.dirty.size) L.flush(8);
-  for (const L of layers) if (L.frames.length > 1 && L.flushHidden(8)) {
+  for (const L of layers) if (L !== active && L.dirty.size) L.flush(inXR ? 3 : 8);
+  pumpBakes(inXR ? 3 : 8);
+  for (const L of layers) if (L.frames.length > 1 && L.flushHidden(inXR ? 3 : 8)) {
     if (L === active) paintOnion();
     break;
   }
@@ -3644,7 +4171,7 @@ renderer.setAnimationLoop(() => {
 let savedSig = '';
 const sceneSig = () => active.id + '|' + JSON.stringify(state.look) + '|' + layers.map((L) => [L.id, L.version, L.name, L.color, L.visible, !!L.remesh, L.frames.length].join(':')).join('|') + '|' + anim.fps;
 async function autosave() {
-  if (sculpting || layers.some((L) => L.busy)) return;
+  if (sculpting || moveOp.L || layers.some((L) => L.busy || L.bakeJob) || performance.now() - lastEdit < 6000) return;
   const sig = sceneSig();
   if (sig === savedSig) return;
   try {
@@ -3909,5 +4436,8 @@ if (!window.isSecureContext && !SPECTATOR) toast('Abre la app por https:// para 
 document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => changeLang(b.dataset.lang)));
 changeLang(getLang());
 
-window.__miMedium = { applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+exportUi();
+bgUi();
+setBg(bg.id);
+window.__miMedium = { bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, settleAll, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

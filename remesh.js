@@ -789,11 +789,43 @@ export async function remeshSDF(grid, area, target, onProgress, mode = 'flow') {
   }
   if (!P) {
     // Surface Nets en superficies curvas da ~1,4 quads por celda²: se corrige para acertar con el número pedido.
-    const hc = Math.max(Math.sqrt((area * 1.4) / Math.max(100, target)), F.h * 1.5);
+    const hc = Math.max(Math.sqrt((area * 1.4) / Math.max(100, target)), F.h * (mode === 'fine' ? 1 : 1.5));
     const m = await netsMesh(F, hc, tick, 0, 0.5);
     P = m.P; Q = m.Q;
     await relax(F, P, Q, 10, tick, 0.5, 1);
   }
+  return { positions: P, normals: quadNormals(P, Q, new Float32Array(P.length)), quads: Q };
+}
+
+// Más quads de los que da la rejilla: cada quad en cuatro, con los puntos nuevos sobre la superficie.
+export function subdivideQuads(grid, P0, Q0) {
+  const nq = Q0.length / 4, edges = new Map(), pts = Array.from(P0), Q = new Uint32Array(nq * 16);
+  const nv0 = P0.length / 3;
+  const point = (x, y, z) => { pts.push(x, y, z); return pts.length / 3 - 1; };
+  const mid = (a, b) => {
+    const key = a < b ? a * nv0 + b : b * nv0 + a;
+    let m = edges.get(key);
+    if (m === undefined) {
+      m = point((P0[a * 3] + P0[b * 3]) / 2, (P0[a * 3 + 1] + P0[b * 3 + 1]) / 2, (P0[a * 3 + 2] + P0[b * 3 + 2]) / 2);
+      edges.set(key, m);
+    }
+    return m;
+  };
+  for (let f = 0; f < nq; f++) {
+    const q = [Q0[f * 4], Q0[f * 4 + 1], Q0[f * 4 + 2], Q0[f * 4 + 3]];
+    const c = point(...[0, 1, 2].map((k) => (P0[q[0] * 3 + k] + P0[q[1] * 3 + k] + P0[q[2] * 3 + k] + P0[q[3] * 3 + k]) / 4));
+    const m = q.map((a, i) => mid(a, q[(i + 1) & 3]));
+    for (let i = 0; i < 4; i++) Q.set([q[i], m[i], c, m[(i + 3) & 3]], f * 16 + i * 4);
+  }
+  // Los puntos nuevos caen sobre la plastilina siguiendo el campo de distancias.
+  for (let i = nv0 * 3; i < pts.length; i += 3) {
+    for (let it = 0; it < 2; it++) {
+      const d = grid.sample(pts[i], pts[i + 1], pts[i + 2]), g = grid.gradient(pts[i], pts[i + 1], pts[i + 2]);
+      const l = Math.hypot(g[0], g[1], g[2]) || 1;
+      pts[i] -= (g[0] / l) * d; pts[i + 1] -= (g[1] / l) * d; pts[i + 2] -= (g[2] / l) * d;
+    }
+  }
+  const P = new Float32Array(pts);
   return { positions: P, normals: quadNormals(P, Q, new Float32Array(P.length)), quads: Q };
 }
 
