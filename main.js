@@ -17,6 +17,7 @@ import { t, getLang, setLang } from './i18n.js';
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const DEFAULT_RES = 320;
 const CHUNK = 32;
+const B_PAD = 8; // margen al comparar trozos de malla entre fotogramas
 // Hasta dónde puede crecer el espacio de una capa, en muestras por lado (unos 6 m a resolución 320).
 const MAX_SAMPLES = 1600;
 // En el casco la memoria es mucho más justa que en el Mac: menos historial de deshacer.
@@ -287,7 +288,15 @@ function buildMesh(positions, normals, colors, quads, mat) {
   geo.setIndex(new THREE.BufferAttribute(quadsToTris(quads), 1));
   if (normals) geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   else geo.computeVertexNormals();
+  geo.userData.refs = 1;
   const r = { mesh: new THREE.Mesh(geo, mat), lines: null, quads, group: null };
+  if (state.wire) wireOf(r);
+  return r;
+}
+// La misma malla en otro fotograma: no ocupa más memoria.
+function shareMesh(src) {
+  src.mesh.geometry.userData.refs++;
+  const r = { mesh: new THREE.Mesh(src.mesh.geometry, clay), lines: null, quads: src.quads, group: null, m: src.m };
   if (state.wire) wireOf(r);
   return r;
 }
@@ -317,8 +326,8 @@ function setMeshWire(r, v) {
 }
 function disposeMesh(group, r) {
   group.remove(r.mesh);
-  r.mesh.geometry.dispose();
   setMeshWire(r, false);
+  if (--r.mesh.geometry.userData.refs <= 0) r.mesh.geometry.dispose();
 }
 // sRGB 0-1 -> lineal en bytes (three.js los normaliza).
 const LIN8 = new Uint8Array(256).map((_, i) => {
@@ -338,18 +347,88 @@ class Layer {
     layerSeq = Math.max(layerSeq, this.id);
     this.name = opts.name ?? t('Capa {0}', this.id);
     this.color = opts.color ?? LAYER_COLORS[(this.id - 1) % LAYER_COLORS.length];
-    this.grid = opts.grid ?? new SDFGrid(n, shape);
     this.group = new THREE.Group();
-    this.voxels = new THREE.Group();
-    this.group.add(this.voxels);
     spinner.add(this.group);
-    this.chunks = [];
-    this.dirty = new Set();
+    // Fotogramas: cada uno con su rejilla y su malla; se pasa de uno a otro enseñando y ocultando.
+    this.f = this.makeFrame(opts.grid ?? new SDFGrid(n, shape));
+    this.f.voxels.visible = true;
+    this.frames = [this.f];
+    this.group.add(this.f.voxels);
     this.remesh = null;
     this.version = 0;
     this.busy = false;
     if (opts.visible === false) this.group.visible = false;
     this.rebuildAll();
+  }
+
+  // La capa trabaja siempre sobre el fotograma que se ve.
+  get grid() { return this.f.grid; }
+  set grid(v) { this.f.grid = v; }
+  get voxels() { return this.f.voxels; }
+  get chunks() { return this.f.chunks; }
+  set chunks(v) { this.f.chunks = v; }
+  get dirty() { return this.f.dirty; }
+  set dirty(v) { this.f.dirty = v; }
+  get C() { return this.f.C; }
+  set C(v) { this.f.C = v; }
+
+  makeFrame(grid) {
+    const voxels = new THREE.Group();
+    voxels.visible = false;
+    return { grid, voxels, chunks: [], dirty: new Set(), C: 0 };
+  }
+  // Fotograma con la rejilla dada; su malla se hace poco a poco.
+  frameFromGrid(grid) {
+    const f = this.makeFrame(grid);
+    this.rebuildFrame(f);
+    return f;
+  }
+  // Copia instantánea: comparte rejilla y malla con el original hasta que se esculpe encima.
+  copyFrame(src) {
+    const f = this.makeFrame(src.grid.share());
+    f.C = src.C;
+    f.chunks = src.chunks.map((r) => {
+      if (!r) return null;
+      const c = shareMesh(r);
+      addMesh(f.voxels, c);
+      return c;
+    });
+    f.dirty = new Set(src.dirty);
+    return f;
+  }
+  insertFrame(f, at) {
+    this.frames.splice(at, 0, f);
+    this.group.add(f.voxels);
+  }
+  removeFrame(f) {
+    const i = this.frames.indexOf(f);
+    this.frames.splice(i, 1);
+    this.group.remove(f.voxels);
+    f.voxels.visible = false;
+    if (this.f === f) {
+      this.f = this.frames[Math.min(i, this.frames.length - 1)];
+      this.f.voxels.visible = true;
+    }
+  }
+  disposeFrame(f) {
+    f.chunks.forEach((ch) => ch && disposeMesh(f.voxels, ch));
+    f.chunks = [];
+  }
+  show(i) {
+    const f = this.frames[i];
+    if (f === this.f) return;
+    this.f.voxels.visible = false;
+    f.voxels.visible = true;
+    this.f = f;
+  }
+  // Memoria aproximada de los fotogramas: lo compartido cuenta una vez.
+  frameBytes() {
+    const seen = new Set();
+    for (const f of this.frames) {
+      for (const b of f.grid.bricks) if (b) seen.add(b);
+      for (const c of f.grid.colors) if (c) seen.add(c);
+    }
+    return seen.size * 2048;
   }
 
   get visible() { return this.group.visible; }
@@ -358,15 +437,20 @@ class Layer {
 
   setBase(hex) {
     this.color = hex;
-    this.rebuildAll();
+    this.frames.forEach((f) => this.rebuildFrame(f));
+    this.changed();
+  }
+
+  rebuildFrame(f) {
+    f.chunks.forEach((ch) => ch && disposeMesh(f.voxels, ch));
+    f.C = Math.ceil((f.grid.n - 1) / CHUNK);
+    f.chunks = new Array(f.C ** 3).fill(null);
+    f.dirty.clear();
+    for (let i = 0; i < f.chunks.length; i++) f.dirty.add(i);
   }
 
   rebuildAll() {
-    this.chunks.forEach((ch) => ch && disposeMesh(this.voxels, ch));
-    this.C = Math.ceil((this.grid.n - 1) / CHUNK);
-    this.chunks = new Array(this.C ** 3).fill(null);
-    this.dirty.clear();
-    for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
+    this.rebuildFrame(this.f);
     this.changed();
   }
 
@@ -416,23 +500,41 @@ class Layer {
   }
 
   // Re-malla los chunks pendientes; con presupuesto de tiempo para no congelar la pantalla.
-  flush(budgetMs = Infinity) {
+  flush(budgetMs = Infinity, f = this.f) {
     const t0 = performance.now();
-    const C = this.C, base = this.base;
-    for (const ci of this.dirty) {
-      this.dirty.delete(ci);
+    const C = f.C, base = this.base;
+    const prev = this.frames[this.frames.indexOf(f) - 1];
+    for (const ci of f.dirty) {
+      f.dirty.delete(ci);
       const cx = ci % C, cy = Math.floor(ci / C) % C, cz = Math.floor(ci / (C * C));
-      const m = meshRegion(this.grid, cx * CHUNK, cy * CHUNK, cz * CHUNK, CHUNK, base);
-      if (this.chunks[ci]) disposeMesh(this.voxels, this.chunks[ci]);
-      this.chunks[ci] = null;
-      if (m) {
-        const r = buildMesh(m.positions, m.normals, m.colors, m.quads, clay);
-        r.m = m;
-        addMesh(this.voxels, r);
-        this.chunks[ci] = r;
+      if (f.chunks[ci]) disposeMesh(f.voxels, f.chunks[ci]);
+      f.chunks[ci] = null;
+      // Si el fotograma anterior es igual en este trozo, se aprovecha su malla.
+      const twin = prev && prev.C === C && !prev.dirty.has(ci) && f.grid.sameRegion(prev.grid, cx * CHUNK - B_PAD, cy * CHUNK - B_PAD, cz * CHUNK - B_PAD,
+        (cx + 1) * CHUNK + B_PAD, (cy + 1) * CHUNK + B_PAD, (cz + 1) * CHUNK + B_PAD);
+      if (twin) {
+        if (prev.chunks[ci]) {
+          f.chunks[ci] = shareMesh(prev.chunks[ci]);
+          addMesh(f.voxels, f.chunks[ci]);
+        }
+      } else {
+        const m = meshRegion(f.grid, cx * CHUNK, cy * CHUNK, cz * CHUNK, CHUNK, base);
+        if (m) {
+          const r = buildMesh(m.positions, m.normals, m.colors, m.quads, clay);
+          r.m = m;
+          addMesh(f.voxels, r);
+          f.chunks[ci] = r;
+        }
       }
       if (performance.now() - t0 > budgetMs) break;
     }
+  }
+  // Los fotogramas que no se ven se mallan cuando sobra tiempo. Devuelve si ha hecho algo.
+  flushHidden(budgetMs) {
+    const f = this.frames.find((x) => x !== this.f && x.dirty.size);
+    if (!f) return false;
+    this.flush(budgetMs, f);
+    return true;
   }
 
   merged() {
@@ -513,12 +615,12 @@ class Layer {
   }
 
   setWire(v) {
-    this.chunks.forEach((ch) => ch && setMeshWire(ch, v));
+    this.frames.forEach((f) => f.chunks.forEach((ch) => ch && setMeshWire(ch, v)));
     if (this.remesh) setMeshWire(this.remesh, v);
   }
 
   dispose() {
-    this.chunks.forEach((ch) => ch && disposeMesh(this.voxels, ch));
+    this.frames.forEach((f) => this.disposeFrame(f));
     this.clearRemesh();
     spinner.remove(this.group);
   }
@@ -531,6 +633,7 @@ const layerById = (id) => layers.find((L) => L.id === id);
 function setActive(L) {
   active = L;
   if (!L.visible) L.visible = true;
+  paintOnion();
   updateHud();
 }
 
@@ -552,7 +655,7 @@ function deleteLayer(L, ask = true) {
   if (layers.length === 1) return toast('No puedes borrar la única capa');
   if (ask && !confirm(t('¿Borrar {0}? No se puede deshacer.', L.name))) return;
   for (const s of [undoStack, redoStack]) {
-    for (let i = s.length - 1; i >= 0; i--) if (s[i].layer === L) s.splice(i, 1);
+    for (let i = s.length - 1; i >= 0; i--) if (s[i].layer === L) forgetEntry(s.splice(i, 1)[0]);
   }
   const idx = layers.indexOf(L);
   L.dispose();
@@ -574,14 +677,14 @@ const entryBytes = (e) => (e.rec ? e.rec.size * BRICK_BYTES * 2 : e.bytes);
 
 function pushStroke(L) {
   const rec = new Map();
-  undoStack.push({ layer: L, rec });
-  redoStack.length = 0;
+  undoStack.push({ layer: L, grid: L.grid, rec });
+  clearRedo();
   trimUndo();
   return rec;
 }
 function pushFull(L) {
-  undoStack.push({ layer: L, full: L.grid.state(), bytes: L.grid.bytes() });
-  redoStack.length = 0;
+  undoStack.push({ layer: L, grid: L.grid, full: L.grid.state(), bytes: L.grid.bytes() });
+  clearRedo();
   trimUndo();
 }
 // El espacio ha crecido: los trazos guardados apuntan a bloques con otro número. Se traducen hasta
@@ -589,33 +692,188 @@ function pushFull(L) {
 function rebaseUndo(L, remap) {
   for (let i = undoStack.length - 1; i >= 0; i--) {
     const e = undoStack[i];
-    if (e.layer !== L) continue;
+    if (e.layer !== L || e.grid !== L.grid) continue;
     if (e.full) break;
     const items = [...e.rec];
     e.rec.clear();
     for (const [bi, v] of items) e.rec.set(remap(bi), v);
   }
   // Rehacer se vacía al empezar un trazo; lo que quede de otra rejilla ya no se puede aplicar.
-  for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].layer === L && redoStack[i].rec) redoStack.splice(i, 1);
+  for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].layer === L && redoStack[i].grid === L.grid && redoStack[i].rec) redoStack.splice(i, 1);
 }
 function trimUndo() {
   let total = undoStack.reduce((a, e) => a + entryBytes(e), 0);
-  while (total > UNDO_BYTES && undoStack.length > 1) total -= entryBytes(undoStack.shift());
+  while (total > UNDO_BYTES && undoStack.length > 1) {
+    const e = undoStack.shift();
+    total -= entryBytes(e);
+    forgetEntry(e);
+  }
+}
+// Un fotograma borrado se guarda por si se deshace; cuando ya no se puede, se libera su malla.
+function forgetEntry(e) {
+  if (e.frameOp && !e.present) e.layer.disposeFrame(e.f);
+}
+function clearRedo() {
+  redoStack.forEach(forgetEntry);
+  redoStack.length = 0;
 }
 function swapEntry(e) {
   const L = e.layer;
+  if (e.frameOp) {
+    if (e.present) L.removeFrame(e.f);
+    else L.insertFrame(e.f, e.at);
+    L.version++;
+    goToFrame(L, e.present ? L.f : e.f);
+    live.structure();
+    return { ...e, present: !e.present };
+  }
+  // Se deshace en el fotograma donde se hizo: te lleva hasta él.
+  if (e.grid !== L.grid) {
+    const f = L.frames.find((x) => x.grid === e.grid);
+    if (!f) return e;
+    goToFrame(L, f);
+  }
   if (e.rec) {
     const { inv, lo, hi } = L.grid.restoreBricks(e.rec);
     if (e.rec.size) L.markDirty(lo, hi);
     live.patch(L, e.rec.keys());
-    return { layer: L, rec: inv };
+    return { layer: L, grid: L.grid, rec: inv };
   }
-  const cur = { layer: L, full: L.grid.state(), bytes: L.grid.bytes() };
+  const cur = { layer: L, grid: L.grid, full: L.grid.state(), bytes: L.grid.bytes() };
   L.grid.setState(e.full);
   L.rebuildAll();
   live.structure();
   return cur;
 }
+// ---------- Animación ----------
+// Fotograma a fotograma, como el stop motion: no hay interpolación. Un solo reloj para toda la obra;
+// cada capa repite su propio bucle, así que una capa de 4 y otra de 7 se van desfasando.
+const anim = { frame: 0, playing: false, fps: 8, acc: 0, onion: true, mb: 0 };
+const wrap = (a, n) => ((a % n) + n) % n;
+const frameIndex = (L = active) => L.frames.indexOf(L.f);
+// Fuera de la página de animación y sin fotogramas, los botones siguen siendo los de siempre.
+const animating = () => panelPage === 'anim' || active.frames.length > 1;
+
+const onionMat = (color, opacity) => new THREE.MeshBasicMaterial({ color, opacity, transparent: true, depthWrite: false, toneMapped: false,
+  polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }); // detrás: la superficie igual no se tiñe
+const ONION_PREV = [onionMat(0xe8452c, 0.34), onionMat(0xe8452c, 0.15)];
+const ONION_NEXT = [onionMat(0x2f7fe6, 0.34), onionMat(0x2f7fe6, 0.15)];
+let onionFrames = [];
+
+// Antes en rojo, después en azul. Lo que no cambia respecto al fotograma actual no se dibuja.
+function tintFrame(f, mat, cur) {
+  f.voxels.visible = !!mat;
+  f.chunks.forEach((r, ci) => {
+    if (!r) return;
+    r.mesh.material = mat || clay;
+    r.mesh.visible = !mat || !cur || cur.C !== f.C || cur.chunks[ci]?.mesh.geometry !== r.mesh.geometry;
+    if (r.lines) r.lines.visible = !mat;
+  });
+}
+function paintOnion() {
+  for (const f of onionFrames) {
+    tintFrame(f, null);
+    f.voxels.visible = f === f.owner.f;
+  }
+  onionFrames = [];
+  const L = active, n = L.frames.length;
+  if (SPECTATOR || !anim.onion || anim.playing || n < 2 || !L.visible) return;
+  const i = frameIndex(L);
+  const put = (j, mat) => {
+    const f = L.frames[wrap(j, n)];
+    if (f === L.f || onionFrames.includes(f)) return;
+    f.owner = L;
+    tintFrame(f, mat, L.f);
+    onionFrames.push(f);
+  };
+  put(i - 1, ONION_PREV[0]); put(i + 1, ONION_NEXT[0]);
+  put(i - 2, ONION_PREV[1]); put(i + 2, ONION_NEXT[1]);
+}
+function showFrames() {
+  for (const L of layers) L.show(wrap(anim.frame, L.frames.length));
+  paintOnion();
+}
+function frameToast() {
+  toast(t('Fotograma {0} de {1}', frameIndex() + 1, active.frames.length), 1200);
+}
+function afterFrames() {
+  anim.mb = Math.round(layers.reduce((a, L) => a + (L.frames.length > 1 ? L.frameBytes() : 0), 0) / 1e6);
+  if (anim.mb > 800 && !anim.warned) {
+    anim.warned = true;
+    toast('La animación ya pesa mucho: guarda la obra a menudo', 6000);
+  }
+  updateHud();
+}
+function goToFrame(L, f) {
+  anim.frame = L.frames.indexOf(f);
+  showFrames();
+  live.anim();
+  afterFrames();
+}
+function setPlaying(v) {
+  if (v && !layers.some((L) => L.frames.length > 1)) return toast('Añade más fotogramas para poder reproducir');
+  anim.playing = v;
+  anim.acc = 0;
+  if (!v) anim.frame = frameIndex();
+  showFrames();
+  live.anim();
+  updateHud();
+}
+function stepFrame(d, canAdd = false) {
+  if (sculpting || xr.stroking) return;
+  if (anim.playing) setPlaying(false);
+  const n = active.frames.length, i = frameIndex();
+  if (canAdd && d > 0 && i === n - 1) return addFrame(true);
+  anim.frame = wrap(i + d, n);
+  showFrames();
+  live.anim();
+  frameToast();
+  afterFrames();
+}
+function addFrame(copy) {
+  if (sculpting || xr.stroking) return;
+  if (anim.playing) setPlaying(false);
+  const L = active, from = frameIndex(L), at = from + 1;
+  L.clearRemesh();
+  const f = copy ? L.copyFrame(L.f) : L.frameFromGrid(L.grid.blank());
+  L.insertFrame(f, at);
+  undoStack.push({ layer: L, frameOp: true, f, at, present: true, bytes: 0 });
+  clearRedo();
+  L.version++;
+  anim.frame = at;
+  live.frameOp(L, copy ? 'copy' : 'blank', from, at);
+  showFrames();
+  live.anim();
+  frameToast();
+  afterFrames();
+}
+function deleteFrame() {
+  if (sculpting || xr.stroking) return;
+  const L = active;
+  if (L.frames.length < 2) return toast('No puedes borrar el único fotograma');
+  if (anim.playing) setPlaying(false);
+  const f = L.f, at = frameIndex(L);
+  L.removeFrame(f);
+  undoStack.push({ layer: L, frameOp: true, f, at, present: false, bytes: 0 });
+  clearRedo();
+  L.version++;
+  anim.frame = frameIndex(L);
+  live.frameOp(L, 'del', at, at);
+  showFrames();
+  live.anim();
+  frameToast();
+  afterFrames();
+}
+function updateAnim(dt) {
+  if (!anim.playing) return;
+  anim.acc += dt * anim.fps;
+  if (anim.acc < 1) return;
+  const k = Math.floor(anim.acc);
+  anim.acc -= k;
+  anim.frame += k;
+  showFrames();
+}
+
 function undo() {
   if (!undoStack.length) return toast('Nada que deshacer');
   const e = undoStack.pop();
@@ -638,6 +896,7 @@ let strokeRec = null;
 let strokePrev = null;
 
 function beginStroke() {
+  if (anim.playing) setPlaying(false);
   latheDepth = null;
   strokeRec = pushStroke(active);
   strokePrev = null;
@@ -1314,6 +1573,7 @@ function setColor(hex) {
 // La malla nueva sale de la propia rejilla (sin Blender) y el detalle de alta resolución se
 // hornea en un mapa de normales y otro de color. Va por tramos: la escena no se congela.
 async function remeshLayer(L) {
+  if (L.frames.length > 1) return toast('Las capas con fotogramas no se pueden hacer remesh');
   if (L.busy) return toast('Ya está haciendo remesh…');
   const hi = L.merged();
   if (!hi.quads.length) return toast('La capa está vacía');
@@ -1556,6 +1816,14 @@ $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
+$('btnFramePrev').onclick = () => stepFrame(-1);
+$('btnFrameNext').onclick = () => stepFrame(1);
+$('btnFramePlay').onclick = () => setPlaying(!anim.playing);
+$('btnFrameCopy').onclick = () => addFrame(true);
+$('btnFrameBlank').onclick = () => addFrame(false);
+$('btnFrameDel').onclick = () => deleteFrame();
+$('btnOnion').onclick = () => { anim.onion = !anim.onion; paintOnion(); updateHud(); };
+$('frameFps').oninput = (e) => { anim.fps = +e.target.value; $('frameFpsVal').textContent = anim.fps; live.anim(); };
 $('btnRemeshMac').onclick = () => remeshBlender(active);
 $('layerAdd').onclick = newLayer;
 $('layerDel').onclick = () => deleteLayer(active);
@@ -1610,7 +1878,7 @@ function renderLayers() {
     dot.style.background = L.color;
     const name = document.createElement('span');
     name.className = 'lname';
-    name.textContent = L.name + (L.remesh ? ' ⊞' : '') + (L.busy ? ' …' : '');
+    name.textContent = L.name + (L.remesh ? ' ⊞' : '') + (L.busy ? ' …' : '') + (L.frames.length > 1 ? ` · ${frameIndex(L) + 1}/${L.frames.length}` : '');
     name.title = t('Doble clic para renombrar');
     const res = document.createElement('span');
     res.className = 'lres';
@@ -1633,6 +1901,12 @@ function renderLayers() {
     row.append(dot, name, res, eye);
     list.append(row);
   }
+  $('frameInfo').textContent = t('Fotograma {0} de {1}', frameIndex() + 1, active.frames.length);
+  $('btnFramePlay').textContent = t(anim.playing ? 'Pausa' : 'Play');
+  $('btnFramePlay').classList.toggle('on', anim.playing);
+  $('btnOnion').classList.toggle('on', anim.onion);
+  $('frameFps').value = anim.fps;
+  $('frameFpsVal').textContent = anim.fps;
 }
 
 let hudMsg = '', hudMsgUntil = 0;
@@ -2133,6 +2407,9 @@ addEventListener('keydown', (e) => {
   else if (k === '0') choose('crease');
   else if (k === 'l') choose(state.line ? 'stroke:free' : 'stroke:line');
   else if (k === 'b') choose('shape:' + ({ sphere: 'cube', cube: 'pyramid', pyramid: 'sphere' }[state.shape] || 'sphere'));
+  else if (e.key === ',') stepFrame(-1);
+  else if (e.key === '.') stepFrame(1, true);
+  else if (k === 'o') setPlaying(!anim.playing);
   else if (k === 'g') choose('move');
   else if (k === 'p') choose('paint');
   else if (k === 'w') choose('wire');
@@ -2323,6 +2600,7 @@ function buildPanel() {
   if (panelPage === 'sellos') return buildStampsPage();
   if (panelPage === 'refs') return buildRefPage();
   if (panelPage === 'material') return buildMaterialPage();
+  if (panelPage === 'anim') return buildAnimPage();
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 548, CERA.blue));
@@ -2367,9 +2645,10 @@ function buildPanel() {
   const yl = 834;
   W.push({ type: 'label', x: M, y: yl, head: true, text: 'CAPAS', size: 28 });
   W.push({ type: 'button', x: PW - M - 150, y: yl - 26, w: 150, h: 50, label: '+ Capa', size: 22, onClick: newLayer });
+  W.push({ type: 'button', x: PW - M - 150 - 10 - 190, y: yl - 26, w: 190, h: 50, label: 'Animar ▸', size: 22, onClick: () => { panelPage = 'anim'; drawPanel(); } });
   layers.slice(-4).forEach((L, i) => {
     const y = yl + 36 + i * 60;
-    W.push({ type: 'button', x: M, y, w: IW - 96, h: 50, label: `${L.name}  ·  ${L.grid.res}³${L.remesh ? '  ⊞' : ''}`, plain: true,
+    W.push({ type: 'button', x: M, y, w: IW - 96, h: 50, label: `${L.name}  ·  ${L.frames.length > 1 ? t('{0} fot.', L.frames.length) : L.grid.res + '³'}${L.remesh ? '  ⊞' : ''}`, plain: true,
       dot: L.color, size: 22, active: () => L === active, onClick: () => setActive(L) });
     W.push({ type: 'button', x: PW - M - 84, y, w: 84, h: 50, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
@@ -2477,6 +2756,42 @@ function buildStampsPage() {
   if (ownStamps.length) W.push({ type: 'button', x: M, y: yText + 64, w: IW, h: 66, size: 24, label: 'Borrar mi último sello', onClick: () => choose('stamp:delete') });
   return W;
 }
+// Página de animación: la tira de fotogramas de la capa activa y los mandos para reproducir.
+function buildAnimPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, cols = 8, gap = 8, cw = (IW - (cols - 1) * gap) / cols;
+  const n = active.frames.length, i = frameIndex();
+  W.push(panelBlock(8, 800, CERA.paper));
+  pageHead(W, 'Animación');
+  W.push({ type: 'label', x: M, y: 128, size: 28, max: IW, text: active.name + '  ·  ' + t('Fotograma {0} de {1}', i + 1, n) });
+  // Dos filas de la tira; si hay más, se mueve siguiendo al fotograma actual.
+  const first = Math.max(0, Math.min(n - cols * 2, i - cols));
+  for (let k = first; k < Math.min(n, first + cols * 2); k++) {
+    const c = k - first;
+    W.push({ type: 'button', x: M + (c % cols) * (cw + gap), y: 152 + Math.floor(c / cols) * 76, w: cw, h: 68, size: 26, group: 'strip', label: String(k + 1),
+      active: () => frameIndex() === k, onClick: () => { if (anim.playing) setPlaying(false); goToFrame(active, active.frames[k]); frameToast(); } });
+  }
+  const yT = 322, bw = (IW - 2 * 10) / 3;
+  W.push({ type: 'button', x: M, y: yT, w: bw, h: 84, size: 72, label: '◂', group: 'tr', onClick: () => stepFrame(-1) });
+  W.push({ type: 'button', x: M + bw + 10, y: yT, w: bw, h: 84, size: 30, label: anim.playing ? 'Pausa' : 'Play', group: 'tr', active: () => anim.playing, onClick: () => setPlaying(!anim.playing) });
+  W.push({ type: 'button', x: M + 2 * (bw + 10), y: yT, w: bw, h: 84, size: 72, label: '▸', group: 'tr', onClick: () => stepFrame(1) });
+  const yA = yT + 96;
+  [['+ Copia', () => addFrame(true)], ['+ Vacío', () => addFrame(false)], ['Borrar', deleteFrame]].forEach(([l, f], k) =>
+    W.push({ type: 'button', x: M + k * (bw + 10), y: yA, w: bw, h: 68, size: 26, label: l, group: 'fr', onClick: f }));
+  W.push({ type: 'slider', x: M, y: yA + 124, w: IW, h: 30, label: 'Velocidad (fotogramas por segundo)',
+    get: () => (anim.fps - 2) / 22, set: (v) => { anim.fps = Math.round(2 + v * 22); live.anim(); }, text: () => String(anim.fps) });
+  W.push({ type: 'button', x: M, y: yA + 176, w: IW, h: 62, size: 26, label: 'Piel de cebolla', active: () => anim.onion,
+    onClick: () => { anim.onion = !anim.onion; paintOnion(); drawPanel(); } });
+  W.push({ type: 'label', x: M, y: yA + 280, size: 22, max: IW, text: t('Rojo = antes · Azul = después') + (anim.mb ? '  ·  ≈ ' + anim.mb + ' MB' : '') });
+  W.push({ type: 'label', x: M, y: yA + 322, size: 22, max: IW, text: 'Stick derecho ←/→: cambia de fotograma' });
+  W.push({ type: 'label', x: M, y: yA + 358, size: 22, max: IW, text: 'Al final, → crea una copia · B = play' });
+  // Cada capa con su bucle.
+  W.push(panelBlock(816, 92 + Math.min(layers.length, 6) * 62, CERA.ink));
+  W.push({ type: 'label', x: M, y: 856, head: true, size: 26, text: 'CAPAS' });
+  layers.slice(-6).forEach((L, k) => W.push({ type: 'button', x: M, y: 876 + k * 62, w: IW, h: 52, size: 22, plain: true, dot: L.color,
+    label: L.name + '  ·  ' + t('{0} fot.', L.frames.length), active: () => L === active, onClick: () => { setActive(L); anim.frame = frameIndex(L); showFrames(); drawPanel(); } }));
+  return W;
+}
 function openRefPage() { panelPage = 'refs'; drawPanel(); refreshMacRefs(); }
 // Página de la referencia: dentro de las gafas no se pueden elegir archivos, así que se elige de la lista.
 function buildRefPage() {
@@ -2531,7 +2846,7 @@ function drawPanel() {
 }
 
 const xr = {
-  menuPrev: false, menuOpen: false, menuMode: null, stroking: false, grabMode: 'none',
+  bPrev: false, frameFlick: 0, menuPrev: false, menuOpen: false, menuMode: null, stroking: false, grabMode: 'none',
   xPrev: false, yPrev: false, lStickPrev: false, rStickPrev: false, trigPrev: false, flick: 0,
 };
 const grabOffset = new THREE.Matrix4();
@@ -2715,7 +3030,11 @@ function xrFrame(dt) {
 
   // La flor: clic en el stick derecho (o mantener A/B). Eliges con el stick o moviendo la mano.
   const rStick = !!gpR.buttons[3]?.pressed;
-  const ab = !!(gpR.buttons[4]?.pressed || gpR.buttons[5]?.pressed);
+  // Animando, B reproduce; la flor sigue en A y en el clic del stick.
+  const btnB = !!gpR.buttons[5]?.pressed, bPlays = animating() && !xr.menuOpen;
+  const ab = !!(gpR.buttons[4]?.pressed || (btnB && !bPlays));
+  if (bPlays && btnB && !xr.bPrev) setPlaying(!anim.playing);
+  xr.bPrev = btnB;
   if (!xr.menuOpen) {
     if (rStick && !xr.rStickPrev) openFlower(tipW, 'toggle');
     else if (ab && !xr.menuPrev) openFlower(tipW, 'hold');
@@ -2744,6 +3063,14 @@ function xrFrame(dt) {
   xr.menuPrev = ab;
   xr.trigPrev = trigDown;
 
+  // Animando, stick derecho ←/→ = fotograma anterior/siguiente; al final crea una copia.
+  if (animating() && !state.lathe && !moveOp.L && !gR) {
+    if (xr.frameFlick === 0 && Math.abs(ax) > 0.75 && Math.abs(ax) > Math.abs(ay)) {
+      xr.frameFlick = ax < 0 ? -1 : 1;
+      stepFrame(xr.frameFlick, true);
+      gpR.hapticActuators?.[0]?.pulse?.(0.4, 30);
+    } else if (xr.frameFlick !== 0 && Math.abs(ax) < 0.3) xr.frameFlick = 0;
+  }
   // Stick derecho ↑/↓ = tamaño del pincel (o de la capa agarrada con Mover).
   if (Math.abs(ay) > 0.2 && moveOp.L) scaleMove(Math.exp(-ay * dt * 1.2));
   else if (Math.abs(ay) > 0.2 && !gR) {
@@ -2873,6 +3200,16 @@ const live = {
     }
     this.hub.sendBlob('patch', pack({ l: L.id, n: g.n, items }, parts));
   },
+  // Por dónde va la animación. Es un mensaje pequeño: el espejo lleva su propio reloj al reproducir.
+  anim() {
+    if (!this.emitting) return;
+    this.hub.send({ t: 'anim', f: anim.frame, play: anim.playing, fps: anim.fps });
+  },
+  // Fotograma nuevo o borrado: el espejo hace lo mismo, sin volver a mandar toda la obra.
+  frameOp(L, op, from, at) {
+    if (!this.emitting) return;
+    this.hub.send({ t: 'fr', l: L.id, op, from, at });
+  },
   // Cambios de estructura (capas, resolución, remesh...): estado completo, agrupado.
   structure() {
     if (!this.emitting) return;
@@ -2880,6 +3217,7 @@ const live = {
     this.structTimer = setTimeout(() => this.snapshot(), 250);
   },
   async snapshot() {
+    if (!server.ok) return; // sin Mac no hace falta empaquetar la obra entera
     if (this.snapBusy) { this.snapAgain = true; return; }
     this.snapBusy = true;
     await this.hub.sendBlob('snap', packScene());
@@ -2941,6 +3279,20 @@ async function applyRemote(m) {
     L.fit(m.a, m.b, m.r);
     const res = L.grid.applyBrush(m.tool, m.a, m.b, m.r, m.s, m.inv, m.dt, null, m.paint, stampOpts(m.o));
     if (res) L.markDirty(res.lo, res.hi);
+  } else if (m.t === 'anim') {
+    if (!synced) return;
+    Object.assign(anim, { frame: m.f, playing: m.play, fps: m.fps });
+    showFrames();
+  } else if (m.t === 'fr') {
+    const L = synced && layerById(m.l);
+    if (!L) return;
+    if (m.op === 'del') {
+      const f = L.frames[m.at];
+      if (f && L.frames.length > 1) { L.removeFrame(f); L.disposeFrame(f); }
+    } else if (L.frames[m.from]) {
+      L.insertFrame(m.op === 'copy' ? L.copyFrame(L.frames[m.from]) : L.frameFromGrid(L.grid.blank()), m.at);
+    }
+    showFrames();
   } else if (m.t === 'look') {
     setLook(m.look);
   } else if (m.t === 'blob') {
@@ -2952,10 +3304,10 @@ async function applyRemote(m) {
 
 // Escena completa (todas las capas) en un binario: espejo y autoguardado.
 function packScene() {
-  const meta = { active: active.id, look: state.look, layers: [] };
+  const meta = { active: active.id, look: state.look, layers: [], anim: { frame: anim.frame, fps: anim.fps, playing: anim.playing } };
   const parts = [];
   for (const L of layers) {
-    const s = L.grid.serialize();
+    const s = L.frames.length > 1 ? SDFGrid.serializeFrames(L.frames.map((f) => f.grid)) : L.grid.serialize();
     const lm = { id: L.id, name: L.name, color: L.color, visible: L.visible, grid: s.meta };
     parts.push(...s.parts);
     if (L.remesh) {
@@ -2975,10 +3327,13 @@ function applySnapshot(buf) {
   layers.forEach((L) => L.dispose());
   layers = [];
   for (const lm of meta.layers) {
-    const { grid, off: o2 } = SDFGrid.deserialize(lm.grid, buf, off);
+    const fr = lm.grid.frames ? SDFGrid.deserializeFrames(lm.grid, buf, off) : null;
+    const { grid, off: o2 } = fr ? { grid: fr.grids[0], off: fr.off } : SDFGrid.deserialize(lm.grid, buf, off);
     off = o2;
     const L = new Layer(grid.n, 'empty', { id: lm.id, name: lm.name, color: lm.color, visible: lm.visible, grid });
     L.flush();
+    // El resto de fotogramas se malla poco a poco, sin congelar la pantalla al abrir.
+    if (fr) fr.grids.slice(1).forEach((g, i) => L.insertFrame(L.frameFromGrid(g), i + 1));
     if (lm.remesh) {
       const { nv, nq } = lm.remesh;
       const positions = new Float32Array(buf.slice(off, off + nv * 4)); off += nv * 4;
@@ -2995,6 +3350,9 @@ function applySnapshot(buf) {
     layers.push(L);
   }
   active = layerById(meta.active) || layers[0];
+  onionFrames = [];
+  Object.assign(anim, { frame: meta.anim?.frame || 0, fps: meta.anim?.fps || 8, acc: 0, playing: SPECTATOR && !!meta.anim?.playing });
+  showFrames();
   setLook(meta.look || LOOK_DEFAULT);
   syncLookInputs();
   synced = true;
@@ -3237,6 +3595,7 @@ let poseT = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   updateLathe(dt);
+  updateAnim(dt);
   if (SPECTATOR) {
     spectatorFrame(dt);
   } else if (renderer.xr.isPresenting) {
@@ -3269,14 +3628,21 @@ renderer.setAnimationLoop(() => {
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
-  if (active.dirty.size) active.flush(30);
+  if (active.dirty.size) {
+    active.flush(30);
+    if (active.frames.length > 1) paintOnion();
+  }
   for (const L of layers) if (L !== active && L.dirty.size) L.flush(8);
+  for (const L of layers) if (L.frames.length > 1 && L.flushHidden(8)) {
+    if (L === active) paintOnion();
+    break;
+  }
   renderer.render(scene, camera);
 });
 
 // ---------- Autoguardado en las gafas (sin Wi-Fi no se pierde nada) ----------
 let savedSig = '';
-const sceneSig = () => active.id + '|' + JSON.stringify(state.look) + '|' + layers.map((L) => [L.id, L.version, L.name, L.color, L.visible, !!L.remesh].join(':')).join('|');
+const sceneSig = () => active.id + '|' + JSON.stringify(state.look) + '|' + layers.map((L) => [L.id, L.version, L.name, L.color, L.visible, !!L.remesh, L.frames.length].join(':')).join('|') + '|' + anim.fps;
 async function autosave() {
   if (sculpting || layers.some((L) => L.busy)) return;
   const sig = sceneSig();
@@ -3418,8 +3784,9 @@ async function saveObra(asNew = false, quiet = false) {
 }
 
 function resetHistory() {
+  undoStack.forEach(forgetEntry);
   undoStack.length = 0;
-  redoStack.length = 0;
+  clearRedo();
 }
 
 async function openObra(id) {
@@ -3456,6 +3823,8 @@ async function newObra() {
   layers.forEach((L) => L.dispose());
   layers = [new Layer(DEFAULT_RES, 'sphere')];
   active = layers[0];
+  onionFrames = [];
+  Object.assign(anim, { frame: 0, playing: false, acc: 0, mb: 0 });
   setLook(LOOK_DEFAULT);
   syncLookInputs();
   resetHistory();
@@ -3540,5 +3909,5 @@ if (!window.isSecureContext && !SPECTATOR) toast('Abre la app por https:// para 
 document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => changeLang(b.dataset.lang)));
 changeLang(getLang());
 
-window.__miMedium = { state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

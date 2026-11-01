@@ -70,6 +70,9 @@ function sdPyramid(px, py, pz, h) {
 // Cuánto sobresale cada forma respecto a r (para no saltarse bloques que toca).
 export const SHAPE_REACH = { sphere: 1, cube: 1.32, pyramid: 1.62, stamp: 1.8 };
 
+// Bloques que comparten varios fotogramas: nadie los escribe, se copian justo antes de tocarlos.
+const SHARED = new WeakSet();
+
 export class SDFGrid {
   constructor(n = 192, shape = 'sphere') {
     this.setResolution(n);
@@ -502,6 +505,8 @@ export class SDFGrid {
           if (undo && !undo.has(bi)) {
             undo.set(bi, { d: bricks[bi] ? bricks[bi].slice() : null, f: fill[bi], c: colors[bi] ? colors[bi].slice() : null });
           }
+          if (bricks[bi] && SHARED.has(bricks[bi])) bricks[bi] = bricks[bi].slice();
+          if (colors[bi] && SHARED.has(colors[bi])) colors[bi] = colors[bi].slice();
           let bk = bricks[bi];
           if (!bk) bk = bricks[bi] = new Float32Array(B3).fill(fill[bi] * band);
           let cb = colors[bi];
@@ -666,6 +671,80 @@ export class SDFGrid {
     for (const i of idx) parts.push(this.bricks[i].slice().buffer);
     for (const i of cidx) parts.push(this.colors[i].slice().buffer);
     return { meta: { n: this.n, h: this.h, o: this.o, idx, cidx }, parts };
+  }
+
+  // Otra rejilla igual que esta sin copiar nada: comparten los bloques hasta que uno los toca.
+  share() {
+    const g = new SDFGrid(2, 'empty');
+    g.setState({ n: this.n, h: this.h, o: this.o, bricks: this.bricks.slice(), colors: this.colors.slice(), fill: this.fill.slice() });
+    for (const b of this.bricks) if (b) SHARED.add(b);
+    for (const c of this.colors) if (c) SHARED.add(c);
+    return g;
+  }
+
+  // Una rejilla vacía que ocupa el mismo espacio que esta.
+  blank() {
+    const g = new SDFGrid(2, 'empty');
+    g.setState({ n: this.n, h: this.h, o: this.o, bricks: new Array(this.nb ** 3).fill(null),
+      colors: new Array(this.nb ** 3).fill(null), fill: new Int8Array(this.nb ** 3).fill(1) });
+    return g;
+  }
+
+  // ¿Esta zona (en muestras) es idéntica en las dos rejillas? Se compara qué bloque hay, sin leerlo.
+  sameRegion(other, x0, y0, z0, x1, y1, z1) {
+    if (this.n !== other.n || this.h !== other.h || this.o !== other.o) return false;
+    const nb = this.nb, c = (v) => Math.max(0, Math.min(nb - 1, v >> 3));
+    for (let bz = c(z0); bz <= c(z1); bz++) for (let by = c(y0); by <= c(y1); by++) for (let bx = c(x0); bx <= c(x1); bx++) {
+      const bi = bx + nb * (by + nb * bz);
+      if (this.bricks[bi] !== other.bricks[bi] || this.colors[bi] !== other.colors[bi] || this.fill[bi] !== other.fill[bi]) return false;
+    }
+    return true;
+  }
+
+  // Varios fotogramas de una capa: cada bloque compartido se guarda una sola vez.
+  static serializeFrames(grids) {
+    const bp = new Map(), cp = new Map();
+    const at = (pool, a) => {
+      if (!pool.has(a)) pool.set(a, pool.size);
+      return pool.get(a);
+    };
+    const frames = grids.map((g) => {
+      const m = { n: g.n, h: g.h, o: g.o, idx: [], cidx: [], bp: [], cp: [] };
+      g.bricks.forEach((b, i) => { if (b) { m.idx.push(i); m.bp.push(at(bp, b)); } });
+      g.colors.forEach((c, i) => { if (c) { m.cidx.push(i); m.cp.push(at(cp, c)); } });
+      return m;
+    });
+    const parts = grids.map((g) => g.fill.buffer);
+    for (const b of bp.keys()) parts.push(b.buffer);
+    for (const c of cp.keys()) parts.push(c.buffer);
+    return { meta: { frames, nbp: bp.size, ncp: cp.size }, parts };
+  }
+
+  static deserializeFrames(meta, buf, off) {
+    const grids = meta.frames.map((m) => {
+      const g = new SDFGrid(m.n, 'empty');
+      g.h = m.h; g.o = m.o; g.band = 4 * g.h;
+      const nb3 = g.nb ** 3;
+      g.fill = new Int8Array(buf.slice(off, off + nb3));
+      off += Math.ceil(nb3 / 4) * 4;
+      return g;
+    });
+    const read = (count, Type) => {
+      const pool = [];
+      for (let i = 0; i < count; i++) {
+        const a = new Type(buf.slice(off, off + B3 * 4));
+        off += B3 * 4;
+        SHARED.add(a);
+        pool.push(a);
+      }
+      return pool;
+    };
+    const bricks = read(meta.nbp, Float32Array), colors = read(meta.ncp, Uint8Array);
+    meta.frames.forEach((m, k) => {
+      m.idx.forEach((bi, j) => { grids[k].bricks[bi] = bricks[m.bp[j]]; });
+      m.cidx.forEach((bi, j) => { grids[k].colors[bi] = colors[m.cp[j]]; });
+    });
+    return { grids, off };
   }
 
   static deserialize(meta, buf, off) {
