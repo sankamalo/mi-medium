@@ -8,6 +8,7 @@ import { t } from './i18n.js';
 //   button: label, active(), onClick(), group (misma letra en toda la fila), plain (sin mayúsculas)
 //   thumb: img (lienzo), active(), onClick()
 //   slider: label, get() 0..1, set(t), text()     swatch: color, active(), onClick()
+//   tab: label, color, active(), onClick()
 //   label: text, size, head (letra de botón), max (encoge para caber), wrap (ancho: corta en líneas)
 
 // La caja de ceras: los bloques van en azul, rojo, papel y negro; el amarillo es siempre «esto está puesto».
@@ -120,6 +121,17 @@ export class CanvasPanel {
         g.font = kanit(w.group ? sizes[w.group] : fitSize(g, kanit, str, w.size || 26, room));
         g.textAlign = w.dot ? 'left' : 'center';
         g.fillText(str, (w.dot ? w.x + 50 : w.x + w.w / 2) + d, w.y + d + w.h / 2 + 1);
+      } else if (w.type === 'tab') {
+        // Pestaña: la puesta lleva el color de su bloque y se une a él; las otras, blancas con su color al lado.
+        const on = w.active?.();
+        g.fillStyle = on ? w.color : hov ? '#ffe98a' : CERA.white;
+        g.fillRect(w.x, on ? w.y : w.y + 6, w.w, on ? w.h : w.h - 8);
+        if (!on) { g.fillStyle = w.color; g.fillRect(w.x + 12, w.y + 20, 24, w.h - 36); }
+        g.fillStyle = on && w.color !== CERA.paper ? CERA.white : CERA.ink;
+        const room = w.w - (on ? 24 : 64);
+        g.font = kanitHead(fitSize(g, kanitHead, t(w.label), 28, room));
+        g.textAlign = on ? 'center' : 'left';
+        g.fillText(t(w.label), on ? w.x + w.w / 2 : w.x + 48, w.y + w.h / 2 + 2);
       } else if (w.type === 'thumb') {
         const on = w.active?.();
         g.fillStyle = on ? CERA.yellow : hov ? '#ffe98a' : CERA.white;

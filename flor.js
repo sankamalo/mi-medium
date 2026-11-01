@@ -614,8 +614,8 @@ export function wheelSpot(hex) {
   const rad = max < 0.99 && sat > 0.5 ? WHEEL_PURE + ((1 - max) / WHEEL_DARK) * (1 - WHEEL_PURE) : sat * WHEEL_PURE;
   return [Math.cos((h / 6) * Math.PI * 2) * rad, Math.sin((h / 6) * Math.PI * 2) * rad];
 }
-const DWELL = 0.42;
-// Un segundo encima de una opción la elige sin apretar nada. Al cruzar la frontera entre dos
+const DWELL = 0.2;
+// Un segundo encima de una opción la pone sin apretar nada, sin avisos en pantalla. Al cruzar la frontera entre dos
 // pétalos, el de ahora aguanta un poco: sin esto, el temblor de la mano reiniciaba la espera.
 const HOLD = 1, STICKY = 7;
 // El pétalo grande de los sellos: un círculo sobre la flor, con dos anillos de dibujitos.
@@ -710,14 +710,6 @@ export class Flower {
     this.label.renderOrder = 1000;
     this.label.visible = false;
     this.group.add(this.label);
-    // Debajo del nombre, la barra de esos segundos de espera.
-    this.holdBar = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.128, 0.0045).translate(0.064, 0, 0),
-      new THREE.MeshBasicMaterial({ color: COLORS.yellow, depthTest: false, depthWrite: false, toneMapped: false }),
-    );
-    this.holdBar.position.set(-0.064, -0.0185, 0);
-    this.holdBar.renderOrder = 1001;
-    this.label.add(this.holdBar);
   }
 
   buildStampDisc() {
@@ -833,21 +825,29 @@ export class Flower {
     this.age = 0;
     this.sub = false;
     this.pStrength = this.pStrengthV = 0;
-    this.fired = false;
+    this.fired = null;
+    this.done = null;
     this.wheelAt = null;
     this.isActive = isActive;
     this.openStamps(false);
     this.setWheel(color, ...wheelSpot(color));
     this.setHighlight(null);
+    this.refresh();
     for (const p of [...this.petals, ...this.subPetals]) {
-      const on = isActive(p.id);
-      p.line.material.color.set(on ? COLORS.white : INK);
-      p.line.geometry = on ? p.halo : p.ink;
       p.ang = p.angle ?? p.ang;
       p.angV = p.size = p.sizeV = p.push = p.pushV = 0;
       p.root.visible = !p.off && p.off !== 0;
     }
     this.update(0);
+  }
+
+  // El borde blanco sigue a lo que llevas puesto.
+  refresh() {
+    for (const p of [...this.petals, ...this.subPetals]) {
+      const on = this.isActive(p.id);
+      p.line.material.color.set(on ? COLORS.white : INK);
+      p.line.geometry = on ? p.halo : p.ink;
+    }
   }
 
   close() {
@@ -908,6 +908,7 @@ export class Flower {
       if (!this.wheelAt || Math.hypot(u - this.wheelAt.u, v - this.wheelAt.v) > 0.08) {
         this.wheelAt = { u, v };
         this.since = this.age;
+        this.done = null;
       }
       return list[0].id;
     }
@@ -984,6 +985,7 @@ export class Flower {
     if (id === this.highlight) return false;
     this.highlight = id;
     this.since = this.age;
+    this.done = null;
     const p = this.find(id) || (id && this.slots.some((s) => s.id === id) ? {} : null);
     this.label.visible = !!p;
     this.petals.forEach((q) => setOrder(q, q.id === id || q.id === this.sub ? 940 : q.order));
@@ -1019,9 +1021,9 @@ export class Flower {
     }
     // Las opciones finales (no las que abren otra flor) se eligen solas al quedarte encima.
     const leaf = this.highlight && !SUBS[this.highlight] && this.highlight !== 'shape:more';
-    const held = leaf ? (this.age - this.since) / HOLD : 0;
-    this.holdBar.scale.x = Math.max(0.0001, Math.min(1, held));
-    if (held >= 1) this.fired = true;
+    if (leaf && this.done !== this.highlight && this.age - this.since >= HOLD) {
+      this.done = this.fired = this.highlight;
+    }
     if (this.stampsOpen) {
       const k = 1 - Math.exp(-dt * 18);
       for (const s of this.slots) {
