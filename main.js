@@ -39,7 +39,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
-  symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texture: 'plain', line: false,
+  symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texBy: {}, texAll: false, texAllId: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
   exportFmt: 'obj', exportT: 0, exportNow: 0, color: '#cfc6bb', bakeSize: 2048, lathe: false, latheSpeed: 0.5,
 };
@@ -716,7 +716,9 @@ let lastEdit = 0;
 const noteEdit = () => { lastEdit = performance.now(); };
 const entryBytes = (e) => (e.rec ? e.rec.size * BRICK_BYTES * 2 : e.bytes);
 
+let strokeSeq = 0;
 function pushStroke(L) {
+  strokeSeq++;
   noteEdit();
   const rec = new Map();
   undoStack.push({ layer: L, grid: L.grid, rec });
@@ -803,10 +805,15 @@ function swapEntry(e) {
 // ilumina el modelo. Es una preferencia tuya: vale para todas las obras.
 const BG_COLORS = [['dark', 'Oscuro', '#15171c'], ['gray', 'Gris', '#6a6e74'], ['cream', 'Crema', '#e9e0cc'], ['night', 'Azul noche', '#16233f']];
 const BG_HDRI = [['studio', 'Estudio', 'studio_small_09'], ['sunset', 'Atardecer', 'venice_sunset'], ['sky', 'Cielo', 'kloofendal_48d_partly_cloudy_puresky'], ['forest', 'Bosque', 'forest_slope']];
-const bg = { id: 'dark', rot: 0, show: 0.6, ar: false };
+const bg = { id: 'dark', rot: 0, show: 0.6, ar: false, arSession: false };
 try { Object.assign(bg, JSON.parse(localStorage.getItem('plastilinaFondo') || '{}'), { ar: false }); } catch {}
 const hdriMaps = new Map();
 let pmrem = null;
+// En realidad mixta un color de fondo normal no tapa la sala: lo hace esta cúpula.
+const bgDome = new THREE.Mesh(new THREE.SphereGeometry(20, 24, 12), new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthTest: false, depthWrite: false, toneMapped: false }));
+bgDome.renderOrder = -1000;
+bgDome.visible = false;
+scene.add(bgDome);
 async function hdriMap(id) {
   if (hdriMaps.has(id)) return hdriMaps.get(id);
   const file = BG_HDRI.find((h) => h[0] === id)[2];
@@ -836,9 +843,17 @@ function applyBg() {
     scene.backgroundIntensity = bg.show;
   }
   if (SPECTATOR) return; // el espejo elige su propio fondo (croma, blanco...)
-  scene.background = bg.ar ? null : map || new THREE.Color(color?.[2] || BG_COLORS[0][2]);
+  const hex = color?.[2] || BG_COLORS[0][2], domed = bg.arSession && !bg.ar && !map;
+  bgDome.visible = domed;
+  bgDome.material.color.set(hex);
+  scene.background = bg.ar || domed ? null : map || new THREE.Color(hex);
 }
+// Elegir un fondo lo enseña también en realidad mixta; «Ver la sala» vuelve a la cámara de las gafas.
 async function setBg(id) {
+  if (id === 'room') {
+    bg.ar = bg.arSession;
+    return bgChanged();
+  }
   try {
     if (BG_HDRI.some((h) => h[0] === id)) await hdriMap(id);
   } catch (e) {
@@ -846,6 +861,7 @@ async function setBg(id) {
     return toast('No he podido cargar el fondo', 4000);
   }
   bg.id = id;
+  bg.ar = false;
   bgChanged();
 }
 function bgChanged() {
@@ -859,7 +875,7 @@ function bgUi() {
   $('bgRow').replaceChildren(...[...BG_COLORS, ...BG_HDRI].map(([id, name]) => {
     const b = document.createElement('button');
     b.textContent = t(name);
-    b.classList.toggle('on', bg.id === id);
+    b.classList.toggle('on', bg.id === id && !bg.ar);
     b.onclick = () => setBg(id);
     return b;
   }));
@@ -1216,7 +1232,8 @@ function optionOn(id) {
   if (id === 'floor') return state.floor;
   if (k === 'tool') return clayTool === id;
   if (k === 'edge') return state.edge === v;
-  if (k === 'tex') return state.texture === v;
+  if (id === 'tex:all') return state.texAll;
+  if (k === 'tex') return texOf(state.tool) === v;
   if (k === 'stroke') return state.line === (v === 'line');
   if (k === 'radial') return state.radial && state.radialN === +v;
   if (id === 'sym') return symOn();
@@ -1232,12 +1249,15 @@ function optionOn(id) {
 }
 
 // Opciones de la pincelada (null si no hay ninguna: el mensaje al espejo sigue siendo pequeño).
+// Cada herramienta guarda su textura: Inflar con rayas no le pone rayas a Añadir, salvo con «Textura en todas».
+const texOf = (tool) => (state.texAll ? state.texAllId : state.texBy[tool] || 'plain');
 function brushOpts(tool, rot, c) {
   const o = {};
   if (rot) { o.shape = state.shape; o.rot = c ? mul3(c.m, rot) : rot; if (state.shape === 'stamp') o.stamp = state.stamp; }
   if (state.edge !== 'even') o.edge = state.edge;
-  if (state.texture !== 'plain' && TEXTURED.has(tool)) {
-    o.texture = state.texture;
+  if (texOf(tool) !== 'plain' && TEXTURED.has(tool)) {
+    o.texture = texOf(tool);
+    o.sid = strokeSeq;
     if (c) { o.frame = c.m; o.shift = c.t; }
   }
   return Object.keys(o).length ? o : null;
@@ -1439,7 +1459,14 @@ function choose(id) {
       break;
     case 'floor': state.floor = !state.floor; break;
     case 'edge:soft': case 'edge:even': case 'edge:hard': state.edge = id.slice(5); break;
-    case 'tex:plain': case 'tex:rough': case 'tex:dots': case 'tex:stripes': case 'tex:scales': state.texture = id.slice(4); break;
+    case 'tex:plain': case 'tex:rough': case 'tex:dots': case 'tex:stripes': case 'tex:scales':
+      if (!TEXTURED.has(state.tool)) choose('inflate');
+      state.texBy[state.tool] = state.texAllId = id.slice(4);
+      break;
+    case 'tex:all':
+      state.texAllId = state.texBy[state.tool] || 'plain';
+      state.texAll = !state.texAll;
+      break;
     case 'stroke:free': state.line = false; break;
     case 'stroke:line': state.line = true; break;
     case 'wire':
@@ -2747,7 +2774,7 @@ async function startXR(mode) {
     const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor'] });
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
-    bg.ar = mode === 'immersive-ar';
+    bg.ar = bg.arSession = mode === 'immersive-ar';
     applyBg();
     model.position.set(0, 1.1, -0.6);
     model.quaternion.identity();
@@ -2758,7 +2785,7 @@ async function startXR(mode) {
     hud3d.visible = true;
     live.structure();
     session.addEventListener('end', () => {
-      bg.ar = false;
+      bg.ar = bg.arSession = false;
       applyBg();
       model.position.set(0, 0, 0);
       model.quaternion.identity();
@@ -2887,10 +2914,10 @@ function panelToHand(left) {
 panel3d.visible = false;
 // Las cuatro esquinas: tira de una con el mando derecho y el panel se queda donde lo sueltes.
 const panelGrips = [[-1, 1], [1, 1], [-1, -1], [1, -1]].map(([x, y]) => {
-  const g = new THREE.Mesh(new THREE.CircleGeometry(0.016, 20), new THREE.MeshBasicMaterial({ color: CERA.yellow, toneMapped: false }));
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.016, 0.02, 20), new THREE.MeshBasicMaterial({ color: CERA.ink, toneMapped: false }));
+  const g = new THREE.Mesh(new THREE.CircleGeometry(0.005, 16), new THREE.MeshBasicMaterial({ color: CERA.yellow, toneMapped: false }));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.005, 0.007, 16), new THREE.MeshBasicMaterial({ color: CERA.ink, toneMapped: false }));
   g.add(ring);
-  g.position.set((x * PANEL_W) / 2, (y * PANEL_H) / 2, 0.002);
+  g.position.set((x * PANEL_W) / 2 + x * 0.008, (y * PANEL_H) / 2 + y * 0.008, 0.002);
   panel3d.add(g);
   return g;
 });
@@ -3164,6 +3191,9 @@ function buildBrushPage() {
   row('FORMA', [...['sphere', 'cube', 'pyramid'].map((sh) => ['shape:' + sh, `${SHAPE_ICON[sh]}  ${label('shape:' + sh)}`]), ['shape:more', '+']]);
   row('BORDE', [['edge:soft', 'Suave'], ['edge:even', 'Normal'], ['edge:hard', 'Duro']]);
   row('TEXTURA', [['tex:plain', 'Liso'], ['tex:rough', 'Rugoso'], ['tex:dots', 'Puntos'], ['tex:stripes', 'Rayas'], ['tex:scales', 'Escamas']]);
+  y -= 16;
+  W.push({ type: 'button', x: M, y, w: IW, h: 44, size: 22, label: 'Textura en todas', active: () => optionOn('tex:all'), onClick: () => choose('tex:all') });
+  y += 74;
   row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
   W.push(panelBlock(yEnd + 8, 848, CERA.paper));
   y = yEnd + 52;
@@ -3198,10 +3228,11 @@ function buildBgPage() {
   const M = 32, IW = PW - 2 * M, bw = (IW - 10) / 2;
   W.push(panelBlock(8, 684, CERA.paper));
   pageHead(W, 'Fondo');
+  if (bg.arSession) W.push({ type: 'button', x: PW - 32 - 160 - 190, y: 24, w: 180, h: 56, size: 22, label: 'Ver la sala', active: () => bg.ar, onClick: () => setBg('room') });
   const list = (title, items, y) => {
     W.push({ type: 'label', x: M, y, head: true, size: 26, text: title });
     items.forEach(([id, name, c], i) => W.push({ type: 'button', x: M + (i % 2) * (bw + 10), y: y + 22 + Math.floor(i / 2) * 70, w: bw, h: 60, size: 26, plain: true,
-      group: 'bg', label: name, dot: c[0] === '#' ? c : undefined, active: () => bg.id === id, onClick: () => setBg(id) }));
+      group: 'bg', label: name, dot: c[0] === '#' ? c : undefined, active: () => bg.id === id && !bg.ar, onClick: () => setBg(id) }));
   };
   list('Color plano', BG_COLORS, 118);
   list('Luz de un lugar real', BG_HDRI, 312);
@@ -3494,15 +3525,18 @@ function xrFrame(dt) {
     if (xr.panelDrag) {
       if (trigDown) {
         tmpM.multiplyMatrices(right.matrixWorld, xr.panelDrag).decompose(panel3d.position, panel3d.quaternion, tmpS);
+        // Joystick adelante / atrás: más grande / más pequeño.
+        if (Math.abs(ay) > 0.2) panel3d.scale.setScalar(THREE.MathUtils.clamp(panel3d.scale.x * Math.exp(-ay * dt * 1.2), 0.4, 2.5));
         xr.trigPrev = true;
         return;
       }
       xr.panelDrag = null;
       drawPanel();
     }
-    const gripHit = panelRay.intersectObjects(panelGrips, false)[0];
-    const near = panelGrips.find((g) => tipW.distanceTo(g.getWorldPosition(vT0)) < 0.04);
-    panelGrips.forEach((g) => g.scale.setScalar(g === gripHit?.object || g === near ? 1.4 : 1));
+    // Las esquinas son pequeñas de ver, pero se cogen con holgura: con el rayo o acercando la punta.
+    const gripHit = panelGrips.find((g) => panelRay.ray.distanceToPoint(g.getWorldPosition(vT0)) < 0.012 * panel3d.scale.x);
+    const near = panelGrips.find((g) => tipW.distanceTo(g.getWorldPosition(vT0)) < 0.03);
+    panelGrips.forEach((g) => g.scale.setScalar(g === gripHit || g === near ? 1.6 : 1));
     if ((gripHit || near) && trigDown && !xr.trigPrev) {
       xr.panelPinned = true;
       scene.attach(panel3d);
@@ -3514,7 +3548,7 @@ function xrFrame(dt) {
     }
     if (gripHit) {
       ray.visible = true;
-      ray.scale.z = gripHit.distance;
+      ray.scale.z = panelRay.ray.origin.distanceTo(gripHit.getWorldPosition(vT0));
       xr.trigPrev = trigDown;
       return;
     }
@@ -3775,7 +3809,7 @@ const live = {
       t: 'p', head: tr(cam), hands,
       model: [...model.position.toArray(), ...model.quaternion.toArray(), model.scale.x],
       cursor: cursor.visible ? [...cursor.position.toArray(), state.radius, '#' + cursor.material.color.getHexString()] : null,
-      bg: scene.background === null ? 'ar' : 'vr',
+      bg: bg.ar ? 'ar' : 'vr',
     });
   },
 };
@@ -4465,5 +4499,5 @@ changeLang(getLang());
 exportUi();
 bgUi();
 setBg(bg.id);
-window.__miMedium = { brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

@@ -34,6 +34,19 @@ function noise3(x, y, z) {
   return l(l(l(c(0, 0, 0), c(1, 0, 0), u), l(c(0, 1, 0), c(1, 1, 0), u), v),
     l(l(c(0, 0, 1), c(1, 0, 1), u), l(c(0, 1, 1), c(1, 1, 1), u), v), w);
 }
+// Relieves: dibujos en plano para marcar la superficie que ya hay, vistos desde los tres ejes.
+export const RELIEFS = {
+  rough: (u, v) => (noise3(u, v, 0.37) * 0.65 + noise3(u * 2.3, v * 2.3, 0.71) * 0.35) * 2 - 1,
+  dots: (u, v) => {
+    const d = Math.hypot(u - Math.round(u), v - Math.round(v));
+    return d <= 0.2 ? 1 : d >= 0.38 ? -1 : 1 - 2 * ((d - 0.2) / 0.18);
+  },
+  stripes: (u, v) => Math.sin((u + v) * 0.7071 * Math.PI * 2),
+  scales: (u, v) => {
+    const q = (x, y) => (x - Math.round(x)) ** 2 + (y - Math.round(y)) ** 2;
+    return 1 - 2 * Math.min(1, Math.min(q(u, v), q(u + 0.5, v + 0.5)) / 0.25);
+  },
+};
 export const TEXTURES = {
   rough: (x, y, z) => (noise3(x, y, z) * 0.65 + noise3(x * 2.3, y * 2.3, z * 2.3) * 0.35) * 2 - 1,
   dots: (x, y, z) => {
@@ -102,6 +115,7 @@ export class SDFGrid {
   // Añade S muestras (múltiplo de 8) por cada lado sin tocar lo que hay. Devuelve cómo se traduce
   // el número de un bloque antiguo al nuevo (para el historial de deshacer).
   grow(S) {
+    this.relief = null;
     const k = S / B, onb = this.nb, { bricks, colors, fill } = this;
     this.n += 2 * S;
     this.o -= S * this.h;
@@ -400,6 +414,8 @@ export class SDFGrid {
   // desplazamiento de la copia de simetría, para que la textura salga reflejada igual que la forma).
   // Con shape 'stamp', opts.stampEval(x, y, z, out) da la distancia y el color del sello (en unidades de r).
   // 'pinch' junta el barro hacia la línea del trazo; 'crease' además hunde un surco.
+  // 'inflate' con textura marca la superficie que hay, sin crear barro: el relieve no se acumula
+  // dentro de un mismo trazo (opts.sid lo identifica) aunque pases varias veces.
   applyBrush(tool, a, b, r, strength, invert, dt, undo, paint, opts) {
     const { n, h, o, band, nb, bricks, colors, fill } = this;
     const shape = (tool === 'add' || tool === 'remove') && opts?.shape && opts.shape !== 'sphere' ? opts.shape : null;
@@ -425,6 +441,29 @@ export class SDFGrid {
     }
     let op = tool;
     if (invert) op = { add: 'remove', remove: 'add', inflate: 'deflate' }[tool] || tool;
+    const relief = (op === 'inflate' || op === 'deflate') && RELIEFS[opts?.texture];
+    const reliefSign = op === 'deflate' ? -1 : 1, reliefP = Math.max(r * 0.5, 10 * h), reliefH = Math.min(reliefP * 0.12, band * 0.5), reliefS = Math.min(1, strength * 1.4);
+    if (relief) {
+      op = 'relief';
+      if (this.relief?.id !== opts.sid) this.relief = { id: opts.sid, map: new Map() };
+    }
+    const reliefAt = (px, py, pz, nx, ny, nz) => {
+      let x = px, y = py, z = pz, ax = nx, ay = ny, az = nz;
+      if (F) {
+        const qx = px - T[0], qy = py - T[1], qz = pz - T[2];
+        x = qx * F[0] + qy * F[1] + qz * F[2]; y = qx * F[3] + qy * F[4] + qz * F[5]; z = qx * F[6] + qy * F[7] + qz * F[8];
+        ax = nx * F[0] + ny * F[1] + nz * F[2]; ay = nx * F[3] + ny * F[4] + nz * F[5]; az = nx * F[6] + ny * F[7] + nz * F[8];
+      }
+      ax *= ax; ay *= ay; az *= az;
+      ax *= ax; ay *= ay; az *= az;
+      const sum = ax + ay + az;
+      if (!(sum > 0)) return 0;
+      let v = 0;
+      if (ax > sum * 0.02) v += ax * relief(y / reliefP, z / reliefP);
+      if (ay > sum * 0.02) v += ay * relief(x / reliefP, z / reliefP);
+      if (az > sum * 0.02) v += az * relief(x / reliefP, y / reliefP);
+      return v / sum;
+    };
     const k = strength * Math.min(dt * 60, 3);
     const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
     const ab2 = abx * abx + aby * aby + abz * abz;
@@ -464,7 +503,7 @@ export class SDFGrid {
     let src = null;
     const sx = hi[0] - lo[0] + 1, sy = hi[1] - lo[1] + 1, sz = hi[2] - lo[2] + 1;
     let srcC = null;
-    if (op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab' || op === 'pinch' || op === 'crease') {
+    if (op === 'relief' || op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab' || op === 'pinch' || op === 'crease') {
       src = new Float32Array(sx * sy * sz);
       if (op === 'grab') srcC = new Uint8Array(sx * sy * sz * 4);
       this.copyRegion(lo[0], lo[1], lo[2], sx, sy, sz, src, srcC);
@@ -492,7 +531,7 @@ export class SDFGrid {
           const bi = bx + nb * (by + nb * bz);
           if (!bricks[bi]) {
             // Saltar bloques vacíos que la herramienta no puede cambiar.
-            if (op === 'paint') continue;
+            if (op === 'paint' || op === 'relief') continue;
             const cx = o + (bx * B + 3.5) * h, cy = o + (by * B + 3.5) * h, cz = o + (bz * B + 3.5) * h;
             const rb = B * 0.87 * h;
             if (op === 'grab') {
@@ -510,6 +549,11 @@ export class SDFGrid {
           let bk = bricks[bi];
           if (!bk) bk = bricks[bi] = new Float32Array(B3).fill(fill[bi] * band);
           let cb = colors[bi];
+          let start = null;
+          if (op === 'relief') {
+            start = this.relief.map.get(bi);
+            if (!start) this.relief.map.set(bi, start = { d: bk.slice(), w: new Float32Array(B3), v: new Float32Array(B3).fill(NaN) });
+          }
           touched.push(bi);
           const x0 = Math.max(lo[0], bx * B), x1 = Math.min(hi[0], bx * B + 7);
           const y0 = Math.max(lo[1], by * B), y1 = Math.min(hi[1], by * B + 7);
@@ -547,8 +591,7 @@ export class SDFGrid {
                   }
                   case 'inflate': case 'deflate': {
                     // Empuja la superficie hacia fuera (o dentro) y la relaja un poco: queda redonda.
-                    let wp = puff(dist / r);
-                    if (tex && wp > 0) wp *= 0.5 + 0.5 * texAt(px, py, pz);
+                    const wp = puff(dist / r);
                     if (wp > 0) {
                       const X = x - lo[0], Y = y - lo[1], Z = z - lo[2];
                       const j = X + sx * (Y + sy * Z);
@@ -557,6 +600,22 @@ export class SDFGrid {
                         (Y > 0 ? src[j - sx] : s0) + (Y < sy - 1 ? src[j + sx] : s0) +
                         (Z > 0 ? src[j - sx * sy] : s0) + (Z < sz - 1 ? src[j + sx * sy] : s0)) / 6;
                       d += (op === 'inflate' ? -1 : 1) * wp * k * h * 0.35 + (avg - d) * Math.min(1, wp * k * 0.12);
+                    }
+                    break;
+                  }
+                  case 'relief': {
+                    const was = start.d[li], wr = Math.max(start.w[li], puff(dist / r) * reliefS);
+                    start.w[li] = wr;
+                    if (wr > 0) {
+                      // El dibujo se decide la primera vez que pasas por cada punto.
+                      if (Number.isNaN(start.v[li])) {
+                        const X = x - lo[0], Y = y - lo[1], Z = z - lo[2], j = X + sx * (Y + sy * Z);
+                        const gx = src[X < sx - 1 ? j + 1 : j] - src[X > 0 ? j - 1 : j];
+                        const gy = src[Y < sy - 1 ? j + sx : j] - src[Y > 0 ? j - sx : j];
+                        const gz = src[Z < sz - 1 ? j + sx * sy : j] - src[Z > 0 ? j - sx * sy : j];
+                        start.v[li] = reliefAt(px, py, pz, gx, gy, gz);
+                      }
+                      d = was - reliefSign * reliefH * wr * start.v[li];
                     }
                     break;
                   }

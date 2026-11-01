@@ -84,6 +84,7 @@ const D = {
   '{0} · {1} capa(s) · {2} quads': ['{0} · {1} layer(s) · {2} quads', '{0} · {1} เลเยอร์ · {2} ควอด'], ' · con texturas': [' · with textures', ' · มีเท็กซ์เจอร์'],
   '. Este navegador no deja compartir este archivo: descárgalo y adjúntalo desde WhatsApp.': ['. This browser cannot share this file: download it and attach it from WhatsApp.', '. เบราว์เซอร์นี้แชร์ไฟล์ไม่ได้: ดาวน์โหลดแล้วแนบจาก WhatsApp'],
   'Descargado en la carpeta Descargas': ['Downloaded to the Downloads folder', 'ดาวน์โหลดไว้ในโฟลเดอร์ Downloads แล้ว'],
+  'Textura en todas': ['Texture on all tools', 'ใช้ลายกับทุกเครื่องมือ'], 'Ver la sala': ['Show the room', 'ดูห้องจริง'],
   'Técnico': ['Technical', 'เทคนิค'], 'Color y capas': ['Color & layers', 'สีและเลเยอร์'], 'Obra': ['Work', 'ผลงาน'], 'Fijar': ['Pin', 'ตรึง'], 'A la mano': ['To hand', 'กลับมาที่มือ'],
   'Tira de una esquina amarilla con el mando derecho para dejar el panel donde quieras.': ['Pull a yellow corner with the right controller to leave the panel wherever you like.', 'ดึงมุมสีเหลืองด้วยคอนโทรลเลอร์ขวาเพื่อวางแผงไว้ตรงไหนก็ได้'],
   'Color cogido: {0}': ['Color picked: {0}', 'เลือกสีแล้ว: {0}'], 'No se pudo entrar en las gafas: {0}': ["Couldn't enter the headset: {0}", 'เข้าสู่แว่นไม่ได้: {0}'],
