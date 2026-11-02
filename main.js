@@ -6,7 +6,7 @@ import { meshRegion, mergeChunks, quadsToTris, quadsToLines, toOBJ, parseOBJ, sr
 import { RadialMenu, LABELS, TOOL_COLORS, SHAPE_ICON } from './radial.js';
 import { toFBX } from './fbx.js';
 import { createControllerRig, Flower, surfaceNets, wheelColor, wheelSpot } from './flor.js';
-import { CanvasPanel, CERA } from './panel.js';
+import { CanvasPanel, CERA, kanit, mali } from './panel.js';
 import { parseModel, refType, REF_TYPES } from './referencia.js';
 import { STAMPS, addOwnStamp, removeOwnStamp, stampFromGrid, stampThumb } from './sellos.js';
 import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.js';
@@ -17,6 +17,7 @@ import { t, getLang, setLang, translateDOM } from './i18n.js';
 import { sfx, PENTATONIC } from './sonidos.js';
 import { OPCIONES } from './anadir.js';
 import { Receptor } from './llamada.js';
+import { looksBlack, findSheet, flattenSheet } from './hoja.js';
 import { Tutorial } from './tutorial.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
@@ -42,7 +43,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 sfx.muted = SPECTATOR;
 
 const state = {
-  tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
+  tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sens: true, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texBy: {}, texAll: false, texAllId: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
@@ -1048,6 +1049,7 @@ const activeTool = () => (state.smoothHold ? 'smooth' : state.tool);
 let strokeRec = null;
 let strokePrev = null;
 let strokeFx = null; // cómo va sonando la pincelada
+let strokeRadius = null, strokeInk = null; // grosor y presión suavizada del trazo con sensibilidad
 let tut = null;
 
 // Una capa con remesh se queda tal cual: para volver a esculpirla hay que convertirla a propósito.
@@ -1070,6 +1072,8 @@ function toVoxel(L = active) {
 function beginStroke() {
   if (anim.playing) setPlaying(false);
   strokeFx = null;
+  strokeRadius = null;
+  strokeInk = null;
   if (remeshLocked()) return;
   latheDepth = null;
   strokeRec = pushStroke(active);
@@ -1285,6 +1289,7 @@ function optionOn(id) {
   if (id === 'sym:z') return state.symZ;
   if (id === 'sym:radial') return state.radial;
   if (id === 'sym:lathe') return state.lathe;
+  if (id === 'stroke:sens') return state.sens;
   if (id === 'shape:more') return state.shape === 'stamp';
   if (k === 'stamp') return state.shape === 'stamp' && state.stamp === id;
   if (k === 'shape') return state.shape === v;
@@ -1370,15 +1375,32 @@ function commitLine() {
 }
 
 // Un tramo del pincel, en el original y en todas sus copias de simetría.
+// Con la sensibilidad, Añadir engorda según aprietas el gatillo, como un pincel de verdad.
+// La presión llega de 0,3 (gatillo apenas tocado) a 1 (a fondo); el ratón siempre va a fondo.
+const INK_THIN = 0.12;
+function brushRadius(tool, pressure) {
+  if (tool !== 'add' || !state.sens || (shapeActive() && state.shape === 'stamp')) return state.radius;
+  const k = THREE.MathUtils.clamp((pressure - 0.3) / 0.7, 0, 1);
+  return state.radius * (INK_THIN + (1 - INK_THIN) * k ** 1.3);
+}
 function brushStep(tool, a, p, dt, pressure) {
   const s = state.strength * pressure;
   const paint = { rgb: hexToRgb(state.color), base: active.base };
   const usePaint = tool === 'paint' || tool === 'add' ? paint : null;
   const rot = (tool === 'add' || tool === 'remove') && state.shape !== 'sphere' ? brushRot() : null;
   if (state.edge === 'soft' && (tool === 'add' || tool === 'remove') && !(rot && state.shape === 'stamp')) (meltPath ||= [[a[0], a[1], a[2]]]).push([p[0], p[1], p[2]]);
-  forCopies(a, p, (qa, qb, c) => {
-    brushCall(active, tool, qa, qb, state.radius, s, state.invert, dt, usePaint, brushOpts(tool, rot, c));
-  });
+  const r1 = brushRadius(tool, pressure), r0 = strokeRadius ?? r1;
+  strokeRadius = r1;
+  // Si el grosor cambia de golpe se reparte por el tramo: la línea crece suave, sin escalones.
+  const n = Math.min(12, Math.ceil(Math.abs(r1 - r0) / (0.15 * Math.min(r0, r1))) || 1);
+  for (let i = 1; i <= n; i++) {
+    const u0 = (i - 1) / n, u1 = i / n, r = r0 + (r1 - r0) * u1;
+    const q0 = [a[0] + (p[0] - a[0]) * u0, a[1] + (p[1] - a[1]) * u0, a[2] + (p[2] - a[2]) * u0];
+    const q1 = [a[0] + (p[0] - a[0]) * u1, a[1] + (p[1] - a[1]) * u1, a[2] + (p[2] - a[2]) * u1];
+    forCopies(q0, q1, (qa, qb, c) => {
+      brushCall(active, tool, qa, qb, r, s, state.invert, dt, usePaint, brushOpts(tool, rot, c));
+    });
+  }
 }
 
 // El barro suena solo cuando lo tocas de verdad; un pincel grande suena más grave que uno fino.
@@ -1404,6 +1426,7 @@ function applyAt(p, dt, pressure = 1) {
   p = toSpin(p);
   const tool = activeTool();
   strokeFeel(p, tool, dt, pressure);
+  if (tool === 'add' && state.sens) pressure = strokeInk = strokeInk === null ? pressure : strokeInk + (pressure - strokeInk) * Math.min(1, dt * 25);
   const a = strokePrev || p;
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
   const moved = Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
@@ -1414,7 +1437,9 @@ function applyAt(p, dt, pressure = 1) {
     return;
   }
   if (state.line && tool !== 'grab' && !state.lathe) return trackLine(p, pressure, lineStroke?.tool || tool);
-  if (strokePrev && moved < state.radius * 0.05 && (tool === 'add' || tool === 'remove')) return;
+  // Con la mano quieta, apretar más sí engorda.
+  const grows = tool === 'add' && strokeRadius !== null && brushRadius(tool, pressure) > strokeRadius * 1.04;
+  if (strokePrev && !grows && moved < brushRadius(tool, pressure) * 0.05 && (tool === 'add' || tool === 'remove')) return;
   if (tool === 'grab') {
     // Arrastrar: lleva el barro con la mano en pasos pequeños (elástico, sin romperse).
     if (!strokePrev) { strokePrev = [p[0], p[1], p[2]]; return; }
@@ -1517,6 +1542,10 @@ function choose(id) {
       state.radial = true;
       state.sym = state.symZ = false;
       rebuildSym();
+      break;
+    case 'stroke:sens':
+      state.sens = !state.sens;
+      toast(state.sens ? 'Añadir engorda según aprietas el gatillo' : 'Añadir siempre del mismo grosor');
       break;
     case 'sym:lathe':
       state.lathe = !state.lathe;
@@ -1724,38 +1753,121 @@ function refUi() {
 // Sacar foto: la cámara del dispositivo, con una cuenta atrás de 3 s para encuadrar. La foto queda
 // en la lista de referencias, delante de ti. Si el navegador no da la cámara, se dice claro.
 let photoBusy = false;
+// Lo que ve la cámara en este momento, o null si llega en negro: pasa con la cámara de las gafas.
+async function photoFrame(video, track) {
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  if (!looksBlack(c)) return c;
+  if (!window.ImageCapture || track?.readyState !== 'live') return null;
+  try {
+    const bmp = await new ImageCapture(track).grabFrame();
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    bmp.close();
+    return looksBlack(c) ? null : c;
+  } catch { return null; }
+}
+const PHOTO_WAIT = 5;
 async function takeRefPhoto() {
   if (photoBusy) return;
   if (!navigator.mediaDevices?.getUserMedia) return toast('Este navegador no deja usar la cámara', 6000);
   photoBusy = true;
-  let stream = null, view = null, tex = null;
+  let stream = null, view = null, tex = null, over = null, timer = 0;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
     const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true, playsInline: true });
     await video.play();
-    // Lo que ve la cámara, a la derecha del panel (donde la rueda de color).
+    const track = stream.getVideoTracks()[0];
+    for (let i = 0; i < 40 && !video.videoWidth; i++) await new Promise((r) => setTimeout(r, 100));
+    // Lo que ve la cámara, flotando delante de ti: la pantalla no molesta a la cámara, se ve la hoja a través de ella.
+    const aspect = (video.videoHeight || 3) / (video.videoWidth || 4), W = 0.36, H = W * aspect;
     tex = new THREE.VideoTexture(video);
     tex.colorSpace = THREE.SRGBColorSpace;
-    view = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.28 * (video.videoHeight / (video.videoWidth || 1))), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
-    view.position.set(0.12 + 0.14 + 0.012, 0.1, 0.002);
-    wheelPanel.visible = false;
-    panel3d.add(view);
-    for (let n = 3; n > 0; n--) {
-      toast(t('Foto en {0}…', n), 1000);
+    view = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    const cam = () => (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
+    const head0 = cam().getWorldPosition(new THREE.Vector3()), dir0 = cam().getWorldDirection(new THREE.Vector3());
+    view.position.copy(head0).addScaledVector(dir0, 0.6);
+    view.lookAt(head0);
+    // Encima, el marco de la hoja y la cuenta atrás.
+    const oc = document.createElement('canvas');
+    oc.width = 640;
+    oc.height = Math.round(640 * aspect);
+    const og = oc.getContext('2d');
+    over = new THREE.CanvasTexture(oc);
+    over.colorSpace = THREE.SRGBColorSpace;
+    const overMesh = new THREE.Mesh(view.geometry, new THREE.MeshBasicMaterial({ map: over, transparent: true, toneMapped: false, depthWrite: false }));
+    overMesh.position.z = 0.002;
+    view.add(overMesh);
+    scene.add(view);
+    let sheet = null, sheetAt = 0, count = PHOTO_WAIT, dark = false;
+    const paint = () => {
+      og.clearRect(0, 0, oc.width, oc.height);
+      const k = oc.width / (video.videoWidth || 1);
+      if (sheet) {
+        og.strokeStyle = '#FFD21F';
+        og.lineWidth = 8;
+        og.beginPath();
+        sheet.forEach((p, i) => (i ? og.lineTo(p[0] * k, p[1] * k) : og.moveTo(p[0] * k, p[1] * k)));
+        og.closePath();
+        og.stroke();
+      }
+      og.textAlign = 'center';
+      og.textBaseline = 'middle';
+      og.fillStyle = '#141210';
+      og.fillRect(oc.width / 2 - 60, 12, 120, 96);
+      og.fillStyle = '#FFD21F';
+      og.font = kanit(72);
+      og.fillText(String(count), oc.width / 2, 62);
+      const say = dark ? t('La cámara no da imagen') : sheet ? t('Hoja encontrada') : t('Pon la hoja delante, sobre fondo oscuro');
+      og.font = mali(28);
+      const tw = og.measureText(say).width + 28;
+      og.fillStyle = '#141210';
+      og.fillRect((oc.width - tw) / 2, oc.height - 58, tw, 46);
+      og.fillStyle = '#FFF8E3';
+      og.fillText(say, oc.width / 2, oc.height - 35);
+      over.needsUpdate = true;
+    };
+    const look = async () => {
+      if (!video.videoWidth) return;
+      const f = await photoFrame(video, track);
+      dark = !f;
+      const found = f && findSheet(f);
+      if (found) { sheet = found; sheetAt = performance.now(); }
+      else if (performance.now() - sheetAt > 900) sheet = null;
+      paint();
+    };
+    paint();
+    timer = setInterval(look, 350);
+    for (; count > 0; count--) {
+      paint();
+      sfx.play('tick', { semi: count === 1 ? 7 : 0 });
       await new Promise((r) => setTimeout(r, 1000));
     }
-    const c = document.createElement('canvas');
-    c.width = video.videoWidth;
-    c.height = video.videoHeight;
-    c.getContext('2d').drawImage(video, 0, 0);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.88));
+    clearInterval(timer);
+    timer = 0;
+    // Si la foto llega en negro se insiste un poco antes de rendirse.
+    let frame = null;
+    for (let i = 0; i < 12 && !frame; i++) {
+      frame = await photoFrame(video, track);
+      if (!frame) await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!frame) {
+      toast(renderer.xr.isPresenting ? 'La cámara da negro dentro de VR: sal de VR y saca la foto desde ahí' : 'La cámara da negro: revisa el permiso de la cámara', 8000);
+      throw null;
+    }
+    const corners = findSheet(frame) || (performance.now() - sheetAt < 1200 ? sheet : null);
+    const out = corners ? flattenSheet(frame, corners) : frame;
+    sfx.play('thock');
+    const blob = await new Promise((r) => out.toBlob(r, 'image/jpeg', 0.9));
     const buf = await blob.arrayBuffer();
     const name = 'foto-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.jpg';
     await addRefToList(name, buf);
     if (server.ok) fetch(API + '/api/ref?name=' + encodeURIComponent(name), { method: 'POST', body: buf }).catch(() => {});
     // Delante de ti, de cara a ti.
-    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
-    const head = cam.getWorldPosition(new THREE.Vector3()), dir = cam.getWorldDirection(new THREE.Vector3());
+    const head = cam().getWorldPosition(new THREE.Vector3()), dir = cam().getWorldDirection(new THREE.Vector3());
     const at = head.clone().addScaledVector(dir, 0.5);
     const face = new THREE.Object3D();
     face.position.copy(at);
@@ -1764,14 +1876,23 @@ async function takeRefPhoto() {
     const q = model.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(face.quaternion);
     await showRef(name, { pos: model.worldToLocal(at).toArray(), q: q.toArray(), size: 1, opacity: 0, shown: true });
     ctrlBuzz();
-    toast('Foto lista: coge la bola azul para colocarla', 5000);
+    toast(corners ? 'Foto lista: coge la bola azul para colocarla' : 'No vi la hoja, va la foto entera. Coge la bola azul para colocarla', 5000);
   } catch (e) {
-    console.warn('Cámara', e);
-    toast('No puedo usar la cámara aquí: sal de VR, pulsa Sacar foto y acepta el permiso', 7000);
+    if (e) {
+      console.warn('Cámara', e);
+      toast('No puedo usar la cámara aquí: sal de VR, pulsa Sacar foto y acepta el permiso', 7000);
+    }
   }
+  clearInterval(timer);
   stream?.getTracks().forEach((tr) => tr.stop());
-  if (view) { panel3d.remove(view); view.geometry.dispose(); view.material.dispose(); }
+  if (view) {
+    scene.remove(view);
+    view.geometry.dispose();
+    view.material.dispose();
+    view.children[0].material.dispose();
+  }
   tex?.dispose();
+  over?.dispose();
   photoBusy = false;
 }
 const ctrlBuzz = () => ctrls.forEach((c) => c.userData.src?.gamepad?.hapticActuators?.[0]?.pulse?.(0.7, 60));
@@ -3345,7 +3466,7 @@ function buildBrushPage() {
   y -= 16;
   W.push({ type: 'button', x: M, y, w: IW, h: 44, size: 22, label: 'Textura en todas', active: () => optionOn('tex:all'), onClick: () => choose('tex:all') });
   y += 74;
-  row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
+  row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto'], ['stroke:sens', 'Sensible']]);
   W.push(panelBlock(yEnd + 8, 848, CERA.paper));
   y = yEnd + 52;
   row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial'], ['sym:reset', 'Centrar']]);
@@ -3876,6 +3997,7 @@ function xrFrame(dt) {
     const q = stabilize(tipL);
     cursor.position.fromArray(q);
     applyAt(q, dt, 0.3 + 0.7 * trig);
+    if (strokeRadius !== null) cursor.scale.setScalar(strokeRadius);
     gpR.hapticActuators?.[0]?.pulse?.(0.05 * trig, 16);
   } else {
     if (xr.stroking) endStroke();
