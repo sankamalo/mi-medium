@@ -43,15 +43,22 @@ export class CanvasPanel {
     const prevHover = this.hover;
     this.hover = px === null ? -1 : this.hit(px, py);
     let changed = prevHover !== this.hover;
+    if (changed && this.hover >= 0) this.onFeel?.('hover', this.widgets[this.hover]);
     if (down && !this.wasDown && this.hover >= 0) {
       const w = this.widgets[this.hover];
+      this.onFeel?.('press', w);
       if (w.type === 'slider') this.drag = w;
       else w.onClick?.();
       changed = true;
     }
     if (this.drag && px !== null) {
       const d = this.drag;
-      d.set(Math.max(0, Math.min(1, (px - d.x) / d.w)));
+      const v = Math.max(0, Math.min(1, (px - d.x) / d.w));
+      d.set(v);
+      // Las muescas del deslizador, como una ruedecita.
+      const notch = Math.round(v * 24);
+      if (notch !== this.notch) this.onFeel?.('step', d, v);
+      this.notch = notch;
       changed = true;
     }
     if (!down) this.drag = null;
@@ -178,9 +185,9 @@ export class CanvasPanel {
 }
 
 const FALLBACK = '"Noto Sans Thai", system-ui, sans-serif';
-const kanit = (s) => `500 ${s}px Kanit, ${FALLBACK}`;
+export const kanit = (s) => `500 ${s}px Kanit, ${FALLBACK}`;
 const kanitHead = (s) => `600 ${s}px Kanit, ${FALLBACK}`;
-const mali = (s) => `700 ${s}px Mali, ${FALLBACK}`;
+export const mali = (s) => `700 ${s}px Mali, ${FALLBACK}`;
 
 // La letra más grande (hasta size) con la que el texto cabe en room.
 function fitSize(g, font, str, size, room) {
@@ -190,7 +197,7 @@ function fitSize(g, font, str, size, room) {
 }
 
 // Corta en líneas por los espacios. El tailandés apenas lleva espacios: si una palabra no cabe, encoge.
-function wrapLines(g, font, str, size, room) {
+export function wrapLines(g, font, str, size, room) {
   const words = str.split(' ');
   const widest = words.reduce((b, x) => Math.max(b, (g.font = font(size), g.measureText(x).width)), 0);
   const fit = widest > room ? Math.max(12, Math.floor((size * room) / widest)) : size;

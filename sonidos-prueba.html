@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sonidos de La Plastilina</title>
+<style>
+  :root { --ink: #141210; --paper: #FFF8E3; --red: #E3242B; --blue: #1B4FD8; --yellow: #FFD21F; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--paper); color: var(--ink); font: 500 16px system-ui, sans-serif; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  h2 { margin: 24px 0 8px; font-size: 18px; }
+  p { margin: 0 0 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  button { min-height: 56px; padding: 6px; border: 3px solid var(--ink); background: #fff; color: var(--ink); font: 600 15px system-ui, sans-serif; box-shadow: 3px 3px 0 var(--ink); touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+  button:active, button.on { background: var(--yellow); transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+  .tools button { background: #dfe7ff; touch-action: none; }
+  label { display: block; margin-top: 8px; }
+  input { width: 100%; }
+</style>
+</head>
+<body>
+  <h1>Sonidos de La Plastilina</h1>
+  <p>Pulsa varias veces el mismo: nunca debe sonar igual dos veces.</p>
+  <label>Volumen <input id="vol" type="range" min="0" max="1" step="0.05" /></label>
+
+  <h2>Mantén pulsado para esculpir</h2>
+  <p>Mantén un botón y mueve el dedo o el ratón: más rápido, más granos.</p>
+  <div class="grid tools" id="tools"></div>
+
+  <h2>Botones y menús</h2>
+  <div class="grid" id="ui"></div>
+
+  <h2>Premios</h2>
+  <div class="grid" id="win"></div>
+
+<script type="module">
+  import { sfx, TOOLS } from './sonidos.js';
+  const $ = (id) => document.getElementById(id);
+  const NAMES = {
+    tick: 'Apuntar', dial: 'Ruedecita', clic: 'Botón', thock: 'Elegir', pop: 'Burbuja', popDown: 'Deshacer', popUp: 'Rehacer', dup: 'Duplicar',
+    plip: 'Color', open: 'Abrir', close: 'Cerrar', press: 'Apretar', release: 'Soltar', grab: 'Coger', drop: 'Dejar', poof: 'Borrar capa',
+  };
+  const TOOL_NAMES = { add: 'Añadir', inflate: 'Inflar', remove: 'Quitar / cúter', crease: 'Hendidura', paint: 'Pintar', smooth: 'Suavizar', flatten: 'Aplanar', grab: 'Arrastrar', pinch: 'Pellizcar' };
+  const button = (box, text, fn) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.addEventListener('pointerdown', fn);
+    $(box).appendChild(b);
+    return b;
+  };
+  for (const [id, name] of Object.entries(NAMES)) button('ui', name, () => sfx.play(id));
+  button('win', 'Paso hecho', () => sfx.step(Math.floor(Math.random() * 8)));
+  button('win', 'Guardar', () => sfx.saved());
+  button('win', 'Tomate terminado', () => sfx.party());
+
+  let held = null;
+  for (const tool of TOOLS) {
+    const b = button('tools', TOOL_NAMES[tool] || tool, (e) => {
+      sfx.unlock();
+      sfx.play('press');
+      held = { tool, b, x: e.clientX, y: e.clientY, speed: 0, last: performance.now() };
+      b.classList.add('on');
+      requestAnimationFrame(frame);
+    });
+  }
+  addEventListener('pointermove', (e) => {
+    if (!held) return;
+    held.dist = (held.dist || 0) + Math.hypot(e.clientX - held.x, e.clientY - held.y);
+    held.x = e.clientX;
+    held.y = e.clientY;
+  });
+  addEventListener('pointerup', () => {
+    if (!held) return;
+    held.b.classList.remove('on');
+    held = null;
+    sfx.play('release');
+  });
+  function frame(now) {
+    if (!held) return;
+    const dt = Math.min(0.05, (now - held.last) / 1000);
+    held.last = now;
+    const v = (held.dist || 0) / Math.max(dt, 0.001) / 1200; // 1200 píxeles por segundo = mano rápida
+    held.dist = 0;
+    held.speed += (v - held.speed) * Math.min(1, dt * 12);
+    sfx.stroke(held.tool, held.speed, 0.8, dt, true);
+    requestAnimationFrame(frame);
+  }
+  $('vol').value = sfx.volume;
+  $('vol').addEventListener('input', () => sfx.setVolume(+$('vol').value));
+</script>
+</body>
+</html>

@@ -8,6 +8,26 @@ try { const s = localStorage.getItem('plastilinaLang'); if (LANGS.includes(s)) l
 
 // español: [inglés, tailandés]
 const D = {
+  // Tutorial y sonidos
+  '▶ Jugar tutorial': ['▶ Play tutorial', '▶ เล่นบทเรียน'], 'Saltar paso': ['Skip step', 'ข้ามขั้นนี้'], 'Salir del tutorial': ['Exit tutorial', 'ออกจากบทเรียน'],
+  'Sonidos': ['Sounds', 'เสียง'], 'TU PRIMER TOMATE': ['YOUR FIRST TOMATO', 'มะเขือเทศลูกแรกของคุณ'],
+  '¡Tomate terminado! Ya sabes jugar.': ['Tomato done! Now you know how to play.', 'มะเขือเทศเสร็จแล้ว! ตอนนี้คุณเล่นเป็นแล้ว'],
+  'Mantén el gatillo y pasa la punta por la bola para añadirle barro.': ['Hold the trigger and run the tip over the ball to add clay.', 'กดไกค้างไว้ แล้วลากปลายผ่านลูกบอลเพื่อเติมดิน'],
+  'Mantén el clic izquierdo y pasa por la bola para añadirle barro.': ['Hold left click and move over the ball to add clay.', 'กดคลิกซ้ายค้างไว้ แล้วลากผ่านลูกบอลเพื่อเติมดิน'],
+  'Clic en el stick derecho: se abre la flor. Deja la punta sobre Inflar.': ['Click the right stick to open the flower. Rest the tip on Inflate.', 'คลิกสติกขวาเพื่อเปิดดอกไม้ แล้ววางปลายไว้ที่ พอง'],
+  'Clic derecho: se abre el dial de herramientas. Elige Inflar.': ['Right click opens the tool dial. Choose Inflate.', 'คลิกขวาเพื่อเปิดวงล้อเครื่องมือ แล้วเลือก พอง'],
+  'Aprieta el gatillo sobre la bola y hazla gorda como un tomate.': ['Squeeze the trigger on the ball and make it fat like a tomato.', 'กดไกบนลูกบอลให้พองอ้วนเหมือนมะเขือเทศ'],
+  'Mantén el clic sobre la bola y hazla gorda como un tomate.': ['Hold click on the ball and make it fat like a tomato.', 'กดคลิกค้างบนลูกบอลให้พองอ้วนเหมือนมะเขือเทศ'],
+  'Abre la flor otra vez y deja la punta sobre Pintar.': ['Open the flower again and rest the tip on Paint.', 'เปิดดอกไม้อีกครั้ง แล้ววางปลายไว้ที่ ระบายสี'],
+  'Abre el dial otra vez y elige Pintar.': ['Open the dial again and choose Paint.', 'เปิดวงล้ออีกครั้ง แล้วเลือก ระบายสี'],
+  'Píntalo de rojo con el gatillo.': ['Paint it red with the trigger.', 'ใช้ไกระบายให้เป็นสีแดง'],
+  'Píntalo de rojo pasando por encima.': ['Paint it red by moving over it.', 'ลากผ่านเพื่อระบายให้เป็นสีแดง'],
+  '¿Te has pasado? Pulsa Y en el mando izquierdo para deshacer.': ['Went too far? Press Y on the left controller to undo.', 'ทำเกินไปไหม? กด Y ที่คอนโทรลเลอร์ซ้ายเพื่อย้อนกลับ'],
+  '¿Te has pasado? Pulsa Cmd+Z para deshacer.': ['Went too far? Press Cmd+Z to undo.', 'ทำเกินไปไหม? กด Cmd+Z เพื่อย้อนกลับ'],
+  'Empuja el stick izquierdo a la derecha y lo recuperas.': ['Push the left stick right to get it back.', 'ดันสติกซ้ายไปทางขวาเพื่อเอากลับมา'],
+  'Pulsa Cmd+Mayús+Z y lo recuperas.': ['Press Cmd+Shift+Z to get it back.', 'กด Cmd+Shift+Z เพื่อเอากลับมา'],
+  'Mantén un botón lateral del mando: mueve y gira tu tomate.': ['Hold a side button on the controller: move and turn your tomato.', 'กดปุ่มข้างคอนโทรลเลอร์ค้างไว้ เพื่อขยับและหมุนมะเขือเทศ'],
+  'Arrastra fuera del tomate para darle la vuelta.': ['Drag outside the tomato to turn it around.', 'ลากด้านนอกมะเขือเทศเพื่อหมุน'],
   // Herramientas
   'Material': ['Material', 'วัสดุ'], 'Material ▸': ['Material ▸', 'วัสดุ ▸'], 'Rugosidad': ['Roughness', 'ความหยาบ'], 'Translucidez': ['Translucency', 'ความโปร่งแสง'], 'Brillo': ['Shine', 'ความเงา'],
   'Traer aquí': ['Bring here', 'นำมาที่นี่'], 'Volver a la plastilina normal': ['Back to normal clay', 'กลับเป็นดินน้ำมันปกติ'],

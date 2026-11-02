@@ -13,7 +13,9 @@ import { Live, fetchBlob, pack, unpack, API, server, checkServer } from './live.
 import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
-import { t, getLang, setLang } from './i18n.js';
+import { t, getLang, setLang, translateDOM } from './i18n.js';
+import { sfx, PENTATONIC } from './sonidos.js';
+import { Tutorial } from './tutorial.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const DEFAULT_RES = 320;
@@ -35,6 +37,7 @@ const PALETTE = [
 const params = new URLSearchParams(location.search);
 const SPECTATOR = params.has('ver');      // Mac: espejo para grabar
 const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las gafas
+sfx.muted = SPECTATOR;
 
 const state = {
   tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sym: false, wire: false,
@@ -681,6 +684,7 @@ function newLayer() {
   layers.push(L);
   setActive(L);
   live.structure();
+  sfx.play('pop');
   toast(t('{0} creada (vacía): añade barro con "Añadir"', L.name));
 }
 
@@ -701,6 +705,7 @@ function deleteLayer(L, ask = true) {
   layers.splice(idx, 1);
   setActive(layers[Math.max(0, idx - 1)]);
   live.structure();
+  sfx.play('poof');
 }
 
 function setLayerBase(L, hex) {
@@ -951,6 +956,7 @@ function setPlaying(v) {
   if (v && !layers.some((L) => L.frames.length > 1)) return toast('Añade más fotogramas para poder reproducir');
   anim.playing = v;
   anim.acc = 0;
+  sfx.play(v ? 'popUp' : 'popDown');
   if (!v) anim.frame = frameIndex();
   showFrames();
   live.anim();
@@ -962,6 +968,7 @@ function stepFrame(d, canAdd = false) {
   const n = active.frames.length, i = frameIndex();
   if (canAdd && d > 0 && i === n - 1) return addFrame(true);
   anim.frame = wrap(i + d, n);
+  sfx.play('dial', { semi: d > 0 ? 3 : -2 });
   showFrames();
   live.anim();
   frameToast();
@@ -1016,6 +1023,8 @@ function undo() {
   const e = undoStack.pop();
   redoStack.push(swapEntry(e));
   setActive(e.layer);
+  sfx.play('popDown');
+  tut?.emit('undo');
   toast('Deshacer', 900);
 }
 function redo() {
@@ -1023,6 +1032,8 @@ function redo() {
   const e = redoStack.pop();
   undoStack.push(swapEntry(e));
   setActive(e.layer);
+  sfx.play('popUp');
+  tut?.emit('redo');
   toast('Rehacer', 900);
 }
 
@@ -1031,12 +1042,15 @@ function redo() {
 const activeTool = () => (state.smoothHold ? 'smooth' : state.tool);
 let strokeRec = null;
 let strokePrev = null;
+let strokeFx = null; // cómo va sonando la pincelada
+let tut = null;
 
 function beginStroke() {
   if (anim.playing) setPlaying(false);
   latheDepth = null;
   strokeRec = pushStroke(active);
   strokePrev = null;
+  strokeFx = { tool: activeTool(), t0: performance.now(), prev: null, speed: 0, touched: false };
   lazy = null;
   lineStroke = null;
   meltPath = null;
@@ -1281,6 +1295,11 @@ function trackLine(p, pressure, tool) {
   rope.visible = true;
 }
 function endStroke() {
+  if (strokeFx) {
+    if (strokeFx.touched) sfx.play('release');
+    tut?.emit('stroke', { tool: strokeFx.tool, touched: strokeFx.touched, time: (performance.now() - strokeFx.t0) / 1000 });
+    strokeFx = null;
+  }
   if (state.lathe) placeWheel();
   commitLine();
   meltStroke();
@@ -1337,9 +1356,26 @@ function brushStep(tool, a, p, dt, pressure) {
   });
 }
 
+// El barro suena solo cuando lo tocas de verdad; un pincel grande suena más grave que uno fino.
+function strokeFeel(p, tool, dt, pressure) {
+  const s = strokeFx;
+  if (!s) return;
+  if (s.prev && dt > 0) s.speed += (Math.hypot(p[0] - s.prev[0], p[1] - s.prev[1], p[2] - s.prev[2]) / dt - s.speed) * Math.min(1, dt * 12);
+  s.prev = p;
+  const q = toGrid(active.f, p);
+  const touching = tool === 'add' || active.grid.sample(q[0], q[1], q[2]) * active.f.s < state.radius * 1.15;
+  const semi = THREE.MathUtils.clamp(-7 * Math.log2(state.radius / 0.025), -7, 7);
+  if (touching && !s.touched) {
+    s.touched = true;
+    sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
+  }
+  sfx.stroke(tool, s.speed / 0.6, pressure, dt, touching, semi);
+}
+
 function applyAt(p, dt, pressure = 1) {
   p = toSpin(p);
   const tool = activeTool();
+  strokeFeel(p, tool, dt, pressure);
   const a = strokePrev || p;
   // Si el punto apenas se ha movido, los pinceles "de golpe" (añadir/quitar) no repiten.
   const moved = Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
@@ -2355,6 +2391,7 @@ function openMenu(x, y, mode) {
 function closeMenu(pick) {
   if (!radialOpen) return;
   const h = radial.highlight;
+  if (pick && h) sfx.play('thock');
   radial.canvas.style.display = 'none';
   radialOpen = false;
   radialDrag = -1;
@@ -2421,6 +2458,7 @@ function dragMoveDesktop() {
 const moveOp = { L: null, mode: 'move', p0: new THREE.Vector3(), n: new THREE.Vector3(), x0: 0, y0: 0, start: new THREE.Matrix4(), scale: 1, toastT: 0 };
 
 function beginMove(L) {
+  sfx.play('grab');
   moveOp.L = L;
   moveOp.scale = 1;
   if (L !== active) setActive(L);
@@ -2453,6 +2491,7 @@ function endMove() {
   const L = moveOp.L;
   moveOp.L = null;
   if (!L) return;
+  sfx.play('drop');
   L.group.updateMatrix();
   const s = L.group.scale.x;
   const moved = L.group.position.length() > 1e-4 || 1 - Math.abs(L.group.quaternion.w) > 1e-6 || Math.abs(s - 1) > 1e-3;
@@ -2478,6 +2517,7 @@ function duplicateHeld() {
   L.group.updateMatrix();
   N.setPlace(N.f, new THREE.Matrix4().multiplyMatrices(L.group.matrix, L.f.voxels.matrix));
   layers.push(N);
+  sfx.play('dup');
   toast(t('{0} creada', N.name), 1500);
   updateHud();
   live.structure();
@@ -2903,6 +2943,13 @@ const PW = 768, PANE_H = 700, TAB_H = 72, CW = PW * 2, CH = TAB_H + PANE_H, PANE
 let delLayerUntil = 0;
 let panelPage = 'main'; // 'main' = las pestañas; si no, una página abierta encima de ellas
 const panel = new CanvasPanel(CW, CH, buildPanel);
+panel.onFeel = (kind, w, v) => {
+  if (kind === 'hover') return sfx.play('tick', { vol: 0.8, semi: PENTATONIC[Math.abs(Math.round(w.x + w.y)) % 5], pan: -0.2 });
+  if (kind === 'step') return sfx.play('dial', { semi: v * 12 - 4, pan: -0.2 });
+  if (w.type === 'slider') return; // ya suenan sus muescas
+  sfx.play(w.type === 'swatch' ? 'plip' : w.type === 'tab' ? 'thock' : 'clic', { pan: -0.2 });
+  xr.gpR?.hapticActuators?.[0]?.pulse?.(w.type === 'button' ? 0.45 : 0.25, 18);
+};
 const panelTex = new THREE.CanvasTexture(panel.canvas);
 panelTex.colorSpace = THREE.SRGBColorSpace;
 const panel3d = new THREE.Mesh(
@@ -3067,6 +3114,11 @@ function buildBrushTab() {
     onClick: () => { panelPage = 'material'; drawPanel(); } });
   W.push({ type: 'button', x: M + 3 * (hw + 10), y: 480, w: hw, h: 58, label: 'Fondo ▸', size: 24, group: 'nav',
     onClick: () => { panelPage = 'bg'; drawPanel(); } });
+  if (tut?.active) {
+    const bw = (IW - 10) / 2;
+    W.push({ type: 'button', x: M, y: 562, w: bw, h: 72, label: 'Saltar paso', size: 26, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
+    W.push({ type: 'button', x: M + bw + 10, y: 562, w: bw, h: 72, label: 'Salir del tutorial', size: 26, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
+  } else W.push({ type: 'button', x: M, y: 562, w: IW, h: 72, label: '▶ Jugar tutorial', size: 32, onClick: startTutorial });
   return W;
 }
 function buildColorTab() {
@@ -3153,6 +3205,11 @@ function buildTechTab() {
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   W.push({ type: 'label', x: M, y: yi + 176, size: 20, wrap: IW,
     text: 'Tira de una esquina amarilla con el mando derecho para dejar el panel donde quieras.' });
+  W.push({
+    type: 'slider', x: M, y: yi + 290, w: IW, h: 30, label: 'Sonidos',
+    get: () => sfx.volume, set: (v) => sfx.setVolume(Math.round(v * 20) / 20),
+    text: () => (sfx.volume ? Math.round(sfx.volume * 100) + '%' : t('no')),
+  });
   return W;
 }
 // Cabecera de las páginas de dentro: título y volver, sobre el bloque del que vienen.
@@ -3327,6 +3384,7 @@ function changeLang(l) {
     updateHud();
     drawHud3D();
     if (panel3d.visible) drawPanel();
+    if (tut.index >= 0) tut.draw();
     if (SPECTATOR) setSpecBg(spec.bg);
     if (!webcam?.rec && SPECTATOR) $('recBtn').textContent = t('● Grabar');
     document.querySelectorAll('[data-lang]').forEach((b) => b.classList.toggle('on', b.dataset.lang === getLang()));
@@ -3354,6 +3412,7 @@ function openFlower(tipW, mode) {
   xr.menuOpen = true;
   xr.menuMode = mode;
   xr.menuOpenedFrame = true; // el mismo clic que lo abre no debe cerrarlo
+  sfx.play('open');
   // La flor sale de la cabeza del mando, un poco por detrás de él visto desde tus ojos.
   // Justo detrás de la punta, vista desde tus ojos: la punta queda en el centro de la flor.
   const head = renderer.xr.getCamera().getWorldPosition(vA);
@@ -3365,12 +3424,14 @@ function openFlower(tipW, mode) {
 }
 function closeFlower(pick) {
   xr.menuOpen = false;
+  sfx.play('close');
   const h = flower.highlight, done = h === flower.done;
   flower.close();
   if (pick && !done) pickFlower(h);
 }
 function pickFlower(h) {
   if (!h || h === 'shape:more') return;
+  sfx.play(h === 'color:wheel' ? 'plip' : 'thock');
   if (h === 'color:wheel') {
     choose('paint');
     setColor(flower.wheelHex);
@@ -3407,6 +3468,15 @@ function placeWorkspace(snap, dt = 0) {
   model.updateMatrixWorld();
 }
 
+// Mover el stick cambia un valor poco a poco: suena como una ruedecita con muescas, más agudo o más grave.
+const dialAt = {};
+function dialFeel(key, v, base, k) {
+  if (Math.abs(Math.log(v / (dialAt[key] ??= v))) < 0.08) return;
+  dialAt[key] = v;
+  sfx.play('dial', { semi: THREE.MathUtils.clamp(k * Math.log2(v / base), -9, 9), pan: 0.2 });
+  xr.gpR?.hapticActuators?.[0]?.pulse?.(0.12, 8);
+}
+
 function xrFrame(dt) {
   let right = null, left = null;
   for (const c of ctrls) {
@@ -3427,6 +3497,7 @@ function xrFrame(dt) {
   hud3d.visible = !panel3d.visible || xr.panelPinned; // con el panel en la mano, el aviso de herramienta lo taparía
   if (right && ray.parent !== right) right.add(ray);
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
+  xr.gpR = gpR;
 
   if (xr.follow) placeWorkspace(false, dt);
   // El suelo va contigo para que no se acabe, pero sus líneas se quedan quietas en la habitación.
@@ -3437,7 +3508,10 @@ function xrFrame(dt) {
   // los dos a la vez lo escalan (separando las manos), lo giran y lo mueven.
   const gL = !!gpL?.buttons[1]?.pressed, gR = !!gpR?.buttons[1]?.pressed;
   const mode = gL && gR ? 'scale' : gL ? 'grabL' : gR ? 'grabR' : 'none';
-  if (mode !== 'none') xr.follow = false;
+  if (mode !== 'none') {
+    xr.follow = false;
+    tut?.emit('turn', dt);
+  }
   if (mode !== xr.grabMode) {
     xr.grabMode = mode;
     model.updateMatrixWorld();
@@ -3496,6 +3570,7 @@ function xrFrame(dt) {
     const lStick = !!gpL.buttons[3]?.pressed;
     if (lStick && !xr.lStickPrev) {
       panel3d.visible = !panel3d.visible;
+      sfx.play(panel3d.visible ? 'open' : 'close', { pan: -0.2 });
       if (panel3d.visible) drawPanel();
     }
     xr.lStickPrev = lStick;
@@ -3508,6 +3583,7 @@ function xrFrame(dt) {
     } else if (xr.flick !== 0 && Math.abs(sx) < 0.3) xr.flick = 0;
     if (Math.abs(sy) > 0.4 && Math.abs(sy) > Math.abs(sx)) {
       state.strength = THREE.MathUtils.clamp(state.strength - sy * dt * 0.8, 0.05, 1);
+      dialFeel('strength', state.strength, 0.6, 6);
       updateHud();
     }
   }
@@ -3537,6 +3613,7 @@ function xrFrame(dt) {
         return;
       }
       xr.panelDrag = null;
+      sfx.play('drop', { pan: -0.2 });
       drawPanel();
     }
     // Las esquinas son pequeñas de ver, pero se cogen con holgura: con el rayo o acercando la punta.
@@ -3548,6 +3625,7 @@ function xrFrame(dt) {
       scene.attach(panel3d);
       panel3d.updateMatrixWorld();
       xr.panelDrag = right.matrixWorld.clone().invert().multiply(panel3d.matrixWorld);
+      sfx.play('grab', { pan: -0.2 });
       gpR.hapticActuators?.[0]?.pulse?.(0.5, 30);
       xr.trigPrev = true;
       return;
@@ -3608,7 +3686,14 @@ function xrFrame(dt) {
     if (hand === 'left' && !flower.isOver(eye, tipLeft)) xr.flowerHand = 'right';
     const moved = xr.flowerHand === 'stick' ? Math.hypot(ax, ay) > 0.5 && flower.hoverDir(ax, ay)
       : xr.flowerHand === 'left' ? flower.hoverRay(eye, tipLeft) : flower.hoverRay(eye, tipW);
-    if (moved && flower.highlight) (xr.flowerHand === 'left' ? gpL : gpR).hapticActuators?.[0]?.pulse?.(0.25, 12);
+    if (moved && flower.highlight) {
+      (xr.flowerHand === 'left' ? gpL : gpR).hapticActuators?.[0]?.pulse?.(0.25, 12);
+      // Cada pétalo su nota: pasar por la flor suena a instrumento, no a un tic repetido.
+      const id = flower.highlight;
+      let note = 0;
+      for (let i = 0; i < id.length; i++) note = (note * 31 + id.charCodeAt(i)) % 997;
+      sfx.play('tick', { semi: PENTATONIC[note % 5] + (note % 2) * 12 - 3, pan: xr.flowerHand === 'left' ? -0.2 : 0.2 });
+    }
     flower.update(dt);
     // Un rato encima: se pone, y la flor sigue abierta para cambiar de idea.
     if (flower.fired) {
@@ -3646,6 +3731,7 @@ function xrFrame(dt) {
   if (Math.abs(ay) > 0.2 && moveOp.L) scaleMove(Math.exp(-ay * dt * 1.2));
   else if (Math.abs(ay) > 0.2 && !gR) {
     state.radius = clampRadius(state.radius * (1 - ay * dt * 1.5));
+    dialFeel('radius', state.radius, 0.025, -7);
     drawHud3D();
   }
   cursor.position.fromArray(tipL);
@@ -3717,7 +3803,10 @@ function moveSymWithHand(right, gp) {
   ctrlLocal.copy(model.matrixWorld).invert().multiply(right.matrixWorld);
   tmpM.multiplyMatrices(ctrlLocal, symGrabOff).decompose(symFrame.position, symFrame.quaternion, tmpS);
   const snapped = snapSymFrame();
-  if (snapped && !xr.symSnapped) gp.hapticActuators?.[0]?.pulse?.(0.35, 18);
+  if (snapped && !xr.symSnapped) {
+    gp.hapticActuators?.[0]?.pulse?.(0.35, 18);
+    sfx.play('thock', { vol: 0.7 });
+  }
   xr.symSnapped = snapped;
   rebuildSym();
 }
@@ -4187,6 +4276,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   updateLathe(dt);
   updateAnim(dt);
+  tutFrame(dt);
   if (SPECTATOR) {
     spectatorFrame(dt);
   } else if (renderer.xr.isPresenting) {
@@ -4367,7 +4457,10 @@ async function saveObra(asNew = false, quiet = false) {
     obraId = o.id;
     obraSig = sceneSig();
     await idbSet('escenaMeta', { obraId, dirty: false });
-    if (!quiet) toast(t('Guardado: {0} (en las gafas)', o.name));
+    if (!quiet) {
+      sfx.saved();
+      toast(t('Guardado: {0} (en las gafas)', o.name));
+    }
     syncToMac().then((sent) => { if (sent && !quiet) toast(t('Guardado: {0} (también en el Mac)', o.name)); });
   } catch (e) {
     console.error(e);
@@ -4505,5 +4598,141 @@ changeLang(getLang());
 exportUi();
 bgUi();
 setBg(bg.id);
-window.__miMedium = { applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+// ---------- Tutorial: tu primer tomate ----------
+// Nunca arranca solo: se abre con «Jugar tutorial». Empieza en una obra nueva y guarda antes la tuya.
+const strokeOf = (tool) => ({ stroke: (e) => e.tool === tool && e.touched && e.time > 0.3 });
+tut = new Tutorial([
+  { text: 'Mantén el gatillo y pasa la punta por la bola para añadirle barro.',
+    mac: 'Mantén el clic izquierdo y pasa por la bola para añadirle barro.', setup: () => choose('add'), on: strokeOf('add') },
+  { text: 'Clic en el stick derecho: se abre la flor. Deja la punta sobre Inflar.',
+    mac: 'Clic derecho: se abre el dial de herramientas. Elige Inflar.', check: () => state.tool === 'inflate' },
+  { text: 'Aprieta el gatillo sobre la bola y hazla gorda como un tomate.',
+    mac: 'Mantén el clic sobre la bola y hazla gorda como un tomate.', on: strokeOf('inflate') },
+  { text: 'Abre la flor otra vez y deja la punta sobre Pintar.',
+    mac: 'Abre el dial otra vez y elige Pintar.', check: () => state.tool === 'paint' },
+  { text: 'Píntalo de rojo con el gatillo.',
+    mac: 'Píntalo de rojo pasando por encima.', setup: () => setColor('#e04f4f'), on: strokeOf('paint') },
+  { text: '¿Te has pasado? Pulsa Y en el mando izquierdo para deshacer.',
+    mac: '¿Te has pasado? Pulsa Cmd+Z para deshacer.', on: { undo: () => true } },
+  { text: 'Empuja el stick izquierdo a la derecha y lo recuperas.',
+    mac: 'Pulsa Cmd+Mayús+Z y lo recuperas.', on: { redo: () => true } },
+  { text: 'Mantén un botón lateral del mando: mueve y gira tu tomate.',
+    mac: 'Arrastra fuera del tomate para darle la vuelta.', on: { turn: (dt, T) => (T.count += dt) >= 0.8 } },
+], {
+  isXR: () => renderer.xr.isPresenting,
+  onChange: tutShow,
+  onStep: (i) => sfx.step(i),
+  onDone: () => {
+    sfx.party();
+    tutBurst();
+    setTimeout(() => { if (tut.finished) tut.stop(); }, 8000);
+  },
+});
+const tutTex = new THREE.CanvasTexture(tut.canvas);
+tutTex.colorSpace = THREE.SRGBColorSpace;
+tut.onDraw = () => { tutTex.needsUpdate = true; };
+const tutCard = new THREE.Mesh(new THREE.PlaneGeometry(0.38, 0.15), new THREE.MeshBasicMaterial({ map: tutTex, depthTest: false }));
+tutCard.renderOrder = 1000;
+tutCard.visible = false;
+scene.add(tutCard);
+const tutBox = document.createElement('div');
+tutBox.id = 'tutBox';
+tutBox.hidden = true;
+tutBox.appendChild(tut.canvas);
+const tutRow = document.createElement('div');
+tutRow.className = 'row';
+[['Saltar paso', () => tut.next()], ['Salir del tutorial', () => tut.stop()]].forEach(([l, f]) => {
+  const b = document.createElement('button');
+  b.textContent = l;
+  b.onclick = f;
+  tutRow.appendChild(b);
+});
+tutBox.appendChild(tutRow);
+document.body.appendChild(tutBox);
+translateDOM(tutBox);
+function tutShow() {
+  tutBox.hidden = tut.index < 0;
+  tutRow.hidden = tut.finished;
+  if (panel3d.visible) drawPanel();
+}
+async function startTutorial() {
+  if (sculpting || xr.stroking) return;
+  await newObra();
+  state.lathe = false;
+  if (renderer.xr.isPresenting) {
+    placeWorkspace(true);
+    if (!xr.panelPinned) panel3d.visible = false;
+    xr.cardSnap = true;
+  }
+  tut.start();
+}
+// La tarjeta flota encima de lo que estás haciendo y te sigue sin prisa; el confeti es de plastilina.
+const cardHead = new THREE.Vector3(), cardDir = new THREE.Vector3(), cardAt = new THREE.Vector3();
+let burst = null;
+function tutBurst() {
+  const n = 70, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), vel = [], c = new THREE.Color();
+  const from = model.getWorldPosition(new THREE.Vector3());
+  for (let i = 0; i < n; i++) {
+    from.toArray(pos, i * 3);
+    c.set(PALETTE[7 + (i % 9)]).toArray(col, i * 3);
+    const a = Math.random() * Math.PI * 2, up = 0.5 + Math.random() * 0.9, r = 0.2 + Math.random() * 0.5;
+    vel.push(Math.cos(a) * r, up, Math.sin(a) * r);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const points = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.016, vertexColors: true }));
+  points.frustumCulled = false;
+  scene.add(points);
+  burst = { points, vel, life: 1.8 };
+}
+function tutFrame(dt) {
+  tut.tick();
+  if (burst) {
+    const a = burst.points.geometry.attributes.position;
+    for (let i = 0; i < burst.vel.length; i += 3) {
+      burst.vel[i + 1] -= 1.5 * dt;
+      a.array[i] += burst.vel[i] * dt;
+      a.array[i + 1] += burst.vel[i + 1] * dt;
+      a.array[i + 2] += burst.vel[i + 2] * dt;
+    }
+    a.needsUpdate = true;
+    if ((burst.life -= dt) <= 0) {
+      scene.remove(burst.points);
+      burst.points.geometry.dispose();
+      burst.points.material.dispose();
+      burst = null;
+    }
+  }
+  tutCard.visible = tut.index >= 0 && renderer.xr.isPresenting;
+  if (!tutCard.visible) return;
+  const cam = renderer.xr.getCamera();
+  cam.getWorldPosition(cardHead);
+  cam.getWorldDirection(cardDir);
+  cardDir.y = 0;
+  if (cardDir.lengthSq() > 0.04) {
+    cardAt.copy(cardHead).addScaledVector(cardDir.normalize(), 0.75);
+    cardAt.y += 0.24;
+    tutCard.position.lerp(cardAt, xr.cardSnap ? 1 : 1 - Math.exp(-dt * 2.5));
+    xr.cardSnap = false;
+  }
+  tutCard.lookAt(cardHead);
+}
+if (!SPECTATOR) {
+  $('btnTut')?.addEventListener('click', startTutorial);
+  const vol = $('sfxVol');
+  if (vol) {
+    vol.value = sfx.volume;
+    vol.addEventListener('input', () => sfx.setVolume(+vol.value));
+  }
+  controls.addEventListener('start', () => tut.emit('turn', 1));
+  // El navegador solo deja sonar después de tocar algo.
+  for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, () => sfx.unlock(), { capture: true });
+  renderer.xr.addEventListener('sessionstart', () => { sfx.unlock(); xr.cardSnap = true; });
+  // Los botones de la pantalla del Mac suenan igual que los de las gafas.
+  document.addEventListener('click', (e) => { if (e.target.closest?.('button, summary')) sfx.play('clic'); });
+  document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
+}
+
+window.__miMedium = { tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
