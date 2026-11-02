@@ -16,6 +16,7 @@ import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang, translateDOM } from './i18n.js';
 import { sfx, PENTATONIC } from './sonidos.js';
 import { OPCIONES } from './anadir.js';
+import { Receptor } from './llamada.js';
 import { Tutorial } from './tutorial.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
@@ -710,6 +711,7 @@ function deleteLayer(L, ask = true) {
 }
 
 function setLayerBase(L, hex) {
+  if (remeshLocked(L)) return;
   L.setBase(hex);
   updateHud();
   live.structure();
@@ -978,8 +980,8 @@ function stepFrame(d, canAdd = false) {
 function addFrame(copy) {
   if (sculpting || xr.stroking) return;
   if (anim.playing) setPlaying(false);
+  if (remeshLocked()) return;
   const L = active, from = frameIndex(L), at = from + 1;
-  L.clearRemesh();
   const f = copy ? L.copyFrame(L.f) : L.frameFromGrid(L.grid.blank());
   L.insertFrame(f, at);
   undoStack.push({ layer: L, frameOp: true, f, at, present: true, bytes: 0 });
@@ -1021,6 +1023,7 @@ function updateAnim(dt) {
 
 function undo() {
   if (!undoStack.length) return toast('Nada que deshacer');
+  if (remeshLocked(undoStack.at(-1).layer)) return;
   const e = undoStack.pop();
   redoStack.push(swapEntry(e));
   setActive(e.layer);
@@ -1030,6 +1033,7 @@ function undo() {
 }
 function redo() {
   if (!redoStack.length) return toast('Nada que rehacer');
+  if (remeshLocked(redoStack.at(-1).layer)) return;
   const e = redoStack.pop();
   undoStack.push(swapEntry(e));
   setActive(e.layer);
@@ -1046,8 +1050,27 @@ let strokePrev = null;
 let strokeFx = null; // cómo va sonando la pincelada
 let tut = null;
 
+// Una capa con remesh se queda tal cual: para volver a esculpirla hay que convertirla a propósito.
+function remeshLocked(L = active) {
+  if (!L.remesh) return false;
+  toast(t('{0} tiene remesh: pulsa «A vóxel» para esculpirla', L.name));
+  sfx.play('dial', { semi: -5 });
+  return true;
+}
+function toVoxel(L = active) {
+  if (!L.remesh) return;
+  L.clearRemesh();
+  L.version++;
+  noteEdit();
+  updateHud();
+  drawPanel();
+  live.structure();
+  toast(t('{0}: otra vez en vóxel', L.name));
+}
 function beginStroke() {
   if (anim.playing) setPlaying(false);
+  strokeFx = null;
+  if (remeshLocked()) return;
   latheDepth = null;
   strokeRec = pushStroke(active);
   strokePrev = null;
@@ -1369,13 +1392,15 @@ function strokeFeel(p, tool, dt, pressure) {
   const semi = THREE.MathUtils.clamp(-7 * Math.log2(state.radius / 0.025), -7, 7);
   if (touching && !s.touched) {
     s.touched = true;
-    sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
+    if (tool === 'paint') sfx.play('rattle', { vol: 0.8 });
+    else sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
   }
   // Un sello se pone de un golpe: no tiene sonido seguido.
   if (!(tool === 'add' && shapeActive() && state.shape === 'stamp')) sfx.stroke(tool, s.speed / 0.6, pressure, dt, touching, semi);
 }
 
 function applyAt(p, dt, pressure = 1) {
+  if (active.remesh) return;
   p = toSpin(p);
   const tool = activeTool();
   strokeFeel(p, tool, dt, pressure);
@@ -1412,15 +1437,22 @@ function changeRes(dir) {
   if (i < 0) i = RES_STEPS.length - 1;
   const ni = Math.max(0, Math.min(RES_STEPS.length - 1, i + dir));
   if (RES_STEPS[ni] === n) return toast(dir > 0 ? 'Resolución máxima' : 'Resolución mínima');
-  if (active.grid.samplesFor(RES_STEPS[ni]) > MAX_SAMPLES) return toast('Esta capa ocupa demasiado para subir la resolución');
+  setRes(RES_STEPS[ni]);
+}
+function setRes(n) {
+  if (remeshLocked() || active.grid.res === n) return;
+  if (active.grid.samplesFor(n) > MAX_SAMPLES) return toast('Esta capa ocupa demasiado para subir la resolución');
   pushFull(active);
-  active.grid.resample(RES_STEPS[ni]);
+  active.grid.resample(n);
   active.rebuildAll();
+  updateHud();
+  drawPanel();
   live.structure();
   toast(t('{0}: resolución {1}³', active.name, active.grid.res));
 }
 
 function resetLayer(shape) {
+  if (remeshLocked()) return;
   pushFull(active);
   const g = active.grid;
   g.setResolution(g.res);
@@ -1518,6 +1550,7 @@ function choose(id) {
       break;
     case 'undo': undo(); break;
     case 'remesh': remeshLayer(active); break;
+    case 'voxel': toVoxel(); break;
     case 'export': exportModel(); break;
     case 'save': saveObra(); break;
     case 'share': shareModel(); break;
@@ -1873,6 +1906,8 @@ async function bakeRemesh(L, low, ver = L.version, size = state.bakeSize) {
   if (L.version !== ver || !layers.includes(L)) throw new Error('stale');
   if (L.remesh?.data.positions !== low.positions) L.setRemesh({ positions: low.positions, normals: low.normals, quads: low.quads });
   L.applyBake(bake);
+  updateHud();
+  drawPanel();
   live.structure();
 }
 
@@ -2158,6 +2193,14 @@ $('btnSave').onclick = () => saveObra();
 $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
+$('btnVoxel').onclick = () => toVoxel();
+for (const n of RES_STEPS) {
+  const b = document.createElement('button');
+  b.textContent = n;
+  b.dataset.res = n;
+  b.onclick = () => setRes(n);
+  $('resRow').appendChild(b);
+}
 $('bgRot').oninput = (e) => { bg.rot = +e.target.value; bgChanged(); };
 $('bgShow').oninput = (e) => { bg.show = +e.target.value; bgChanged(); };
 $('btnPhoto').onclick = () => takeRefPhoto();
@@ -2271,6 +2314,9 @@ function updateHud() {
   $('btnSym').classList.toggle('on', symOn());
   document.querySelectorAll('#hud [data-opt]').forEach((b) => b.classList.toggle('on', optionOn(b.dataset.opt)));
   $('latheSpeed').value = state.latheSpeed;
+  $('latheBox').hidden = !state.lathe;
+  $('btnVoxel').hidden = !active.remesh;
+  document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === active.grid.res));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
@@ -3046,7 +3092,7 @@ Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => doc
 const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
 const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
 const panelTab = ['brush', 'color'];
-const PANEL_PAGES = { pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
+const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
 const PAGE_PANE = { export: 1 }; // las demás se abren en la columna izquierda
 const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']); // su segundo bloque va en la otra columna
 const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, color: buildColorTab, obra: buildObraTab };
@@ -3117,11 +3163,19 @@ function buildBrushTab() {
     onClick: () => { panelPage = 'material'; drawPanel(); } });
   W.push({ type: 'button', x: M + 3 * (hw + 10), y: 480, w: hw, h: 58, label: 'Fondo ▸', size: 24, group: 'nav',
     onClick: () => { panelPage = 'bg'; drawPanel(); } });
-  if (tut?.active) {
+  if (state.lathe) {
+    W.push({ type: 'slider', x: M, y: 586, w: IW, h: 28, label: 'Velocidad del torno', get: () => state.latheSpeed / 1.5, set: (v) => (state.latheSpeed = Math.max(0.05, v * 1.5)), text: () => Math.round(state.latheSpeed * 60) + ' rpm' });
+  } else if (tut?.active) {
     const bw = (IW - 10) / 2;
-    W.push({ type: 'button', x: M, y: 562, w: bw, h: 72, label: 'Saltar paso', size: 26, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
-    W.push({ type: 'button', x: M + bw + 10, y: 562, w: bw, h: 72, label: 'Salir del tutorial', size: 26, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
-  } else W.push({ type: 'button', x: M, y: 562, w: IW, h: 72, label: '▶ Jugar tutorial', size: 32, onClick: startTutorial });
+    W.push({ type: 'button', x: M, y: 556, w: bw, h: 54, label: 'Saltar paso', size: 24, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
+    W.push({ type: 'button', x: M + bw + 10, y: 556, w: bw, h: 54, label: 'Salir del tutorial', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
+  } else W.push({ type: 'button', x: M, y: 556, w: IW, h: 54, label: '▶ Jugar tutorial', size: 28, onClick: startTutorial });
+  W.push({ type: 'label', x: M, y: 634, size: 22, text: 'Resolución' });
+  const rw = (IW - (RES_STEPS.length - 1) * 6) / RES_STEPS.length;
+  RES_STEPS.forEach((n, i) => W.push({
+    type: 'button', x: M + i * (rw + 6), y: 650, w: rw, h: 44, label: String(n), plain: true, size: 22, group: 'res',
+    active: () => active.grid.res === n, onClick: () => setRes(n),
+  }));
   return W;
 }
 function buildColorTab() {
@@ -3193,7 +3247,7 @@ function buildTechTab() {
     text: () => state.quads.toLocaleString(),
   });
   const bw = (IW - 3 * 8) / 4;
-  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], ['Remesh', 'remesh'], ['A Blender', 'export'], ['Importar ▸', 'refs']]
+  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], active.remesh ? ['A vóxel', 'voxel'] : ['Remesh', 'remesh'], ['A Blender', 'export'], ['Importar ▸', 'refs']]
     .forEach(([l, id], i) => W.push({ type: 'button', x: M + (i % 4) * (bw + 8), y: yb + 44 + Math.floor(i / 4) * 66, w: bw, h: 58, label: l, size: 24, group: 'tech',
       active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => (id === 'refs' ? openRefPage() : choose(id)) }));
   // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
@@ -3208,17 +3262,43 @@ function buildTechTab() {
     text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
   W.push({ type: 'label', x: M, y: yi + 176, size: 20, wrap: IW,
     text: 'Tira de una esquina amarilla con el mando derecho para dejar el panel donde quieras.' });
+  const pw = (IW - 10) / 2;
+  W.push({ type: 'button', x: M, y: yi + 250, w: pw, h: 58, label: 'Sonido ▸', size: 24, group: 'tech2', onClick: () => { panelPage = 'sonido'; drawPanel(); } });
+  W.push({ type: 'button', x: M + pw + 10, y: yi + 250, w: pw, h: 58, label: 'Llamada ▸', size: 24, group: 'tech2', onClick: () => { panelPage = 'llamada'; drawPanel(); } });
+  return W;
+}
+function buildSoundPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M;
+  W.push(panelBlock(8, 92, CERA.ink));
+  pageHead(W, 'Sonido');
+  W.push(panelBlock(108, 300, CERA.paper));
   W.push({
-    type: 'slider', x: M, y: yi + 262, w: IW, h: 30, label: 'Sonidos',
+    type: 'slider', x: M, y: 180, w: IW, h: 34, label: 'Sonidos',
     get: () => sfx.volume, set: (v) => sfx.setVolume(Math.round(v * 20) / 20),
     text: () => (sfx.volume ? Math.round(sfx.volume * 100) + '%' : t('no')),
   });
-  W.push({ type: 'label', x: M, y: yi + 316, size: 20, text: 'Sonido de Añadir' });
+  W.push({ type: 'label', x: M, y: 262, size: 24, text: 'Sonido de Añadir' });
   const sw = (IW - 3 * 8) / 4;
   Object.entries(OPCIONES).forEach(([id, op], i) => W.push({
-    type: 'button', x: M + i * (sw + 8), y: yi + 336, w: sw, h: 54, label: op.name, size: 22, group: 'addSound',
+    type: 'button', x: M + i * (sw + 8), y: 288, w: sw, h: 60, label: op.name, size: 22, group: 'addSound',
     active: () => sfx.addSound === id, onClick: () => { sfx.setAddSound(id); drawPanel(); },
   }));
+  return W;
+}
+const CALL_TEXT = { off: 'Apagada', waiting: 'Esperando al Mac…', connecting: 'Conectando…', connected: 'Conectada' };
+function buildCallPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M, bw = (IW - 10) / 2;
+  W.push(panelBlock(8, 92, CERA.ink));
+  pageHead(W, 'Llamada');
+  W.push(panelBlock(108, 500, CERA.paper));
+  W.push({ type: 'button', x: M, y: 132, w: bw, h: 64, label: 'Ver llamada', size: 26, active: () => call.on, onClick: () => setCall(!call.on) });
+  W.push({ type: 'button', x: M + bw + 10, y: 132, w: bw, h: 64, label: 'Traer aquí', size: 26, onClick: () => placeCall() });
+  W.push({ type: 'slider', x: M, y: 260, w: IW, h: 34, label: 'Tamaño', get: () => (call.size - 0.3) / 1.2, set: (v) => { call.size = 0.3 + v * 1.2; sizeCall(); }, text: () => Math.round(call.size * 100) + ' cm' });
+  W.push({ type: 'label', x: M, y: 330, size: 26, text: t(CALL_TEXT[call.rx?.state || 'off']) + (call.on && !server.ok ? ' · ' + t('sin Mac') : '') });
+  W.push({ type: 'label', x: M, y: 380, size: 22, wrap: IW, text: 'En el Mac abre Llamada VR y elige la ventana de Discord. Las gafas y el Mac deben estar en la misma Wi-Fi.' });
+  W.push({ type: 'label', x: M, y: 470, size: 22, wrap: IW, text: 'Solo llega la imagen: la voz sigue sonando en el Mac o en el móvil.' });
   return W;
 }
 // Cabecera de las páginas de dentro: título y volver, sobre el bloque del que vienen.
@@ -3922,6 +4002,7 @@ const live = {
 const inbox = [];
 let inboxBusy = false;
 async function onLiveMessage(m) {
+  if (m.t === 'rtc') return call.rx?.signal(m);
   if (!SPECTATOR) {
     if (m.t === 'hello' && live.emitting && !live.snapBusy) live.snapshot();
     // La calibración de la webcam se sigue desde dentro de las gafas.
@@ -4262,6 +4343,60 @@ if (SPECTATOR) {
 }
 
 live.hub = new Live(onLiveMessage);
+
+// ---------- La llamada: una pantalla flotante con la ventana que manda el Mac ----------
+const call = { on: false, size: 0.7, placed: false, rx: null, screen: null, tex: null };
+function setCall(on) {
+  call.on = on;
+  if (on && !call.rx) {
+    call.rx = new Receptor(live.hub, callChanged);
+    call.tex = new THREE.VideoTexture(call.rx.video);
+    call.tex.colorSpace = THREE.SRGBColorSpace;
+    const plane = new THREE.PlaneGeometry(1, 1);
+    call.screen = new THREE.Group();
+    const back = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({ color: 0x141210 }));
+    back.position.z = -0.002;
+    back.name = 'back';
+    const front = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({ map: call.tex, toneMapped: false }));
+    front.name = 'front';
+    call.screen.add(back, front);
+    call.screen.visible = false;
+    scene.add(call.screen);
+  }
+  if (on) call.rx.start();
+  else call.rx?.stop();
+  callChanged();
+}
+function callChanged() {
+  const showing = call.on && call.rx?.state === 'connected';
+  if (call.screen) {
+    if (showing && !call.placed) placeCall();
+    call.screen.visible = showing;
+    sizeCall();
+  }
+  if (panelPage === 'llamada') drawPanel();
+}
+function sizeCall() {
+  if (!call.screen) return;
+  const v = call.rx.video, h = call.size * ((v.videoHeight || 9) / (v.videoWidth || 16));
+  const front = call.screen.getObjectByName('front'), back = call.screen.getObjectByName('back');
+  front.scale.set(call.size, h, 1);
+  back.scale.set(call.size + 0.03, h + 0.03, 1);
+}
+const callHead = new THREE.Vector3(), callDir = new THREE.Vector3();
+function placeCall() {
+  if (!call.screen) return;
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(callHead);
+  cam.getWorldDirection(callDir);
+  callDir.y = 0;
+  if (callDir.lengthSq() < 0.04) callDir.set(0, 0, -1);
+  callDir.normalize();
+  call.screen.position.copy(callHead).addScaledVector(callDir, 1.2);
+  call.screen.position.y += 0.12;
+  call.screen.lookAt(callHead);
+  call.placed = true;
+}
 // Al (re)conectar se ha podido perder algo: el espejo vuelve a pedir la escena entera.
 live.hub.onOpen = () => {
   if (SPECTATOR) {
@@ -4750,5 +4885,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

@@ -133,8 +133,6 @@
   <div class="blk ink">
     <h1>LA PLASTILINA</h1>
     <div class="row"><button id="btnTut">▶ Jugar tutorial</button></div>
-    <label>Sonidos <input id="sfxVol" type="range" min="0" max="1" step="0.05" /></label>
-    <label>Sonido de Añadir <select id="addSound"></select></label>
     <div class="lang"><b>Idiomas</b>
       <div class="row">
         <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
@@ -146,6 +144,9 @@
     <div id="info"></div>
     <label>Tamaño <input id="size" type="range" min="0" max="1" step="0.002" /></label>
     <label>Fuerza <input id="strength" type="range" min="0.05" max="1" step="0.05" /></label>
+    <div class="sec">Resolución</div>
+    <div class="row opts" id="resRow"></div>
+    <label id="latheBox" hidden><span>Velocidad del torno</span> <input type="range" id="latheSpeed" min="0.05" max="1.5" step="0.05"></label>
     <label title="El pincel va detrás del ratón como con una cuerda: trazos rectos y seguros"><span>Estabilizar <b id="stabVal"></b></span>
       <input id="stab" type="range" min="0" max="1" step="0.05" style="width: 110px" /></label>
     <div class="row">
@@ -187,7 +188,6 @@
       <button data-opt="radial:3">3</button><button data-opt="radial:4">4</button><button data-opt="radial:5">5</button><button data-opt="radial:6">6</button><button data-opt="radial:8">8</button>
     </div>
     <div class="row"><button data-opt="sym:lathe" title="Torno">Torno</button></div>
-    <label><span>Velocidad</span> <input type="range" id="latheSpeed" min="0.05" max="1.5" step="0.05"></label>
     <div class="row">
       <button id="btnSym" title="X">Simetría</button>
       <button id="btnWire" title="W">Ver malla</button>
@@ -242,6 +242,7 @@
     <div class="row">
       <button id="btnRemesh" title="Malla nueva + detalle horneado, en este dispositivo (R)">Remesh capa</button>
       <button id="btnRemeshMac" title="QuadriFlow en Blender: sigue mejor la forma (necesita el Mac)">Remesh en Blender</button>
+      <button id="btnVoxel" title="Vuelve a la plastilina para poder esculpirla" hidden>A vóxel</button>
     </div>
     <div class="row">
       <button id="btnExport" title="E">Enviar a Blender</button>
@@ -255,6 +256,11 @@
       <label><span>Tamaño de la referencia</span> <input type="range" id="refSize" min="0" max="1" step="0.01"></label>
       <label><span>Transparencia</span> <input type="range" id="refOpacity" min="0" max="0.9" step="0.05"></label>
     </div>
+    <details>
+      <summary>Sonido</summary>
+      <label>Sonidos <input id="sfxVol" type="range" min="0" max="1" step="0.05" /></label>
+      <label>Sonido de Añadir <select id="addSound"></select></label>
+    </details>
     <div class="sec">Exportar</div>
     <div class="row" id="fmtRow"></div>
     <label><span>Quads al exportar</span> <input type="range" id="exportQuads" min="0" max="1" step="0.01" value="0"> <span id="exportQuadsVal"></span></label>

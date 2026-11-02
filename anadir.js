@@ -143,9 +143,28 @@ export const OPCIONES = {
   },
 };
 
+// Los que no se eligen: el spray de Pintar.
+export const SEGUIDOS = {
+  ...OPCIONES,
+  spray: {
+    name: 'Spray', hint: 'Aerosol pequeñito, con gotitas y la bolita del bote', lo: 3400, hi: 5000, rate: [0.15, 0.7], accentVol: 0.3, level: 0.55, spread: 0.03,
+    bed(o, sr, d) {
+      const a = wander(d, 0.35), grain = wander(d, 20);
+      // Un chorro fino y constante, y por encima un soplo de aire que casi no se oye.
+      hiss(o, sr, { fc: (t) => 2400 + 300 * a(t), q: 1.5, env: (t) => 0.1 + 0.035 * grain(t) });
+      hiss(o, sr, { fc: () => 4300, q: 1.8, env: () => 0.018 });
+      for (let t = 0; t < d; t += rnd(0.004, 0.014)) blip(o, sr, t, { f0: rnd(1700, 3600), amp: rnd(0.02, 0.09), decay: rnd(0.0008, 0.002), attack: 0.0003 });
+    },
+    accent(o, sr) {
+      blip(o, sr, 0, { f0: rnd(900, 1300), amp: 1, decay: 0.004, attack: 0.0005 });
+      blip(o, sr, 0, { f0: rnd(430, 560), amp: 0.7, decay: 0.006, attack: 0.0008 });
+    },
+  },
+};
+
 // Los datos de una opción, sin tocar el audio del navegador.
 export function fabricar(id, sr) {
-  const op = OPCIONES[id], make = (d) => {
+  const op = SEGUIDOS[id], make = (d) => {
     const o = new Float32Array(Math.floor((d + FADE) * sr));
     op.bed(o, sr, d + FADE);
     return closeLoop(o, sr);
@@ -179,7 +198,7 @@ export class Continuo {
   }
   start(id, semi = 0) {
     this.stop();
-    const ctx = this.ctx, now = ctx.currentTime, bank = this.prepare(id), op = OPCIONES[id];
+    const ctx = this.ctx, now = ctx.currentTime, bank = this.prepare(id), op = SEGUIDOS[id];
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.value = op.lo;

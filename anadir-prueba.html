@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sonidos de Añadir</title>
+<title>Sonidos seguidos</title>
 <style>
   :root { --ink: #141210; --paper: #FFF8E3; --blue: #1B4FD8; --yellow: #FFD21F; }
   * { box-sizing: border-box; }
@@ -19,7 +19,7 @@
 </style>
 </head>
 <body>
-  <h1>Sonidos de Añadir</h1>
+  <h1>Sonidos seguidos</h1>
   <p>Mantén pulsada una opción y suena hasta que sueltes. Mueve el ratón o el dedo: cuanto más rápido, más vivo.</p>
   <div class="grid" id="options"></div>
   <label>Volumen <input id="vol" type="range" min="0" max="1" step="0.05" /></label>
@@ -28,7 +28,7 @@
 
 <script type="module">
   import { sfx } from './sonidos.js';
-  import { Continuo, OPCIONES } from './anadir.js';
+  import { Continuo, SEGUIDOS } from './anadir.js';
   const $ = (id) => document.getElementById(id);
   let engine = null, held = null;
 
@@ -68,7 +68,7 @@
     b.addEventListener('pointerdown', (e) => press(id, b, e));
     $('options').appendChild(b);
   };
-  for (const [id, op] of Object.entries(OPCIONES)) add(id, op.name, op.hint);
+  for (const [id, op] of Object.entries(SEGUIDOS)) add(id, op.name, op.hint);
 
   addEventListener('pointermove', (e) => {
     if (!held) return;
@@ -79,7 +79,7 @@
   for (const ev of ['pointerup', 'pointercancel', 'blur']) addEventListener(ev, release);
   $('vol').value = sfx.volume;
   $('vol').addEventListener('input', () => sfx.setVolume(+$('vol').value));
-  window.__prueba = { sfx, OPCIONES, get engine() { return engine; } };
+  window.__prueba = { sfx, SEGUIDOS, get engine() { return engine; } };
 </script>
 </body>
 </html>

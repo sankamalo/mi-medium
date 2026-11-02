@@ -142,8 +142,12 @@ const SOUNDS = {
   silk: [0.22, 0.065, 0, (o, s) => {
     noise(o, s, { fc: rnd(620, 1000), mode: 'lp', amp: 1, attack: rnd(0.012, 0.024), decay: rnd(0.016, 0.03) });
   }],
-  spray: [0.1, 0.032, 0, (o, s) => {
-    noise(o, s, { fc: rnd(1900, 3000), q: 0.7, amp: 1, attack: rnd(0.003, 0.008), decay: rnd(0.005, 0.011) });
+  // La bolita del bote de spray, al empezar a pintar.
+  rattle: [0.17, 0.13, 90, (o, s) => {
+    for (let i = 0, at = 0; i < 3; i++, at += rnd(0.04, 0.065)) {
+      tone(o, s, { at, f0: rnd(1050, 1450), amp: 0.5 - i * 0.1, decay: 0.004 });
+      tone(o, s, { at, f0: rnd(460, 620), amp: 0.8 - i * 0.18, decay: 0.007 });
+    }
   }],
   // Una lengüeta de kalimba, para premiar: terminar un paso, guardar.
   note: [1.1, 0.25, 0, (o, s) => {
@@ -157,11 +161,11 @@ const SOUNDS = {
 // Cómo suena cada herramienta mientras la usas: qué grano, cuántos por segundo (quieto → rápido),
 // y un segundo grano que aparece de vez en cuando.
 const TOOL_FEEL = {
-  add: { hold: true }, // este no son granos: suena seguido hasta soltar (anadir.js)
+  add: { hold: 'add' }, // estos dos no son granos: suenan seguido hasta soltar (anadir.js)
+  paint: { hold: 'spray' },
   inflate: { g: 'bubble', still: 7, fast: 13, vol: 0.85, extra: 'squish', every: 0.2 },
   remove: { g: 'scrape', still: 3, fast: 28, extra: 'squish', every: 0.06 }, // arena cinética
   crease: { g: 'scrape', still: 2, fast: 24, vol: 0.85 },
-  paint: { g: 'spray', still: 5, fast: 18 },
   smooth: { g: 'silk', still: 3, fast: 11 },
   flatten: { g: 'silk', still: 2, fast: 12, extra: 'knead', every: 0.1 },
   grab: { g: 'knead', still: 0, fast: 13, extra: 'bubble', every: 0.1 },
@@ -211,7 +215,9 @@ class Sonidos {
       limit.release.value = 0.12;
       this.master.connect(air).connect(limit).connect(this.ctx.destination);
       this.held = new Continuo(this.ctx, this.master);
-      setTimeout(() => this.held.prepare(this.addSound), 300); // listo antes de apretar, sin tirones
+      // Listos antes de apretar, sin tirones.
+      setTimeout(() => this.held.prepare(this.addSound), 300);
+      setTimeout(() => this.held.prepare('spray'), 700);
     }
     if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   }
@@ -230,7 +236,7 @@ class Sonidos {
     this.unlock();
     if (!this.held) return;
     this.held.start(id);
-    this.holding = true;
+    this.holding = id;
     this.watchHold(800);
   }
   // Si dejan de llegar fotogramas (te quitas las gafas, cambias de herramienta) se apaga solo.
@@ -240,7 +246,7 @@ class Sonidos {
   }
   strokeEnd() {
     clearTimeout(this.holdTimer);
-    this.holding = false;
+    this.holding = null;
     this.held?.stop();
   }
 
@@ -322,12 +328,13 @@ class Sonidos {
     const f = TOOL_FEEL[tool] || TOOL_FEEL.smooth;
     if (f.hold) {
       if (!this.volume) return;
-      if (!this.holding) {
-        this.held.start(this.addSound, semi);
-        this.holding = true;
+      const id = f.hold === 'add' ? this.addSound : f.hold;
+      if (this.holding !== id) {
+        this.held.start(id, semi);
+        this.holding = id;
       }
       this.held.update(dt, speed, pressure, semi);
-      this.watchHold(350);
+      this.watchHold(250); // al salirse del barro dejan de llegar avisos y se apaga
       return;
     }
     const rate = f.still + (f.fast - f.still) * Math.sqrt(Math.min(1, speed));
