@@ -700,6 +700,7 @@ function nextLayer() {
 }
 
 function deleteLayer(L, ask = true) {
+  if (merge) return mergeBusy();
   if (layers.length === 1) return toast('No puedes borrar la única capa');
   if (ask && !confirm(t('¿Borrar {0}? No se puede deshacer.', L.name))) return;
   for (const s of [undoStack, redoStack]) {
@@ -723,7 +724,48 @@ function pickForMerge(L) {
   updateHud();
   drawPanel();
 }
-async function mergeLayers() {
+// Hasta aquí una unión se hace sin preguntar; por encima, pesaría demasiado o tardaría mucho.
+const MERGE_QUADS = ON_QUEST ? 500e3 : 2.5e6, MERGE_WORK = ON_QUEST ? 20e3 : 150e3;
+const fmtQuads = (q) => (q >= 1e6 ? (q / 1e6).toLocaleString(getLang(), { maximumFractionDigits: 1 }) + ' M' : Math.round(q / 1000) + ' k');
+// Cuentas de antes de unir: dónde cae cada capa y cuánto saldría a cada resolución (más vóxeles por lado,
+// más polígonos: crecen con el cuadrado). Es un cálculo por lo alto: no descuenta lo que se solape.
+function mergePlan(list) {
+  const T = list.reduce((a, L) => (L.grid.res > a.grid.res || (L.grid.res === a.grid.res && L === active) ? L : a));
+  const v = new THREE.Vector3(), rest = list.filter((L) => L !== T);
+  const pieces = rest.map((L) => {
+    const toT = new THREE.Matrix4().multiplyMatrices(T.f.inv, L.f.voxels.matrix), box = L.grid.occupied();
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    if (box) for (let c = 0; c < 8; c++) {
+      v.set(c & 1 ? box.hi[0] : box.lo[0], c & 2 ? box.hi[1] : box.lo[1], c & 4 ? box.hi[2] : box.lo[2]).applyMatrix4(toT);
+      v.toArray().forEach((x, a) => { lo[a] = Math.min(lo[a], x); hi[a] = Math.max(hi[a], x); });
+    }
+    return { L, lo, hi, empty: !box, map: new THREE.Matrix4().multiplyMatrices(L.f.inv, T.f.voxels.matrix).elements, scale: L.f.s / T.f.s };
+  });
+  const own = T.grid.occupied();
+  let reach = own ? Math.max(...own.lo.map(Math.abs), ...own.hi.map(Math.abs)) : 0;
+  for (const p of pieces) if (!p.empty) reach = Math.max(reach, ...p.lo.map(Math.abs), ...p.hi.map(Math.abs));
+  const counts = list.map((L) => ({ L, quads: L.chunks.reduce((a, c) => a + (c ? c.quads.length / 4 : 0), 0), bricks: L.grid.bricks.reduce((a, b) => a + (b ? 1 : 0), 0) }));
+  const at = (res) => {
+    let quads = 0, work = 0;
+    for (const { L, quads: q, bricks } of counts) {
+      const k = (L.grid.h * L.f.s * (res - 1)) / T.f.s;
+      quads += q * k * k;
+      if (L !== T || res !== T.grid.res) work += bricks * k * k;
+    }
+    const fits = 2 * reach * (res - 1) + 64 <= MAX_SAMPLES;
+    return { res, quads, work, fits, light: fits && quads <= MERGE_QUADS && work <= MERGE_WORK };
+  };
+  const full = at(T.grid.res);
+  const lower = RES_STEPS.filter((r) => r < T.grid.res).map(at).filter((o) => o.fits).reverse();
+  let choices = [full];
+  if (!full.light && lower.length) {
+    const best = lower.findIndex((o) => o.light), i = best < 0 ? lower.length - 1 : best;
+    choices = [lower[i], lower[i + 1], full.fits ? full : null].filter(Boolean);
+  }
+  return { list, T, rest, pieces, full, choices };
+}
+function mergeLayers() {
+  if (merge) return mergeBusy();
   const list = layers.filter((L) => mergePick.has(L));
   if (list.length < 2) return toast('Toca el círculo de color de dos capas o más');
   if (list.some((L) => L.frames.length > 1)) return toast('Las capas con fotogramas no se pueden unir');
@@ -731,37 +773,152 @@ async function mergeLayers() {
   const locked = list.find((L) => L.remesh);
   if (locked) return remeshLocked(locked);
   if (sculpting || xr.stroking) return;
-  toast(t('Uniendo {0} capas…', list.length), 20000);
-  await new Promise((r) => setTimeout(r, 30)); // que se llegue a ver el aviso
-  const T = list.reduce((a, L) => (L.grid.res > a.grid.res || (L.grid.res === a.grid.res && L === active) ? L : a));
-  const rest = list.filter((L) => L !== T), maps = [];
-  const v = new THREE.Vector3();
-  for (const L of rest) {
-    const toT = new THREE.Matrix4().multiplyMatrices(T.f.inv, L.f.voxels.matrix);
-    maps.push(new THREE.Matrix4().multiplyMatrices(L.f.inv, T.f.voxels.matrix));
-    const box = L.grid.occupied();
-    if (!box) continue;
-    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-    for (let c = 0; c < 8; c++) {
-      v.set(c & 1 ? box.hi[0] : box.lo[0], c & 2 ? box.hi[1] : box.lo[1], c & 4 ? box.hi[2] : box.lo[2]).applyMatrix4(toT);
-      v.toArray().forEach((x, a) => { lo[a] = Math.min(lo[a], x); hi[a] = Math.max(hi[a], x); });
-    }
-    T.fit(lo, hi, 0);
+  const plan = mergePlan(list);
+  if (plan.choices.length === 1) return startMerge(plan.choices[0].res);
+  mergeAsk = plan;
+  if (renderer.xr.isPresenting) {
+    panelPage = 'unir';
+    drawPanel();
+  } else {
+    const box = $('mergeAskBtns');
+    $('mergeAskText').textContent = mergeAskText(plan);
+    box.replaceChildren(...plan.choices.map((o, i) => {
+      const b = document.createElement('button');
+      b.textContent = mergeChoice(plan, o, i);
+      b.classList.toggle('primary', !i);
+      b.onclick = () => startMerge(o.res);
+      return b;
+    }));
+    $('mergeAsk').hidden = false;
   }
+  sfx.play('dial', { semi: -5 });
+}
+let mergeAsk = null;
+const mergeAskText = (plan) => t('Esto quedaría muy pesado: unos {0} polígonos. ¿Reducirlo antes de unir?', fmtQuads(plan.full.quads));
+function mergeChoice(plan, o, i) {
+  if (o.res === plan.T.grid.res) return t('Sin reducir: {0}³ · unos {1} polígonos', o.res, fmtQuads(o.quads));
+  return t(i ? '{0}³ · unos {1} polígonos' : '{0}³ · unos {1} polígonos · recomendado', o.res, fmtQuads(o.quads));
+}
+function closeMergeAsk() {
+  mergeAsk = null;
+  $('mergeAsk').hidden = true;
+  if (panelPage === 'unir') {
+    panelPage = 'main';
+    drawPanel();
+  }
+}
+
+// La unión va a trocitos entre imagen e imagen: la vista sigue a la cabeza todo el rato. Hasta el final
+// no se cambia nada de la obra, y las capas de antes siguen a la vista hasta que la nueva está hecha.
+let merge = null;
+const mergeBusy = () => toast('Espera a que acaben de unirse las capas');
+function startMerge(res) {
+  const list = layers.filter((L) => mergePick.has(L));
+  closeMergeAsk();
+  if (list.length < 2 || list.some((L) => L.busy || L.remesh)) return;
+  const plan = mergePlan(list);
+  list.forEach((L) => { L.busy = true; });
+  mergePick.clear();
+  merge = { ...plan, res, p: 0, pct: -1, stamp: list.map((L) => [L, L.version, L.moves]), touched: [], job: null, grid: null };
+  merge.job = mergeJob(merge);
+  mergeBarShow(true);
+  updateHud();
+  drawPanel();
+}
+function* mergeJob(m) {
+  const { T, pieces, res, touched } = m;
+  const k2 = (L) => ((L.grid.h * L.f.s * (res - 1)) / T.f.s) ** 2;
+  const count = (L) => L.grid.bricks.reduce((a, b) => a + (b ? 1 : 0), 0) * k2(L);
+  const shrink = res !== T.grid.res;
+  const weights = pieces.map((x) => (x.empty ? 0 : count(x.L)));
+  const own = shrink ? count(T) : 0, total = own + weights.reduce((a, b) => a + b, 0) || 1;
+  let done = 0;
+  // Reducir empieza en una rejilla aparte; si no, en una copia que comparte con la de ahora lo que no cambie.
+  if (shrink) {
+    m.grid = new SDFGrid(2, 'empty');
+    m.grid.setState(T.grid.state());
+    for (const p of m.grid.resampleSteps(res)) { m.p = (p * own) / total; yield; }
+    done = own;
+    for (const x of pieces) if (!x.empty) m.grid.growTo(x.lo, x.hi, MAX_SAMPLES);
+  } else {
+    for (const x of pieces) if (!x.empty) T.fit(x.lo, x.hi, 0);
+    m.grid = T.grid.share();
+  }
+  for (let i = 0; i < pieces.length; i++) {
+    const x = pieces[i];
+    if (x.empty) continue;
+    for (const p of m.grid.absorbSteps(x.L.grid, x.map, x.scale, x.L.base, x.lo, x.hi, touched)) { m.p = (done + p * weights[i]) / total; yield; }
+    done += weights[i];
+  }
+}
+// Una vez por imagen: un trocito de cálculo, o esperar a que se haga la malla nueva.
+function mergeFrame(dt) {
+  const m = merge;
+  if (!m) return;
+  const inXR = renderer.xr.isPresenting;
+  if (m.job) {
+    if (m.stamp.some(([L, v, n]) => !layers.includes(L) || L.version !== v || L.moves !== n)) return cancelMerge();
+    const end = performance.now() + (inXR ? 8 : 14);
+    while (performance.now() < end) {
+      if (m.job.next().done) {
+        commitMerge(m);
+        break;
+      }
+    }
+  } else if (!m.T.dirty.size) return finishMerge(m);
+  const shown = m.job ? m.p * 0.85 : 0.85 + 0.15 * (1 - m.T.dirty.size / m.meshes);
+  mergeBarPaint(shown, dt);
+}
+function cancelMerge() {
+  merge.list.forEach((L) => { L.busy = false; });
+  merge = null;
+  mergeBarShow(false);
+  updateHud();
+  drawPanel();
+  toast('Ha cambiado una capa: unión cancelada');
+}
+// Ya está calculado: la capa pasa a tener la forma nueva y se rehace solo la malla que cambia.
+function commitMerge(m) {
+  const { T, grid, touched } = m;
+  m.job = null;
+  m.shrunk = grid.h !== T.grid.h;
+  m.full = T.grid.state();
+  m.oldBytes = m.shrunk ? T.grid.bytes() : touched.length * BRICK_BYTES * 2;
+  T.grid.setState(grid.state());
+  if (m.shrunk) {
+    m.oldMeshes = T.chunks.filter(Boolean);
+    T.chunks = [];
+    T.rebuildAll();
+  } else {
+    const C = T.C, nb = T.grid.nb;
+    for (const bi of touched) {
+      const v = [bi % nb, Math.floor(bi / nb) % nb, Math.floor(bi / (nb * nb))];
+      const from = v.map((x) => Math.max(0, Math.ceil(x / 4) - 1)), to = v.map((x) => Math.min(C - 1, (x + 1) >> 2));
+      for (let z = from[2]; z <= to[2]; z++) for (let y = from[1]; y <= to[1]; y++) for (let x = from[0]; x <= to[0]; x++) T.dirty.add(x + C * (y + C * z));
+    }
+    T.changed();
+  }
+  m.meshes = T.dirty.size || 1;
+  setActive(T);
+}
+function finishMerge(m) {
+  const { T, rest, list } = m;
+  merge = null;
+  m.oldMeshes?.forEach((ch) => disposeMesh(T.f.voxels, ch));
   noteEdit();
   const removed = rest.map((L) => ({ L, at: layers.indexOf(L) }));
-  undoStack.push({ layer: T, grid: T.grid, merge: removed, present: true, full: T.grid.state(), bytes: T.grid.bytes() + rest.reduce((a, L) => a + L.grid.bytes(), 0) });
+  undoStack.push({ layer: T, grid: T.grid, merge: removed, present: true, full: m.full, bytes: m.oldBytes + rest.reduce((a, L) => a + L.grid.bytes(), 0) });
   clearRedo();
   trimUndo();
-  rest.forEach((L, i) => T.grid.absorb(L.grid, maps[i].elements, L.f.s / T.f.s, L.base));
-  T.rebuildAll();
   for (const L of rest) {
     layers.splice(layers.indexOf(L), 1);
     spinner.remove(L.group);
   }
-  mergePick.clear();
+  list.forEach((L) => { L.busy = false; });
+  mergeBarShow(false);
   setActive(T);
   live.structure();
+  drawPanel();
   sfx.play('thock');
   toast(t('Capas unidas en {0}, a {1}³', T.name, T.grid.res));
 }
@@ -1102,6 +1259,7 @@ function updateAnim(dt) {
 }
 
 function undo() {
+  if (merge) return mergeBusy();
   if (!undoStack.length) return toast('Nada que deshacer');
   if (remeshLocked(undoStack.at(-1).layer)) return;
   const e = undoStack.pop();
@@ -1112,6 +1270,7 @@ function undo() {
   toast('Deshacer', 900);
 }
 function redo() {
+  if (merge) return mergeBusy();
   if (!redoStack.length) return toast('Nada que rehacer');
   if (remeshLocked(redoStack.at(-1).layer)) return;
   const e = redoStack.pop();
@@ -1153,6 +1312,7 @@ function beginStroke() {
   strokeFx = null;
   strokeRadius = null;
   strokeInk = null;
+  if (merge) return mergeBusy();
   layerForStroke();
   if (remeshLocked()) return;
   latheDepth = null;
@@ -1502,7 +1662,7 @@ function strokeFeel(p, tool, dt, pressure) {
 }
 
 function applyAt(p, dt, pressure = 1) {
-  if (active.remesh) return;
+  if (active.remesh || merge) return;
   p = toSpin(p);
   const tool = activeTool();
   strokeFeel(p, tool, dt, pressure);
@@ -2428,6 +2588,7 @@ $('layerAdd').onclick = newLayer;
 $('layerDel').onclick = () => deleteLayer(active);
 $('layerSphere').onclick = () => resetLayer('sphere');
 $('layerMerge').onclick = () => mergeLayers();
+$('mergeAskNo').onclick = () => closeMergeAsk();
 $('layerClear').onclick = () => resetLayer('empty');
 $('btnMenu').onclick = (e) => {
   const b = e.currentTarget.getBoundingClientRect();
@@ -3205,6 +3366,73 @@ function drawHud3D() {
   hudTex.needsUpdate = true;
 }
 
+// ---------- Barra de la unión de capas ----------
+// En las gafas flota delante de la vista y sigue a la cabeza con un poco de retraso, para no marear.
+const BAR_W = 0.36, BAR_H = BAR_W * (144 / 512);
+const barCanvas = document.createElement('canvas');
+barCanvas.width = 512;
+barCanvas.height = 144;
+const barTex = new THREE.CanvasTexture(barCanvas);
+barTex.colorSpace = THREE.SRGBColorSpace;
+const barMat = (o) => new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, toneMapped: false, ...o });
+const barGroup = new THREE.Group();
+const barBack = new THREE.Mesh(new THREE.PlaneGeometry(BAR_W, BAR_H), barMat({ map: barTex }));
+const barPx = BAR_W / 512;
+const barFillGeo = new THREE.PlaneGeometry(1, 36 * barPx);
+barFillGeo.translate(0.5, 0, 0);
+const barFill = new THREE.Mesh(barFillGeo, barMat({ color: CERA.yellow }));
+const barGlow = new THREE.Mesh(new THREE.PlaneGeometry(40 * barPx, 36 * barPx), barMat({ color: 0xffffff, opacity: 0.55 }));
+barFill.position.set(-BAR_W / 2 + 18 * barPx, -BAR_H / 2 + 36 * barPx, 0.001);
+barGlow.position.set(0, barFill.position.y, 0.002);
+barBack.renderOrder = 1100;
+barFill.renderOrder = 1101;
+barGlow.renderOrder = 1102;
+barGroup.add(barBack, barFill, barGlow);
+barGroup.visible = false;
+scene.add(barGroup);
+const barWant = new THREE.Vector3(), barQuat = new THREE.Quaternion();
+let barTime = 0, barPlaced = false;
+function mergeBarShow(on) {
+  barGroup.visible = on && renderer.xr.isPresenting;
+  $('mergeBar').hidden = !on || renderer.xr.isPresenting;
+  barPlaced = false;
+  if (on) mergeBarPaint(0, 0);
+}
+function mergeBarPaint(p, dt) {
+  const inXR = renderer.xr.isPresenting, room = BAR_W - 36 * barPx;
+  barTime += dt;
+  barGroup.visible = inXR;
+  $('mergeBar').hidden = inXR;
+  if (inXR) {
+    const cam = renderer.xr.getCamera();
+    cam.getWorldPosition(barWant);
+    cam.getWorldQuaternion(barQuat);
+    barWant.add(new THREE.Vector3(0, 0, -0.85).applyQuaternion(barQuat));
+    const k = barPlaced ? 1 - Math.exp(-dt * 6) : 1;
+    barGroup.position.lerp(barWant, k);
+    barGroup.quaternion.slerp(barQuat, k);
+    barPlaced = true;
+    barFill.scale.x = Math.max(0.001, p * room);
+    // Un brillo que recorre la barra: mientras se mueva, el programa está vivo.
+    barGlow.position.x = -BAR_W / 2 + 18 * barPx + ((barTime * 0.6) % 1) * (room - 40 * barPx) + 20 * barPx;
+  }
+  const pct = Math.floor(p * 100);
+  if (merge && merge.pct === pct) return;
+  if (merge) merge.pct = pct;
+  const label = t('Uniendo capas') + ' · ' + pct + '%';
+  $('mergeBarText').textContent = label;
+  $('mergeBarFill').style.width = pct + '%';
+  if (!inXR) return;
+  const g = barCanvas.getContext('2d');
+  g.fillStyle = CERA.ink;
+  g.fillRect(0, 0, 512, 144);
+  g.fillStyle = CERA.paper;
+  g.font = '700 40px Mali, system-ui, "Noto Sans Thai", sans-serif';
+  g.fillText(label, 18, 58);
+  g.fillRect(18, 90, 476, 36);
+  barTex.needsUpdate = true;
+}
+
 // ---------- Panel de la mano izquierda (gafas) ----------
 // El panel son dos columnas, cada una con dos pestañas: PW y PANE_H son lo que mide una columna por dentro.
 const PW = 768, PANE_H = 700, TAB_H = 72, CW = PW * 2, CH = TAB_H + PANE_H, PANEL_W = 0.44, PANEL_H = PANEL_W * (CH / CW);
@@ -3311,8 +3539,8 @@ Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => doc
 const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
 const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
 const panelTab = ['brush', 'color'];
-const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
-const PAGE_PANE = { export: 1 }; // las demás se abren en la columna izquierda
+const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, unir: buildMergePage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
+const PAGE_PANE = { export: 1, unir: 1 }; // las demás se abren en la columna izquierda
 const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']); // su segundo bloque va en la otra columna
 const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, color: buildColorTab, obra: buildObraTab };
 function buildPanel() {
@@ -3530,6 +3758,19 @@ function buildSoundPage() {
   return W;
 }
 const CALL_TEXT = { off: 'Apagada', waiting: 'Esperando al Mac…', connecting: 'Conectando…', connected: 'Conectada' };
+// Antes de una unión pesada: reducir o dejarla tal cual.
+function buildMergePage() {
+  const W = [], plan = mergeAsk;
+  const M = 32, IW = PW - 2 * M;
+  W.push(panelBlock(8, 92, CERA.ink));
+  pageHead(W, 'Unir capas');
+  W.push(panelBlock(108, 500, CERA.paper));
+  if (!plan) return W;
+  W.push({ type: 'label', x: M, y: 150, size: 26, wrap: IW, text: mergeAskText(plan) });
+  plan.choices.forEach((o, i) => W.push({ type: 'button', x: M, y: 250 + i * 84, w: IW, h: 72, size: 24, label: mergeChoice(plan, o, i), active: () => !i, onClick: () => startMerge(o.res) }));
+  W.push({ type: 'label', x: M, y: 530, size: 22, wrap: IW, text: 'Reducir quita detalle fino. Se puede deshacer.' });
+  return W;
+}
 function buildCallPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M, bw = (IW - 10) / 2;
@@ -4702,6 +4943,7 @@ renderer.setAnimationLoop(() => {
   floor.visible = state.floor;
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
+  mergeFrame(dt);
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
   // En el casco cada imagen tiene unos 13 ms: el remallado no puede comérselos todos.
   const inXR = renderer.xr.isPresenting;
@@ -5135,5 +5377,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { mergeLayers, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

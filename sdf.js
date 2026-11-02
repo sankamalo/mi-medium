@@ -216,10 +216,15 @@ export class SDFGrid {
   // bloque entero cae dentro/fuera (para saltárselo), o 0 si hay que calcularlo.
   // colorFn(x,y,z) -> [r,g,b,a] | null copia color (al cambiar de resolución).
   build(fn, uniform, colorFn) {
+    for (const _ of this.buildSteps(fn, uniform, colorFn));
+  }
+  // Lo mismo poco a poco: va cediendo el paso e indica por dónde va (de 0 a 1).
+  *buildSteps(fn, uniform, colorFn) {
     const { nb, n, h, o, band } = this;
     for (let bz = 0; bz < nb; bz++)
       for (let by = 0; by < nb; by++)
         for (let bx = 0; bx < nb; bx++) {
+          if (!(bx & 15)) yield (bz + by / nb) / nb;
           const bi = bx + nb * (by + nb * bz);
           this.colors[bi] = null;
           const u = uniform(bx, by, bz);
@@ -248,6 +253,7 @@ export class SDFGrid {
             }
             this.colors[bi] = c;
           }
+          yield (bz + by / nb) / nb;
         }
   }
 
@@ -305,6 +311,9 @@ export class SDFGrid {
 
   // Cambia la resolución conservando la forma, el color y el espacio que cubre.
   resample(res) {
+    for (const _ of this.resampleSteps(res));
+  }
+  *resampleSteps(res) {
     const old = new SDFGrid(2, 'empty');
     old.setState(this.state());
     this.n = this.samplesFor(res);
@@ -314,7 +323,7 @@ export class SDFGrid {
     this.view = null;
     this.alloc();
     const at = (i) => (this.o + i * B * this.h - old.o) / old.h;
-    this.build(
+    yield* this.buildSteps(
       (x, y, z) => old.sample(x, y, z),
       (bx, by, bz) => {
         const lo = (i) => Math.max(0, Math.min(old.n - 1, Math.floor(at(i)) - 1));
@@ -365,56 +374,90 @@ export class SDFGrid {
     );
   }
 
-  // Une otra capa a esta sin tocar lo que hay. e: matriz (por columnas) de esta rejilla a la otra;
-  // scale: cómo pasar sus distancias a las de esta; base: su color donde no está pintada.
-  absorb(src, e, scale, base) {
-    const old = new SDFGrid(2, 'empty');
-    old.setState(this.state());
-    this.view = null;
-    this.alloc();
-    const s = src.n - 1, h = this.h, g0 = this.o, tint = [base[0], base[1], base[2], 255];
-    const tp = (x, y, z) => [
-      e[0] * x + e[4] * y + e[8] * z + e[12],
-      e[1] * x + e[5] * y + e[9] * z + e[13],
-      e[2] * x + e[6] * y + e[10] * z + e[14],
-    ];
-    const at = (i) => (this.o + i * B * h - old.o) / old.h;
+  // Hace sitio hasta la caja lo..hi, sin pasarse del tope de muestras.
+  growTo(lo, hi, max) {
+    const g1 = this.o + (this.n - 1) * this.h, pad = this.band * 2;
+    let need = 0;
+    for (let i = 0; i < 3; i++) need = Math.max(need, this.o - (lo[i] - pad), hi[i] + pad - g1);
+    if (need <= 0) return;
+    let S = Math.ceil(Math.max(need / this.h, this.n * 0.25) / 32) * 32;
+    if (this.n + 2 * S > max) S = Math.floor((max - this.n) / 2 / 32) * 32;
+    if (S > 0) this.grow(S);
+  }
+
+  // Une otra capa a esta poco a poco. Solo se calculan los bloques donde cae la otra capa; el resto sigue
+  // siendo el mismo bloque, sin gastar tiempo ni memoria. e: matriz (por columnas) de esta rejilla a la otra;
+  // scale: cómo pasar sus distancias a las de esta; base: su color donde no está pintada; lo..hi: la caja
+  // que ocupa aquí; touched: se apuntan los bloques que cambian.
+  *absorbSteps(src, e, scale, base, lo, hi, touched) {
+    const { nb, n, h, o, band, bricks, colors, fill } = this;
+    const s = src.n - 1, tint = [base[0], base[1], base[2], 255];
+    const tp = (x, y, z, a) => e[a] * x + e[a + 4] * y + e[a + 8] * z + e[a + 12];
     const srcFill = (bx, by, bz) => {
-      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      const L = [Infinity, Infinity, Infinity], H = [-Infinity, -Infinity, -Infinity];
       for (let c = 0; c < 8; c++) {
-        const p = tp(g0 + (bx * B + (c & 1) * (B - 1)) * h, g0 + (by * B + ((c >> 1) & 1) * (B - 1)) * h, g0 + (bz * B + (c >> 2) * (B - 1)) * h);
+        const x = o + (bx * B + (c & 1) * (B - 1)) * h, y = o + (by * B + ((c >> 1) & 1) * (B - 1)) * h, z = o + (bz * B + (c >> 2) * (B - 1)) * h;
         for (let a = 0; a < 3; a++) {
-          const v = (p[a] - src.o) / src.h;
-          lo[a] = Math.min(lo[a], Math.floor(v) - 1);
-          hi[a] = Math.max(hi[a], Math.ceil(v) + 1);
+          const v = (tp(x, y, z, a) - src.o) / src.h;
+          L[a] = Math.min(L[a], Math.floor(v) - 1);
+          H[a] = Math.max(H[a], Math.ceil(v) + 1);
         }
       }
-      if (hi.some((v) => v < 0) || lo.some((v) => v > s)) return 1;
-      const partial = lo.some((v) => v < 0) || hi.some((v) => v > s);
-      const L = lo.map((v) => Math.max(0, v)), H = hi.map((v) => Math.min(s, v));
-      if (!src.regionUniform(L[0], L[1], L[2], H[0], H[1], H[2])) return 0;
-      const f = src.fill[(L[0] >> 3) + src.nb * ((L[1] >> 3) + src.nb * (L[2] >> 3))];
+      if (H.some((v) => v < 0) || L.some((v) => v > s)) return 1;
+      const partial = L.some((v) => v < 0) || H.some((v) => v > s);
+      const l = L.map((v) => Math.max(0, v)), u = H.map((v) => Math.min(s, v));
+      if (!src.regionUniform(l[0], l[1], l[2], u[0], u[1], u[2])) return 0;
+      const f = src.fill[(l[0] >> 3) + src.nb * ((l[1] >> 3) + src.nb * (l[2] >> 3))];
       return partial && f !== 1 ? 0 : f;
     };
-    const oldFill = (bx, by, bz) => {
-      const lo = (i) => Math.max(0, Math.min(old.n - 1, Math.floor(at(i)) - 1));
-      const hi = (i) => Math.max(0, Math.min(old.n - 1, Math.ceil(at(i + 1)) + 1));
-      if (!old.regionUniform(lo(bx), lo(by), lo(bz), hi(bx), hi(by), hi(bz))) return 0;
-      return old.fill[(lo(bx) >> 3) + old.nb * ((lo(by) >> 3) + old.nb * (lo(bz) >> 3))];
-    };
-    this.build(
-      (x, y, z) => { const p = tp(x, y, z); return Math.min(old.sample(x, y, z), src.sample(p[0], p[1], p[2]) * scale); },
-      (bx, by, bz) => {
-        const a = oldFill(bx, by, bz), b = srcFill(bx, by, bz);
-        if (a === -1 || b === -1) return -1;
-        return a === 1 && b === 1 ? 1 : 0;
-      },
-      (x, y, z) => {
-        const p = tp(x, y, z);
-        if (src.sample(p[0], p[1], p[2]) * scale < old.sample(x, y, z)) return src.sampleColor(p[0], p[1], p[2]) || tint;
-        return old.sampleColor(x, y, z);
-      },
-    );
+    const first = (a) => Math.max(0, Math.floor((lo[a] - o) / h / B) - 1);
+    const last = (a) => Math.min(nb - 1, Math.ceil((hi[a] - o) / h / B) + 1);
+    const x0 = first(0), x1 = last(0), y0 = first(1), y1 = last(1), z0 = first(2), z1 = last(2);
+    for (let bz = z0; bz <= z1; bz++) for (let by = y0; by <= y1; by++) for (let bx = x0; bx <= x1; bx++) {
+      const at = (bz - z0 + (by - y0) / (y1 - y0 + 1)) / (z1 - z0 + 1);
+      if (!(bx & 15)) yield at;
+      const bi = bx + nb * (by + nb * bz), b0 = bricks[bi], f0 = fill[bi], c0 = colors[bi];
+      if (!b0 && f0 === -1) continue; // ya es todo macizo
+      const u = srcFill(bx, by, bz);
+      if (u === 1) continue; // la otra capa no llega aquí
+      if (u === -1) {
+        bricks[bi] = colors[bi] = null;
+        fill[bi] = -1;
+        touched.push(bi);
+        continue;
+      }
+      const b = new Float32Array(B3);
+      let c = null, won = false, allIn = true, allOut = true;
+      for (let k = 0; k < B3; k++) {
+        const vx = bx * B + (k & 7), vy = by * B + ((k >> 3) & 7), vz = bz * B + (k >> 6);
+        const x = o + vx * h, y = o + vy * h, z = o + vz * h;
+        const px = tp(x, y, z, 0), py = tp(x, y, z, 1), pz = tp(x, y, z, 2);
+        const had = b0 ? b0[k] : f0 * band, ds = src.sample(px, py, pz) * scale;
+        let d = Math.max(-band, Math.min(band, Math.min(had, ds)));
+        if (vx <= 0 || vy <= 0 || vz <= 0 || vx >= n - 1 || vy >= n - 1 || vz >= n - 1) d = Math.max(d, h * 0.5);
+        b[k] = d;
+        if (d > -band * 0.999) allIn = false;
+        if (d < band * 0.999) allOut = false;
+        if (ds < had) {
+          won = true;
+          if (!c) c = new Uint8Array(B3 * 4);
+          c.set(src.sampleColor(px, py, pz) || tint, k * 4);
+        } else if (c0 && c0[k * 4 + 3]) {
+          if (!c) c = new Uint8Array(B3 * 4);
+          c[k * 4] = c0[k * 4]; c[k * 4 + 1] = c0[k * 4 + 1]; c[k * 4 + 2] = c0[k * 4 + 2]; c[k * 4 + 3] = c0[k * 4 + 3];
+        }
+      }
+      yield at;
+      if (!won) continue;
+      touched.push(bi);
+      if (allIn || allOut) {
+        bricks[bi] = colors[bi] = null;
+        fill[bi] = allIn ? -1 : 1;
+      } else {
+        bricks[bi] = b;
+        colors[bi] = c;
+      }
+    }
   }
 
   // Rayo (local) contra la superficie. Devuelve [x,y,z, t] o null.
