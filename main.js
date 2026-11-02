@@ -15,6 +15,7 @@ import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang, translateDOM } from './i18n.js';
 import { sfx, PENTATONIC } from './sonidos.js';
+import { OPCIONES } from './anadir.js';
 import { Tutorial } from './tutorial.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
@@ -1297,6 +1298,7 @@ function trackLine(p, pressure, tool) {
 function endStroke() {
   if (strokeFx) {
     if (strokeFx.touched) sfx.play('release');
+    sfx.strokeEnd();
     tut?.emit('stroke', { tool: strokeFx.tool, touched: strokeFx.touched, time: (performance.now() - strokeFx.t0) / 1000 });
     strokeFx = null;
   }
@@ -1369,7 +1371,8 @@ function strokeFeel(p, tool, dt, pressure) {
     s.touched = true;
     sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
   }
-  sfx.stroke(tool, s.speed / 0.6, pressure, dt, touching, semi);
+  // Un sello se pone de un golpe: no tiene sonido seguido.
+  if (!(tool === 'add' && shapeActive() && state.shape === 'stamp')) sfx.stroke(tool, s.speed / 0.6, pressure, dt, touching, semi);
 }
 
 function applyAt(p, dt, pressure = 1) {
@@ -3206,10 +3209,16 @@ function buildTechTab() {
   W.push({ type: 'label', x: M, y: yi + 176, size: 20, wrap: IW,
     text: 'Tira de una esquina amarilla con el mando derecho para dejar el panel donde quieras.' });
   W.push({
-    type: 'slider', x: M, y: yi + 290, w: IW, h: 30, label: 'Sonidos',
+    type: 'slider', x: M, y: yi + 262, w: IW, h: 30, label: 'Sonidos',
     get: () => sfx.volume, set: (v) => sfx.setVolume(Math.round(v * 20) / 20),
     text: () => (sfx.volume ? Math.round(sfx.volume * 100) + '%' : t('no')),
   });
+  W.push({ type: 'label', x: M, y: yi + 316, size: 20, text: 'Sonido de Añadir' });
+  const sw = (IW - 3 * 8) / 4;
+  Object.entries(OPCIONES).forEach(([id, op], i) => W.push({
+    type: 'button', x: M + i * (sw + 8), y: yi + 336, w: sw, h: 54, label: op.name, size: 22, group: 'addSound',
+    active: () => sfx.addSound === id, onClick: () => { sfx.setAddSound(id); drawPanel(); },
+  }));
   return W;
 }
 // Cabecera de las páginas de dentro: título y volver, sobre el bloque del que vienen.
@@ -4720,6 +4729,13 @@ function tutFrame(dt) {
 }
 if (!SPECTATOR) {
   $('btnTut')?.addEventListener('click', startTutorial);
+  const pick = $('addSound');
+  if (pick) {
+    for (const [id, op] of Object.entries(OPCIONES)) pick.add(new Option(op.name, id));
+    translateDOM(pick);
+    pick.value = sfx.addSound;
+    pick.addEventListener('change', () => sfx.setAddSound(pick.value));
+  }
   const vol = $('sfxVol');
   if (vol) {
     vol.value = sfx.volume;

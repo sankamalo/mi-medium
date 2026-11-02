@@ -1,4 +1,4 @@
-// Opciones de sonido continuo para Añadir: suena desde que aprietas hasta que sueltas.
+// Los sonidos continuos de Añadir, a elegir en Técnico: suenan desde que aprietas hasta que sueltas.
 // Cada opción son dos bucles de distinta duración (nunca coinciden igual), un filtro y un volumen
 // que se mueven solos y al ritmo de la mano, y detalles sueltos al azar por encima.
 
@@ -69,54 +69,21 @@ function closeLoop(o, sr) {
 }
 
 // bed: lo que suena siempre · accent: el detalle suelto · lo/hi: filtro con la mano quieta/rápida ·
-// rate: detalles por segundo, quieto y rápido.
+// rate: detalles por segundo, quieto y rápido · accentVol: fuerza del detalle.
 export const OPCIONES = {
-  espuma: {
-    name: 'Espuma', hint: 'Spray de espuma que crece: miles de burbujitas', lo: 1500, hi: 3400, rate: [3, 9],
-    bed(o, sr, d) {
-      const a = wander(d, 0.9), b = wander(d, 3);
-      hiss(o, sr, { fc: (t) => 650 + 650 * a(t), mode: 'lp', env: (t) => 0.1 + 0.08 * b(t) });
-      scatter(o, sr, (t) => 65 + 70 * b(t), (t) => {
-        const f = rnd(620, 1900);
-        blip(o, sr, t, { f0: f, f1: f * rnd(1.15, 1.7), amp: rnd(0.04, 0.22) * (0.5 + a(t)), decay: rnd(0.002, 0.006), attack: 0.0008, glide: 0.006 });
-      });
-    },
-    accent(o, sr) {
-      const f = rnd(460, 1000);
-      blip(o, sr, 0, { f0: f, f1: f * rnd(1.4, 2), amp: 1, decay: rnd(0.008, 0.014), attack: 0.0015, glide: 0.01 });
-    },
-  },
-  manga: {
-    name: 'Manga pastelera', hint: 'Crema gorda saliendo, con empujones de presión', lo: 950, hi: 2300, rate: [1.5, 5],
-    bed(o, sr, d) {
-      const a = wander(d, 0.7), push = wander(d, 5.5), rate = wander(d, 1.2);
-      hiss(o, sr, { fc: (t) => 380 + 340 * a(t), q: 2.6, env: (t) => 0.22 + 0.5 * push(t) * push(t) });
-      hiss(o, sr, { fc: (t) => 950 + 350 * a(t), mode: 'lp', env: (t) => 0.035 + 0.03 * push(t) });
-      scatter(o, sr, (t) => 15 + 12 * rate(t), (t) => {
-        const f = rnd(250, 340), amp = (0.25 + 0.45 * push(t)) * rnd(0.7, 1);
-        blip(o, sr, t, { f0: f, amp: amp * 0.8, decay: rnd(0.008, 0.014), attack: 0.002 });
-        blip(o, sr, t, { f0: f * rnd(2.2, 2.8), amp: amp * 0.6, decay: rnd(0.004, 0.008), attack: 0.002 });
-      });
-    },
-    accent(o, sr) {
-      const dt = new Float32Array(o.length);
-      hiss(dt, sr, { fc: () => rnd(380, 760), q: 2.2, env: (t) => (1 - Math.exp(-t / 0.006)) * Math.exp(-t / 0.024) });
-      for (let i = 0; i < o.length; i++) o[i] += dt[i];
-    },
-  },
   slime: {
-    name: 'Slime', hint: 'Masa pegajosa que se estira, con burbujitas gordas', lo: 1050, hi: 2500, rate: [1.5, 6],
+    name: 'Slime', hint: 'Masa pegajosa que se estira despacio, con alguna burbuja suave', lo: 950, hi: 2100, rate: [0.3, 1.2], accentVol: 0.45,
     bed(o, sr, d) {
-      const a = wander(d, 2.4), b = wander(d, 0.8), c = wander(d, 1.1);
-      hiss(o, sr, { fc: (t) => 380 + 520 * a(t), q: 5, env: (t) => 0.08 + 0.26 * b(t) });
-      scatter(o, sr, (t) => 5 + 8 * c(t), (t) => {
-        const f = rnd(165, 300);
-        blip(o, sr, t, { f0: f, f1: f * rnd(1.7, 2.7), amp: rnd(0.25, 0.8), decay: rnd(0.016, 0.032), attack: rnd(0.003, 0.006), glide: rnd(0.018, 0.035) });
+      const a = wander(d, 1.2), b = wander(d, 0.5), c = wander(d, 0.6);
+      hiss(o, sr, { fc: (t) => 380 + 480 * a(t), q: 5, env: (t) => 0.13 + 0.2 * b(t) });
+      scatter(o, sr, (t) => 1.2 + 2 * c(t), (t) => {
+        const f = rnd(165, 280);
+        blip(o, sr, t, { f0: f, f1: f * rnd(1.5, 2.2), amp: rnd(0.08, 0.26), decay: rnd(0.024, 0.042), attack: rnd(0.006, 0.012), glide: rnd(0.03, 0.05) });
       });
     },
     accent(o, sr) {
-      const f = rnd(210, 340);
-      blip(o, sr, 0, { f0: f, f1: f * rnd(1.8, 2.5), amp: 1, decay: rnd(0.018, 0.03), attack: 0.004, glide: 0.024 });
+      const f = rnd(210, 320);
+      blip(o, sr, 0, { f0: f, f1: f * rnd(1.5, 2), amp: 1, decay: rnd(0.024, 0.036), attack: 0.008, glide: 0.034 });
     },
   },
   perlitas: {
@@ -258,7 +225,7 @@ export class Continuo {
     const src = this.ctx.createBufferSource(), g = this.ctx.createGain();
     src.buffer = v.bank.accents[i];
     src.playbackRate.value = 2 ** ((semi + rnd(-2, 2)) / 12);
-    g.gain.value = vol * rnd(0.55, 1);
+    g.gain.value = vol * rnd(0.55, 1) * (v.op.accentVol ?? 1);
     src.connect(g).connect(v.filter);
     src.onended = () => g.disconnect();
     src.start();

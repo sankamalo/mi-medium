@@ -10,7 +10,7 @@ try { const s = localStorage.getItem('plastilinaLang'); if (LANGS.includes(s)) l
 const D = {
   // Tutorial y sonidos
   '▶ Jugar tutorial': ['▶ Play tutorial', '▶ เล่นบทเรียน'], 'Saltar paso': ['Skip step', 'ข้ามขั้นนี้'], 'Salir del tutorial': ['Exit tutorial', 'ออกจากบทเรียน'],
-  'Sonidos': ['Sounds', 'เสียง'], 'TU PRIMER TOMATE': ['YOUR FIRST TOMATO', 'มะเขือเทศลูกแรกของคุณ'],
+  'Sonidos': ['Sounds', 'เสียง'], 'Sonido de Añadir': ['Add sound', 'เสียงตอนเพิ่ม'], 'Slime': ['Slime', 'สไลม์'], 'Goma': ['Rubber', 'ยาง'], 'Perlitas': ['Beads', 'ลูกปัด'], 'Ronroneo': ['Purr', 'แมวคราง'], 'TU PRIMER TOMATE': ['YOUR FIRST TOMATO', 'มะเขือเทศลูกแรกของคุณ'],
   '¡Tomate terminado! Ya sabes jugar.': ['Tomato done! Now you know how to play.', 'มะเขือเทศเสร็จแล้ว! ตอนนี้คุณเล่นเป็นแล้ว'],
   'Mantén el gatillo y pasa la punta por la bola para añadirle barro.': ['Hold the trigger and run the tip over the ball to add clay.', 'กดไกค้างไว้ แล้วลากปลายผ่านลูกบอลเพื่อเติมดิน'],
   'Mantén el clic izquierdo y pasa por la bola para añadirle barro.': ['Hold left click and move over the ball to add clay.', 'กดคลิกซ้ายค้างไว้ แล้วลากผ่านลูกบอลเพื่อเติมดิน'],

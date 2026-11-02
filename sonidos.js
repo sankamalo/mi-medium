@@ -3,6 +3,7 @@
 // poco de tono y de fuerza. Así no se repite, no pesa y no hay licencias de por medio.
 // Todo es corto y sin agudos que pinchen; si insistes en el mismo, se va suavizando.
 // Los altavoces de unas gafas casi no dan graves: cada golpe lleva también medios para oírse ahí.
+import { Continuo, OPCIONES } from './anadir.js';
 
 // Tono que se apaga, con un deslizamiento de frecuencia (f0 → f1): el corazón de clics y burbujas.
 function tone(o, sr, { at = 0, f0, f1 = f0, amp = 1, decay = 0.03, glide = 0.03, attack = 0.0008 }) {
@@ -156,7 +157,7 @@ const SOUNDS = {
 // Cómo suena cada herramienta mientras la usas: qué grano, cuántos por segundo (quieto → rápido),
 // y un segundo grano que aparece de vez en cuando.
 const TOOL_FEEL = {
-  add: { g: 'squish', still: 0, fast: 15, extra: 'bubble', every: 0.14 },
+  add: { hold: true }, // este no son granos: suena seguido hasta soltar (anadir.js)
   inflate: { g: 'bubble', still: 7, fast: 13, vol: 0.85, extra: 'squish', every: 0.2 },
   remove: { g: 'scrape', still: 3, fast: 28, extra: 'squish', every: 0.06 }, // arena cinética
   crease: { g: 'scrape', still: 2, fast: 24, vol: 0.85 },
@@ -180,7 +181,13 @@ class Sonidos {
     this.volume = 0.7;
     this.muted = false; // el espejo del Mac no suena
     this.grainAt = 0;
-    try { const v = parseFloat(localStorage.getItem('plastilinaSonido')); if (v >= 0 && v <= 1) this.volume = v; } catch {}
+    this.addSound = 'slime';
+    try {
+      const v = parseFloat(localStorage.getItem('plastilinaSonido'));
+      if (v >= 0 && v <= 1) this.volume = v;
+      const a = localStorage.getItem('plastilinaAnadir');
+      if (OPCIONES[a]) this.addSound = a;
+    } catch {}
   }
 
   // El navegador no deja sonar hasta que tocas algo: se llama en el primer clic y al entrar en las gafas.
@@ -203,6 +210,8 @@ class Sonidos {
       limit.attack.value = 0.002;
       limit.release.value = 0.12;
       this.master.connect(air).connect(limit).connect(this.ctx.destination);
+      this.held = new Continuo(this.ctx, this.master);
+      setTimeout(() => this.held.prepare(this.addSound), 300); // listo antes de apretar, sin tirones
     }
     if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   }
@@ -211,6 +220,28 @@ class Sonidos {
     this.volume = v;
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
     try { localStorage.setItem('plastilinaSonido', String(v)); } catch {}
+  }
+
+  // Elegir el sonido de Añadir: se oye un momento para saber cuál es.
+  setAddSound(id) {
+    this.addSound = id;
+    try { localStorage.setItem('plastilinaAnadir', id); } catch {}
+    if (this.muted || !this.volume) return;
+    this.unlock();
+    if (!this.held) return;
+    this.held.start(id);
+    this.holding = true;
+    this.watchHold(800);
+  }
+  // Si dejan de llegar fotogramas (te quitas las gafas, cambias de herramienta) se apaga solo.
+  watchHold(ms) {
+    clearTimeout(this.holdTimer);
+    this.holdTimer = setTimeout(() => this.strokeEnd(), ms);
+  }
+  strokeEnd() {
+    clearTimeout(this.holdTimer);
+    this.holding = false;
+    this.held?.stop();
   }
 
   // Elige una versión distinta de la última; se fabrica la primera vez que hace falta.
@@ -289,6 +320,16 @@ class Sonidos {
   stroke(tool, speed, pressure, dt, touching, semi = 0) {
     if (this.muted || !this.ctx || !touching) return;
     const f = TOOL_FEEL[tool] || TOOL_FEEL.smooth;
+    if (f.hold) {
+      if (!this.volume) return;
+      if (!this.holding) {
+        this.held.start(this.addSound, semi);
+        this.holding = true;
+      }
+      this.held.update(dt, speed, pressure, semi);
+      this.watchHold(350);
+      return;
+    }
     const rate = f.still + (f.fast - f.still) * Math.sqrt(Math.min(1, speed));
     if (rate <= 0) return;
     this.grainAt -= dt;

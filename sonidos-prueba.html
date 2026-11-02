@@ -74,6 +74,7 @@
     if (!held) return;
     held.b.classList.remove('on');
     held = null;
+    sfx.strokeEnd();
     sfx.play('release');
   });
   function frame(now) {
