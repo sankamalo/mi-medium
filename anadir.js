@@ -69,21 +69,25 @@ function closeLoop(o, sr) {
 }
 
 // bed: lo que suena siempre · accent: el detalle suelto · lo/hi: filtro con la mano quieta/rápida ·
-// rate: detalles por segundo, quieto y rápido · accentVol: fuerza del detalle.
+// rate: detalles por segundo, quieto y rápido · accentVol: fuerza del detalle ·
+// level: volumen de la opción · spread: cuánto se mueve de lado a lado.
 export const OPCIONES = {
   slime: {
-    name: 'Slime', hint: 'Masa pegajosa que se estira despacio, con alguna burbuja suave', lo: 950, hi: 2100, rate: [0.3, 1.2], accentVol: 0.45,
+    name: 'Slime', hint: 'Spray pequeño y cercano que sale pegajoso, con alguna burbuja muy flojita', lo: 2600, hi: 3800, rate: [0.15, 0.6], accentVol: 0.22, level: 0.8, spread: 0.03,
     bed(o, sr, d) {
-      const a = wander(d, 1.2), b = wander(d, 0.5), c = wander(d, 0.6);
-      hiss(o, sr, { fc: (t) => 380 + 480 * a(t), q: 5, env: (t) => 0.13 + 0.2 * b(t) });
-      scatter(o, sr, (t) => 1.2 + 2 * c(t), (t) => {
-        const f = rnd(165, 280);
-        blip(o, sr, t, { f0: f, f1: f * rnd(1.5, 2.2), amp: rnd(0.08, 0.26), decay: rnd(0.024, 0.042), attack: rnd(0.006, 0.012), glide: rnd(0.03, 0.05) });
+      const a = wander(d, 0.4), grain = wander(d, 14), c = wander(d, 0.5);
+      // Banda estrecha y casi fija, con chisporroteo fino: un chorro, no una ráfaga de aire.
+      hiss(o, sr, { fc: (t) => 1250 + 350 * a(t), q: 1.6, env: (t) => 0.1 + 0.06 * grain(t) });
+      for (let t = 0; t < d; t += rnd(0.003, 0.009)) blip(o, sr, t, { f0: rnd(1100, 2500), amp: rnd(0.03, 0.12), decay: rnd(0.001, 0.0025), attack: 0.0004 });
+      for (let t = 0; t < d; t += rnd(0.06, 0.16)) blip(o, sr, t, { f0: rnd(600, 900), amp: rnd(0.04, 0.1), decay: 0.005, attack: 0.001 });
+      scatter(o, sr, (t) => 0.6 + c(t), (t) => {
+        const f = rnd(240, 380);
+        blip(o, sr, t, { f0: f, f1: f * rnd(1.4, 1.9), amp: rnd(0.03, 0.09), decay: rnd(0.02, 0.034), attack: 0.008, glide: 0.03 });
       });
     },
     accent(o, sr) {
-      const f = rnd(210, 320);
-      blip(o, sr, 0, { f0: f, f1: f * rnd(1.5, 2), amp: 1, decay: rnd(0.024, 0.036), attack: 0.008, glide: 0.034 });
+      const f = rnd(260, 380);
+      blip(o, sr, 0, { f0: f, f1: f * rnd(1.4, 1.8), amp: 1, decay: rnd(0.02, 0.03), attack: 0.008, glide: 0.03 });
     },
   },
   perlitas: {
@@ -182,7 +186,7 @@ export class Continuo {
     filter.Q.value = 0.4;
     const env = ctx.createGain();
     env.gain.value = 0;
-    env.gain.setTargetAtTime(0.75, now, 0.022);
+    env.gain.setTargetAtTime(0.75 * (op.level ?? 1), now, 0.022);
     const pan = ctx.createStereoPanner();
     filter.connect(env).connect(pan).connect(this.out);
     const sources = bank.loops.map((buffer, i) => {
@@ -205,8 +209,8 @@ export class Continuo {
     for (let i = 0; i < 4; i++) v.walk[i] = clamp(v.walk[i] + (rnd(-1, 1) * 2.4 - v.walk[i] * 0.8) * dt, -1, 1);
     const open = clamp(0.65 * move + 0.35 * pressure, 0, 1);
     v.filter.frequency.setTargetAtTime((v.op.lo + (v.op.hi - v.op.lo) * open) * (1 + v.walk[0] * 0.18), now, 0.05);
-    v.env.gain.setTargetAtTime((0.55 + 0.2 * pressure + 0.25 * move) * (1 + v.walk[1] * 0.12), now, 0.05);
-    v.pan.pan.setTargetAtTime(v.walk[2] * 0.14, now, 0.1);
+    v.env.gain.setTargetAtTime((0.55 + 0.2 * pressure + 0.25 * move) * (1 + v.walk[1] * 0.12) * (v.op.level ?? 1), now, 0.05);
+    v.pan.pan.setTargetAtTime(v.walk[2] * (v.op.spread ?? 0.14), now, 0.1);
     const rate = 2 ** ((semi + v.walk[3] * 0.45 + move * 0.3) / 12);
     v.sources.forEach(({ src, g }, i) => {
       src.playbackRate.setTargetAtTime(rate * (i ? 1.006 : 1), now, 0.08);
