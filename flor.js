@@ -537,7 +537,7 @@ class Flat {
 
 // Iconos: un SVG de relleno por cada pétalo, en app/iconos/. Para cambiar uno, se cambia el archivo.
 const ICON_FILES = {
-  inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
+  text: 'text', inflate: 'inflate', move: 'move', paint: 'paint', add: 'add', remove: 'remove', flatten: 'flatten', grab: 'grab', sym: 'sym',
   pinch: 'pinch', crease: 'crease', 'sym:x': 'sym-x', 'sym:y': 'sym-y', 'sym:z': 'sym-z', 'sym:radial': 'sym-radial', 'sym:lathe': 'sym-lathe',
   'shape:sphere': 'shape-sphere', 'shape:cube': 'shape-cube', 'shape:pyramid': 'shape-pyramid', 'shape:more': 'shape-more',
   'tool:palillo': 'tool-palillo', 'tool:cuter': 'tool-cuter', 'tool:cuchara': 'tool-cuchara',
@@ -570,16 +570,17 @@ async function loadIcon(p, size) {
 
 // El reloj de la flor: arriba las de siempre, abajo las demás.
 export const FLOWER = [
-  { id: 'inflate', angle: -72, color: COLORS.blue },
-  { id: 'move', angle: -36, color: COLORS.green },
-  { id: 'paint', angle: 0, color: COLORS.red },
-  { id: 'add', angle: 36, color: COLORS.yellow },
-  { id: 'remove', angle: 72, color: COLORS.paper },
-  { id: 'crease', angle: 108, color: COLORS.blue },
-  { id: 'pinch', angle: 144, color: COLORS.green },
-  { id: 'flatten', angle: 180, color: COLORS.red },
-  { id: 'grab', angle: -144, color: COLORS.yellow },
-  { id: 'sym', angle: -108, color: COLORS.pink },
+  { id: 'inflate', angle: -65.45, color: COLORS.blue },
+  { id: 'move', angle: -32.73, color: COLORS.green },
+  { id: 'paint', angle: 0.0, color: COLORS.red },
+  { id: 'add', angle: 32.73, color: COLORS.yellow },
+  { id: 'remove', angle: 65.45, color: COLORS.paper },
+  { id: 'crease', angle: 98.18, color: COLORS.blue },
+  { id: 'pinch', angle: 130.91, color: COLORS.green },
+  { id: 'flatten', angle: 163.64, color: COLORS.red },
+  { id: 'grab', angle: -163.64, color: COLORS.yellow },
+  { id: 'sym', angle: -130.91, color: COLORS.pink },
+  { id: 'text', angle: -98.18, color: COLORS.paper },
 ];
 // Si te quedas un momento sobre estos pétalos, de su parte gorda nace otra flor con sus opciones.
 const fan = (ids, step) => ids.map((id, i) => ({ id, off: (i - (ids.length - 1) / 2) * step }));

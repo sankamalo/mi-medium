@@ -47,6 +47,7 @@ export const SHAPE_ICON = { sphere: '●', cube: '■', pyramid: '▲', stamp: '
 
 // Nombres de todo lo que se puede elegir (también lo que solo está en el panel lateral).
 export const LABELS = {
+  text: 'Texto',
   ...Object.fromEntries([...TOP, ...BOTTOM, ...SHAPES].map((i) => [i.id, i.label])),
   wire: 'Ver malla', remesh: 'Remesh quads', export: 'A Blender', save: 'Guardar', share: 'Compartir',
   layerNew: 'Nueva capa', layerNext: 'Capa siguiente',

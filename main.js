@@ -14,6 +14,7 @@ import { idbGet, idbSet, idbDel, idbKeys } from './store.js';
 import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang, translateDOM } from './i18n.js';
+import { textMesh, textField, readLetter, splitLetters, TEXT_KEYS } from './texto.js';
 import { sfx, PENTATONIC } from './sonidos.js';
 import { OPCIONES } from './anadir.js';
 import { Receptor } from './llamada.js';
@@ -822,13 +823,14 @@ function startMerge(res) {
   mergePick.clear();
   runMerge(list, res, 'Uniendo capas', (T) => t('Capas unidas en {0}, a {1}³', T.name, T.grid.res));
 }
-function runMerge(list, res, title, done) {
+function runMerge(list, res, title, done, extra) {
   closeMergeAsk();
-  if (list.some((L) => L.busy || L.remesh)) return;
+  if (list.some((L) => L.busy || (L.remesh && !extra))) return;
   const plan = mergePlan(list);
   list.forEach((L) => { L.busy = true; });
   merge = { ...plan, res, title, done, p: 0, pct: -1, stamp: list.map((L) => [L, L.version, L.moves]), touched: [], job: null, grid: null };
-  merge.job = mergeJob(merge);
+  Object.assign(merge, extra);
+  merge.job = extra?.makeJob ? extra.makeJob(merge) : mergeJob(merge);
   mergeBarShow(true);
   updateHud();
   drawPanel();
@@ -889,11 +891,17 @@ function cancelMerge() {
 function commitMerge(m) {
   const { T, grid, touched } = m;
   m.job = null;
-  m.shrunk = grid.h !== T.grid.h;
+  m.shrunk = grid.h !== T.grid.h || m.textBack;
   m.full = T.grid.state();
   m.oldBytes = m.shrunk ? T.grid.bytes() : touched.length * BRICK_BYTES * 2;
   T.grid.setState(grid.state());
   if (m.shrunk) {
+    // El texto en quads sigue a la vista hasta que el vóxel está hecho.
+    if (T.remesh) {
+      m.oldRemesh = T.remesh;
+      T.remesh = null;
+      T.voxels.visible = true;
+    }
     m.oldMeshes = T.chunks.filter(Boolean);
     T.chunks = [];
     T.rebuildAll();
@@ -913,9 +921,10 @@ function finishMerge(m) {
   const { T, rest, list } = m;
   merge = null;
   m.oldMeshes?.forEach((ch) => disposeMesh(T.f.voxels, ch));
+  if (m.oldRemesh) disposeMesh(T.reGroup, m.oldRemesh);
   noteEdit();
   const removed = rest.map((L) => ({ L, at: layers.indexOf(L) }));
-  undoStack.push({ layer: T, grid: T.grid, merge: removed, present: true, full: m.full, bytes: m.oldBytes + rest.reduce((a, L) => a + L.grid.bytes(), 0) });
+  undoStack.push({ layer: T, grid: T.grid, merge: removed, present: true, full: m.full, textBack: m.textBack, bytes: m.oldBytes + rest.reduce((a, L) => a + L.grid.bytes(), 0) });
   clearRedo();
   trimUndo();
   for (const L of rest) {
@@ -932,6 +941,13 @@ function finishMerge(m) {
 }
 
 function setLayerBase(L, hex) {
+  if (L.text && L.remesh) {
+    L.color = hex;
+    buildText(L);
+    updateHud();
+    live.structure();
+    return;
+  }
   if (remeshLocked(L)) return;
   L.setBase(hex);
   updateHud();
@@ -1011,6 +1027,7 @@ function swapEntry(e) {
     const cur = L.grid.state();
     L.grid.setState(e.full);
     L.rebuildAll();
+    if (e.textBack && e.present) buildText(L);
     if (e.present) {
       for (const { L: o, at } of e.merge) {
         layers.splice(at, 0, o);
@@ -1271,6 +1288,7 @@ function undo() {
   if (!undoStack.length) return toast('Nada que deshacer');
   if (remeshLocked(undoStack.at(-1).layer)) return;
   const e = undoStack.pop();
+  if (e.rec && e.layer === text.L && text.strokes.length) text.undone.push(text.strokes.pop());
   redoStack.push(swapEntry(e));
   setActive(e.layer);
   sfx.play('popDown');
@@ -1280,8 +1298,9 @@ function undo() {
 function redo() {
   if (merge) return mergeBusy();
   if (!redoStack.length) return toast('Nada que rehacer');
-  if (remeshLocked(redoStack.at(-1).layer)) return;
+  if (!redoStack.at(-1).textBack && remeshLocked(redoStack.at(-1).layer)) return;
   const e = redoStack.pop();
+  if (e.rec && e.layer === text.L && text.undone.length) text.strokes.push(text.undone.pop());
   undoStack.push(swapEntry(e));
   setActive(e.layer);
   sfx.play('popUp');
@@ -1307,6 +1326,7 @@ function remeshLocked(L = active) {
 }
 function toVoxel(L = active) {
   if (!L.remesh) return;
+  if (L.text) return textToVoxel(L);
   L.clearRemesh();
   L.version++;
   noteEdit();
@@ -1321,7 +1341,17 @@ function beginStroke() {
   strokeRadius = null;
   strokeInk = null;
   if (merge) return mergeBusy();
-  layerForStroke();
+  if (text.writing && activeTool() === 'add' && !state.invert) {
+    if (!text.L || !layers.includes(text.L)) newTextDraft();
+    if (active !== text.L) setActive(text.L);
+    text.cur = [];
+    text.strokes.push(text.cur);
+    text.undone.length = 0;
+    if (panel3d.visible) drawPanel();
+  } else {
+    text.cur = null;
+    layerForStroke();
+  }
   if (remeshLocked()) return;
   latheDepth = null;
   strokeRec = pushStroke(active);
@@ -1672,6 +1702,7 @@ function strokeFeel(p, tool, dt, pressure) {
 function applyAt(p, dt, pressure = 1) {
   if (active.remesh || merge) return;
   p = toSpin(p);
+  text.cur?.push(p);
   const tool = activeTool();
   strokeFeel(p, tool, dt, pressure);
   if (tool === 'add' && state.sens) pressure = strokeInk = strokeInk === null ? pressure : strokeInk + (pressure - strokeInk) * Math.min(1, dt * 25);
@@ -1784,6 +1815,7 @@ function choose(id) {
     case 'shape:more': panelPage = 'sellos'; if (panel3d.visible) drawPanel(); $('stampBox').hidden = !$('stampBox').hidden; break;
     case 'stamp:save': saveStamp(); break;
     case 'stamp:delete': deleteLastStamp(); break;
+    case 'text': openText(); break;
     case 'resUp': changeRes(1); break;
     case 'resDown': changeRes(-1); break;
     case 'sym': {
@@ -2582,6 +2614,20 @@ $('btnSaveAs').onclick = () => saveObra(true);
 $('btnNew').onclick = newObra;
 $('btnRemesh').onclick = () => remeshLayer(active);
 $('btnVoxel').onclick = () => toVoxel();
+$('textWrite').onclick = () => { panelTab[0] = 'text'; startWriting(); updateHud(); };
+$('textMake').onclick = () => convertWriting();
+$('textMode').onclick = () => (active.remesh ? toVoxel() : textToQuads(active));
+$('textInput').onkeydown = (e) => e.stopPropagation();
+$('textInput').oninput = (e) => {
+  const str = [...e.target.value.toUpperCase()].map((c) => (TEXT_KEYS.includes(c) ? c : ' ')).join('');
+  if (!active.text) {
+    if (str.trim()) makeTypedText(str);
+  } else if (active.remesh || !active.text.str) {
+    active.text.str = str;
+    buildText(active);
+  }
+  updateHud();
+};
 for (const n of RES_STEPS) {
   const b = document.createElement('button');
   b.textContent = n;
@@ -2714,6 +2760,10 @@ function updateHud() {
   $('latheSpeed').value = state.latheSpeed;
   $('latheBox').hidden = !state.lathe;
   $('btnVoxel').hidden = !active.remesh;
+  if (document.activeElement !== $('textInput')) $('textInput').value = active.text?.str || '';
+  $('textMode').hidden = !active.text;
+  $('textMode').textContent = t(active.remesh ? 'A vóxel' : 'A quads');
+  $('textWrite').classList.toggle('on', text.writing);
   document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === brushRes()));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
@@ -2963,6 +3013,10 @@ function duplicateHeld() {
   N.adoptFrames(L);
   L.group.updateMatrix();
   N.setPlace(N.f, new THREE.Matrix4().multiplyMatrices(L.group.matrix, L.f.voxels.matrix));
+  if (L.text) {
+    N.text = { ...L.text };
+    if (L.remesh) buildText(N);
+  }
   layers.push(N);
   sfx.play('dup');
   toast(t('{0} creada', N.name), 1500);
@@ -3384,6 +3438,253 @@ function drawHud3D() {
   hudTex.needsUpdate = true;
 }
 
+// ---------- Texto en 3D ----------
+// Escribes con el pincel en una capa de boceto; al convertir se lee letra a letra y sale una capa nueva
+// con el texto en quads. La capa guarda lo escrito, así que el vóxel siempre parte de esos quads.
+const text = { writing: false, L: null, strokes: [], undone: [], cur: null, job: null, sel: -1, alts: [] };
+const TEXT_RES = 192, TEXT_DEPTH = 0.35;
+function newTextDraft() {
+  const L = new Layer(96, 'empty', { name: t('Boceto de texto') });
+  layers.push(L);
+  text.L = L;
+  text.strokes = [];
+  text.undone = [];
+  setActive(L);
+  live.structure();
+}
+function openText() {
+  panelTab[0] = 'text';
+  panelPage = 'main';
+  closeMergeAsk();
+  if (renderer.xr.isPresenting) panel3d.visible = true;
+  if (!active.text) startWriting();
+  else drawPanel();
+  updateHud();
+}
+function startWriting() {
+  text.writing = true;
+  text.sel = -1;
+  text.alts = [];
+  state.line = false;
+  choose('add');
+  drawPanel();
+  toast('Escribe en mayúsculas, con las letras separadas');
+}
+function clearDraft() {
+  if (text.L && layers.includes(text.L)) deleteLayer(text.L, false);
+  text.L = null;
+  text.strokes = [];
+  text.undone = [];
+  text.cur = null;
+}
+// El plano en el que has escrito: mira hacia ti y con el arriba del mundo.
+function writingPlane(all) {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const c = new THREE.Vector3();
+  for (const p of all) c.add(new THREE.Vector3(p[0], p[1], p[2]));
+  c.divideScalar(all.length);
+  const head = spinner.worldToLocal(cam.getWorldPosition(new THREE.Vector3()));
+  const n = head.sub(c).normalize();
+  const worldUp = new THREE.Vector3(0, 1, 0).applyQuaternion(spinner.getWorldQuaternion(new THREE.Quaternion()).invert());
+  if (Math.abs(n.dot(worldUp)) > 0.95) n.set(0, 0, 1);
+  const right = new THREE.Vector3().crossVectors(worldUp, n).normalize(), up = new THREE.Vector3().crossVectors(n, right);
+  return { c, n, right, up };
+}
+// Leer va a trozos, con la barra, aunque suele ir rápido.
+function convertWriting() {
+  if (merge || text.job) return mergeBusy();
+  const strokes = text.strokes.filter((s) => s.length);
+  if (!strokes.length) return toast('Escribe algo primero');
+  const plane = writingPlane(strokes.flat());
+  const flat = strokes.map((s) => s.map((p) => {
+    const v = new THREE.Vector3(p[0] - plane.c.x, p[1] - plane.c.y, p[2] - plane.c.z);
+    return [v.dot(plane.right), v.dot(plane.up)];
+  }));
+  text.writing = false;
+  barTitle = 'Leyendo tus letras';
+  text.job = { gen: readJob(splitLetters(flat), plane), t0: performance.now(), p: 0 };
+  mergeBarShow(true);
+}
+function* readJob(groups, plane) {
+  const H = Math.max(...groups.map((g) => g.yh - g.yl), 1e-3);
+  const heights = groups.map((g) => g.yh - g.yl).filter((h) => h > H * 0.5).sort((a, b) => a - b);
+  const height = heights[heights.length >> 1] || H;
+  const mid = (Math.max(...groups.map((g) => g.yh)) + Math.min(...groups.map((g) => g.yl))) / 2;
+  let str = '';
+  const alts = [];
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i], h = g.yh - g.yl, w = g.hi - g.lo;
+    if (i && g.lo - groups[i - 1].hi > height * 0.8) {
+      str += ' ';
+      alts.push([]);
+    }
+    const small = h < height * 0.3 && w < height * 0.6;
+    const read = small ? ((g.yh + g.yl) / 2 > mid - height * 0.15 ? ['-', '.'] : ['.', ',', '-']) : readLetter(g.strokes);
+    str += read[0];
+    alts.push(read);
+    text.job.p = (i + 1) / groups.length;
+    yield;
+  }
+  const x0 = Math.min(...groups.map((g) => g.lo)), x1 = Math.max(...groups.map((g) => g.hi));
+  const at = plane.c.clone().addScaledVector(plane.right, (x0 + x1) / 2).addScaledVector(plane.up, mid);
+  text.result = { str, alts, height, at, plane };
+}
+function textFrame(dt) {
+  const j = text.job;
+  if (!j) return;
+  const end = performance.now() + 8;
+  while (j.gen && performance.now() < end) if (j.gen.next().done) j.gen = null;
+  // Un momento como mínimo: que se vea que ha pasado algo.
+  const shown = Math.min(j.p, (performance.now() - j.t0) / 700);
+  mergeBarPaint(shown, dt);
+  if (j.gen || performance.now() - j.t0 < 700) return;
+  text.job = null;
+  mergeBarShow(false);
+  const r = text.result;
+  clearDraft();
+  makeTextLayer(r.str, r.height, r.at, r.plane);
+  text.alts = r.alts;
+  text.sel = r.alts.findIndex((a) => a.length);
+  sfx.play('thock');
+  toast(t('He leído: {0}. Toca una letra para corregirla', r.str), 5000);
+}
+function makeTextLayer(str, height, at, plane) {
+  const L = new Layer(TEXT_RES, 'empty', { name: t('Texto') });
+  L.text = { str, height, depth: height * TEXT_DEPTH };
+  const m = new THREE.Matrix4().makeBasis(plane.right, plane.up, plane.n);
+  m.setPosition(at);
+  L.setPlace(L.f, m);
+  layers.push(L);
+  buildText(L);
+  setActive(L);
+  noteEdit();
+  live.structure();
+  drawPanel();
+  return L;
+}
+// Texto delante de ti, para el que se escribe con el teclado.
+function makeTypedText(str) {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const eye = cam.getWorldPosition(new THREE.Vector3()), dir = cam.getWorldDirection(new THREE.Vector3());
+  const c = spinner.worldToLocal(eye.addScaledVector(dir, renderer.xr.isPresenting ? 0.6 : 1));
+  clearDraft();
+  text.writing = false;
+  const plane = writingPlane([[c.x, c.y, c.z]]);
+  return makeTextLayer(str, 0.12, c, plane);
+}
+function buildText(L) {
+  const { str, height, depth } = L.text;
+  const mesh = textMesh(str, height, depth), base = L.base;
+  L.version++;
+  if (!mesh.quads.length) {
+    L.clearRemesh();
+    return;
+  }
+  const colors = new Float32Array(mesh.positions.length);
+  for (let i = 0; i < colors.length; i += 3) {
+    colors[i] = base[0] / 255; colors[i + 1] = base[1] / 255; colors[i + 2] = base[2] / 255;
+  }
+  L.setRemesh({ positions: mesh.positions, normals: mesh.normals, quads: mesh.quads, colors });
+  if (state.wire) L.setWire(true);
+}
+function typeKey(k) {
+  const L = active;
+  if (!L.text) {
+    if (k === '⌫' || k === ' ') return;
+    makeTypedText(k);
+    return;
+  }
+  if (!L.remesh && L.text.str) return toast('Está en vóxel: pulsa «A quads» para cambiar las letras');
+  const chars = [...L.text.str], at = text.sel;
+  if (k === '⌫') {
+    const i = at >= 0 && at < chars.length ? at : chars.length - 1;
+    if (i < 0) return;
+    chars.splice(i, 1);
+    text.alts.splice(i, 1);
+    text.sel = Math.min(i, chars.length - 1);
+  } else if (at >= 0 && at < chars.length) {
+    chars[at] = k;
+    text.alts[at] = [];
+    text.sel = at + 1 < chars.length ? at + 1 : -1;
+  } else {
+    chars.push(k);
+    text.alts.push([]);
+  }
+  L.text.str = chars.join('');
+  buildText(L);
+  sfx.play('plip');
+  updateHud();
+  drawPanel();
+}
+function setTextShape(L) {
+  if (L.remesh) buildText(L);
+}
+// De los quads al vóxel: rejilla nueva con la barra y deshacer, como todo lo pesado.
+function textToVoxel(L) {
+  if (merge || text.job) return mergeBusy();
+  if (L.frames.length > 1 || L.busy) return;
+  const res = Math.max(L.grid.res, TEXT_RES);
+  runMerge([L], res, 'Pasando a vóxel', () => t('{0}: otra vez en vóxel', L.name), { textBack: true, makeJob: (m) => textVoxelJob(m, L, res) });
+}
+function* textVoxelJob(m, L, res) {
+  const { str, height, depth } = L.text, f = textField(str, height, depth);
+  const g = new SDFGrid(res, 'empty');
+  g.growTo(f.lo, f.hi, MAX_SAMPLES);
+  const b = (8 * Math.sqrt(3)) / 2 * g.h + g.band;
+  const at = (i) => g.o + (i * 8 + (8 - 1) / 2) * g.h;
+  const steps = g.buildSteps((x, y, z) => f.at(x, y, z, g.band * 1.5), (bx, by, bz) => {
+    const d = f.at(at(bx), at(by), at(bz), b + g.band);
+    return d > b ? 1 : d < -b ? -1 : 0;
+  });
+  m.grid = g;
+  for (const p of steps) {
+    m.p = p;
+    yield;
+  }
+}
+function textToQuads(L) {
+  if (merge) return mergeBusy();
+  if (!L.text || L.remesh) return;
+  buildText(L);
+  updateHud();
+  drawPanel();
+  live.structure();
+  toast('Otra vez en quads, limpio');
+}
+const TEXT_ROWS = ['QWERTYUIOP⌫', 'ASDFGHJKLÑ-', 'ZXCVBNM.,! ', '0123456789'];
+function buildTextTab() {
+  const W = [], L = active.text ? active : null;
+  const M = 32, IW = PW - 2 * M;
+  W.push(panelBlock(8, 684, CERA.paper));
+  let y = 54;
+  if (text.writing || !L) {
+    W.push({ type: 'label', x: M, y, head: true, text: 'Texto', size: 44 });
+    W.push({ type: 'label', x: M, y: y + 40, size: 22, wrap: IW, text: 'Escribe con Añadir, en mayúsculas y con las letras separadas. O usa el teclado.' });
+    const bw = (IW - 10) / 2, n = text.strokes.filter((s) => s.length).length;
+    W.push({ type: 'button', x: M, y: 140, w: bw, h: 72, label: 'Convertir en texto', size: 26, active: () => n > 0, onClick: convertWriting });
+    W.push({ type: 'button', x: M + bw + 10, y: 140, w: bw, h: 72, label: 'Borrar', size: 26, onClick: () => { clearDraft(); drawPanel(); } });
+    W.push({ type: 'label', x: M, y: 262, size: 22, text: n ? t('{0} trazos', n) : t('Aún no hay trazos') });
+  } else {
+    const chars = [...L.text.str], cw = Math.min(64, (IW - (chars.length - 1) * 4) / Math.max(1, chars.length));
+    chars.forEach((ch, i) => W.push({ type: 'button', x: M + i * (cw + 4), y: 22, w: cw, h: 64, label: ch === ' ' ? '␣' : ch, plain: true, size: Math.round(cw * 0.5), active: () => text.sel === i, onClick: () => { text.sel = text.sel === i ? -1 : i; drawPanel(); } }));
+    const alts = text.sel >= 0 ? (text.alts[text.sel] || []).filter((a) => a !== chars[text.sel]).slice(0, 3) : [];
+    alts.forEach((ch, i) => W.push({ type: 'button', x: M + i * 76, y: 94, w: 68, h: 46, label: ch, plain: true, size: 26, onClick: () => { typeKey(ch); } }));
+    if (alts.length) W.push({ type: 'label', x: M + alts.length * 76 + 8, y: 124, size: 20, text: '¿Era otra?' });
+    if (L.remesh) {
+      W.push({ type: 'slider', x: M, y: 188, w: (IW - 20) / 2, h: 26, label: 'Grosor', get: () => (L.text.depth / L.text.height - 0.05) / 0.95, set: (v) => { L.text.depth = L.text.height * (0.05 + v * 0.95); setTextShape(L); }, text: () => Math.round((L.text.depth / L.text.height) * 100) + '%' });
+      W.push({ type: 'slider', x: M + (IW + 20) / 2, y: 188, w: (IW - 20) / 2, h: 26, label: 'Altura', get: () => (L.text.height - 0.02) / 0.58, set: (v) => { const k = L.text.depth / L.text.height; L.text.height = 0.02 + v * 0.58; L.text.depth = L.text.height * k; setTextShape(L); }, text: () => Math.round(L.text.height * 100) + ' cm' });
+    }
+    const q = L.remesh ? L.remesh.quads.length / 4 : 0;
+    const bw = (IW - 20) / 3;
+    W.push({ type: 'button', x: M, y: 216, w: bw, h: 58, label: L.remesh ? 'A vóxel' : 'A quads', size: 24, onClick: () => (L.remesh ? toVoxel(L) : textToQuads(L)) });
+    W.push({ type: 'button', x: M + bw + 10, y: 216, w: bw, h: 58, label: 'Escribir otro', size: 24, onClick: startWriting });
+    W.push({ type: 'label', x: M + 2 * (bw + 10), y: 252, size: 22, text: L.remesh ? t('{0} quads', q) : t('En vóxel') });
+  }
+  const kw = (IW - 10 * 6) / 11;
+  TEXT_ROWS.forEach((row, r) => [...row].forEach((k, i) => W.push({ type: 'button', x: M + i * (kw + 6), y: 296 + r * 74, w: kw, h: 66, label: k === ' ' ? '␣' : k, plain: true, size: 26, onClick: () => typeKey(k) })));
+  return W;
+}
+
 // ---------- Barra de la unión de capas ----------
 // En las gafas flota delante de la vista y sigue a la cabeza con un poco de retraso, para no marear.
 const BAR_W = 0.36, BAR_H = BAR_W * (144 / 512);
@@ -3409,8 +3710,9 @@ barGroup.add(barBack, barFill, barGlow);
 barGroup.visible = false;
 scene.add(barGroup);
 const barWant = new THREE.Vector3(), barQuat = new THREE.Quaternion();
-let barTime = 0, barPlaced = false;
+let barTime = 0, barPlaced = false, barPct = -1, barTitle = '';
 function mergeBarShow(on) {
+  barPct = -1;
   barGroup.visible = on && renderer.xr.isPresenting;
   $('mergeBar').hidden = !on || renderer.xr.isPresenting;
   barPlaced = false;
@@ -3435,9 +3737,9 @@ function mergeBarPaint(p, dt) {
     barGlow.position.x = -BAR_W / 2 + 18 * barPx + ((barTime * 0.6) % 1) * (room - 40 * barPx) + 20 * barPx;
   }
   const pct = Math.floor(p * 100);
-  if (merge && merge.pct === pct) return;
-  if (merge) merge.pct = pct;
-  const label = t(merge?.title || 'Uniendo capas') + ' · ' + pct + '%';
+  if (barPct === pct) return;
+  barPct = pct;
+  const label = t(merge?.title || barTitle) + ' · ' + pct + '%';
   $('mergeBarText').textContent = label;
   $('mergeBarFill').style.width = pct + '%';
   if (!inXR) return;
@@ -3555,12 +3857,12 @@ Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => doc
 
 // Bloque de color: agrupa lo que va junto. Azul: el pincel. Papel: color y capas. Rojo: la obra. Negro: lo técnico.
 const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
-const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
+const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink], ['text', 'Texto', CERA.paper]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
 const panelTab = ['brush', 'color'];
 const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, unir: buildMergePage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
 const PAGE_PANE = { export: 1, unir: 1 }; // las demás se abren en la columna izquierda
 const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']); // su segundo bloque va en la otra columna
-const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, color: buildColorTab, obra: buildObraTab };
+const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, text: buildTextTab, color: buildColorTab, obra: buildObraTab };
 function buildPanel() {
   const W = [];
   const put = (list, pane) => {
@@ -3582,11 +3884,17 @@ function buildPanel() {
   held.forEach((list, pane) => put(list || PANEL_TAB_PAGES[panelTab[pane]](), pane));
   // Pestañas, encima de cada columna. Pulsar una cierra la página que hubiera abierta en esa columna.
   PANEL_TABS.forEach((tabs, pane) => {
-    const room = PW - 16 - (pane ? 176 : 0), tw = (room - 8) / 2;
+    const room = PW - 16 - (pane ? 176 : 0), tw = (room - 8 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, name, color], i) => W.push({
       type: 'tab', x: pane * PW + 8 + i * (tw + 8), y: 8, w: tw, h: TAB_H - 8, label: name, color,
       active: () => panelTab[pane] === id && !held[pane],
-      onClick: () => { panelTab[pane] = id; if (held[pane]) panelPage = 'main'; drawPanel(); },
+      onClick: () => {
+        panelTab[pane] = id;
+        if (held[pane]) panelPage = 'main';
+        if (id === 'text') return openText();
+        if (!pane) text.writing = false;
+        drawPanel();
+      },
     }));
   });
   W.push({ type: 'button', x: CW - 8 - 168, y: 12, w: 168, h: TAB_H - 20, size: 24, label: xr.panelPinned ? 'A la mano' : 'Fijar', onClick: () => pinPanel(!xr.panelPinned) });
@@ -4584,6 +4892,7 @@ function packScene() {
     const s = L.frames.length > 1 ? SDFGrid.serializeFrames(L.frames.map((f) => f.grid)) : L.grid.serialize();
     const lm = { id: L.id, name: L.name, color: L.color, visible: L.visible, grid: s.meta, places: L.frames.map((f) => (f.moved ? Array.from(f.voxels.matrix.elements) : null)) };
     parts.push(...s.parts);
+    if (L.text) lm.text = L.text;
     if (L.remesh) {
       const d = L.remesh.data;
       lm.remesh = { nv: d.positions.length, nq: d.quads.length, bake: L.remesh.bake ? L.remesh.bake.size : 0 };
@@ -4609,6 +4918,7 @@ function applySnapshot(buf) {
     // El resto de fotogramas se malla poco a poco, sin congelar la pantalla al abrir.
     if (fr) fr.grids.slice(1).forEach((g, i) => L.insertFrame(L.frameFromGrid(g), i + 1));
     lm.places?.forEach((m, i) => { if (m && L.frames[i]) L.setPlace(L.frames[i], new THREE.Matrix4().fromArray(m)); });
+    if (lm.text) L.text = lm.text;
     if (lm.remesh) {
       const { nv, nq } = lm.remesh;
       const positions = new Float32Array(buf.slice(off, off + nv * 4)); off += nv * 4;
@@ -4963,6 +5273,7 @@ renderer.setAnimationLoop(() => {
   poseT += dt;
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   mergeFrame(dt);
+  textFrame(dt);
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
   // En el casco cada imagen tiene unos 13 ms: el remallado no puede comérselos todos.
   const inXR = renderer.xr.isPresenting;
@@ -5396,5 +5707,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

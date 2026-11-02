@@ -1,11 +1,11 @@
 // Modo sin internet: guarda la app en las gafas la primera vez y luego la sirve desde ahí.
 // Se usa la copia guardada al instante y se actualiza por detrás cuando hay conexión.
-const CACHE = 'mi-medium-v46';
+const CACHE = 'mi-medium-v47';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   './fbx.js', './vendor/addons/loaders/RGBELoader.js',
   './vendor/hdri/studio_small_09_1k.hdr', './vendor/hdri/venice_sunset_1k.hdr', './vendor/hdri/kloofendal_48d_partly_cloudy_puresky_1k.hdr', './vendor/hdri/forest_slope_1k.hdr',
-  './main.js', './sdf.js', './mesher.js', './radial.js', './flor.js', './sellos.js', './referencia.js', './panel.js', './live.js', './store.js', './remesh.js', './camara.js', './manos.js', './i18n.js', './sonidos.js', './anadir.js', './llamada.js', './hoja.js', './tutorial.js',
+  './main.js', './texto.js', './iconos/text.svg', './sdf.js', './mesher.js', './radial.js', './flor.js', './sellos.js', './referencia.js', './panel.js', './live.js', './store.js', './remesh.js', './camara.js', './manos.js', './i18n.js', './sonidos.js', './anadir.js', './llamada.js', './hoja.js', './tutorial.js',
   './vendor/fonts/NotoSansThai.woff2', './vendor/fonts/Kanit-500-latin.woff2', './vendor/fonts/Kanit-500-thai.woff2', './vendor/fonts/Kanit-600-latin.woff2', './vendor/fonts/Kanit-600-thai.woff2', './vendor/fonts/Mali-latin.woff2', './vendor/fonts/Mali-thai.woff2',
   './vendor/three.module.js', './vendor/addons/controls/OrbitControls.js',
   './vendor/addons/exporters/GLTFExporter.js', './vendor/addons/loaders/SVGLoader.js', './vendor/addons/loaders/OBJLoader.js', './vendor/addons/loaders/FBXLoader.js', './vendor/addons/loaders/GLTFLoader.js', './vendor/addons/libs/fflate.module.js', './vendor/addons/curves/NURBSCurve.js', './vendor/addons/curves/NURBSUtils.js', './vendor/addons/utils/BufferGeometryUtils.js',
