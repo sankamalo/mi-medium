@@ -43,7 +43,7 @@ const FORCE_EMIT = params.has('emitir');  // pruebas: emitir sin estar en las ga
 sfx.muted = SPECTATOR;
 
 const state = {
-  tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sens: true, sym: false, wire: false,
+  tool: 'add', radius: 0.025, strength: 0.6, stab: 0, sens: false, sym: false, wire: false,
   invert: false, smoothHold: false, quads: 8000, shape: 'sphere', stamp: 'stamp:ojo',
   symY: false, symZ: false, radial: false, radialN: 5, edge: 'even', texBy: {}, texAll: false, texAllId: 'plain', line: false,
   look: { rough: 0.55, wax: 0, shine: 0 }, floor: !SPECTATOR,
@@ -762,7 +762,7 @@ function mergePlan(list) {
     const best = lower.findIndex((o) => o.light), i = best < 0 ? lower.length - 1 : best;
     choices = [lower[i], lower[i + 1], full.fits ? full : null].filter(Boolean);
   }
-  return { list, T, rest, pieces, full, choices };
+  return { list, T, rest, pieces, full, choices, at };
 }
 function mergeLayers() {
   if (merge) return mergeBusy();
@@ -775,18 +775,21 @@ function mergeLayers() {
   if (sculpting || xr.stroking) return;
   const plan = mergePlan(list);
   if (plan.choices.length === 1) return startMerge(plan.choices[0].res);
+  showMergeAsk({ ...plan, title: 'Unir capas', text: mergeAskText(plan), note: 'Reducir quita detalle fino. Se puede deshacer.', label: (o, i) => mergeChoice(plan, o, i), go: (o) => startMerge(o.res) });
+}
+function showMergeAsk(plan) {
   mergeAsk = plan;
   if (renderer.xr.isPresenting) {
     panelPage = 'unir';
     drawPanel();
   } else {
     const box = $('mergeAskBtns');
-    $('mergeAskText').textContent = mergeAskText(plan);
+    $('mergeAskText').textContent = plan.text;
     box.replaceChildren(...plan.choices.map((o, i) => {
       const b = document.createElement('button');
-      b.textContent = mergeChoice(plan, o, i);
+      b.textContent = plan.label(o, i);
       b.classList.toggle('primary', !i);
-      b.onclick = () => startMerge(o.res);
+      b.onclick = () => plan.go(o);
       return b;
     }));
     $('mergeAsk').hidden = false;
@@ -811,15 +814,20 @@ function closeMergeAsk() {
 // La unión va a trocitos entre imagen e imagen: la vista sigue a la cabeza todo el rato. Hasta el final
 // no se cambia nada de la obra, y las capas de antes siguen a la vista hasta que la nueva está hecha.
 let merge = null;
-const mergeBusy = () => toast('Espera a que acaben de unirse las capas');
+const mergeBusy = () => toast('Espera a que acabe la barra');
 function startMerge(res) {
   const list = layers.filter((L) => mergePick.has(L));
   closeMergeAsk();
-  if (list.length < 2 || list.some((L) => L.busy || L.remesh)) return;
+  if (list.length < 2) return;
+  mergePick.clear();
+  runMerge(list, res, 'Uniendo capas', (T) => t('Capas unidas en {0}, a {1}³', T.name, T.grid.res));
+}
+function runMerge(list, res, title, done) {
+  closeMergeAsk();
+  if (list.some((L) => L.busy || L.remesh)) return;
   const plan = mergePlan(list);
   list.forEach((L) => { L.busy = true; });
-  mergePick.clear();
-  merge = { ...plan, res, p: 0, pct: -1, stamp: list.map((L) => [L, L.version, L.moves]), touched: [], job: null, grid: null };
+  merge = { ...plan, res, title, done, p: 0, pct: -1, stamp: list.map((L) => [L, L.version, L.moves]), touched: [], job: null, grid: null };
   merge.job = mergeJob(merge);
   mergeBarShow(true);
   updateHud();
@@ -875,7 +883,7 @@ function cancelMerge() {
   mergeBarShow(false);
   updateHud();
   drawPanel();
-  toast('Ha cambiado una capa: unión cancelada');
+  toast('Ha cambiado la capa: cancelado');
 }
 // Ya está calculado: la capa pasa a tener la forma nueva y se rehace solo la malla que cambia.
 function commitMerge(m) {
@@ -920,7 +928,7 @@ function finishMerge(m) {
   live.structure();
   drawPanel();
   sfx.play('thock');
-  toast(t('Capas unidas en {0}, a {1}³', T.name, T.grid.res));
+  toast(m.done(T));
 }
 
 function setLayerBase(L, hex) {
@@ -1521,6 +1529,7 @@ function optionOn(id) {
   if (k === 'edge') return state.edge === v;
   if (id === 'tex:all') return state.texAll;
   if (k === 'tex') return texOf(state.tool) === v;
+  if (id === 'stroke:sens') return state.sens;
   if (k === 'stroke') return state.line === (v === 'line');
   if (k === 'radial') return state.radial && state.radialN === +v;
   if (id === 'sym') return symOn();
@@ -1529,7 +1538,6 @@ function optionOn(id) {
   if (id === 'sym:z') return state.symZ;
   if (id === 'sym:radial') return state.radial;
   if (id === 'sym:lathe') return state.lathe;
-  if (id === 'stroke:sens') return state.sens;
   if (id === 'shape:more') return state.shape === 'stamp';
   if (k === 'stamp') return state.shape === 'stamp' && state.stamp === id;
   if (k === 'shape') return state.shape === v;
@@ -1696,17 +1704,27 @@ function applyAt(p, dt, pressure = 1) {
   brushStep(tool, a, p, dt, pressure);
 }
 
-// La resolución no cambia lo que ya está hecho: es la del próximo trazo de Añadir. Si no es la de la
-// capa activa, el trazo sigue en una capa de esa resolución, o en una nueva si no hay ninguna.
-const brushRes = () => state.brushRes ?? active.grid.res;
+// − Res y + Res rehacen el objeto de la capa activa a otra resolución, conservando la forma y el color.
+// Va con la misma barra que unir capas y se puede deshacer.
 function changeRes(dir) {
-  const n = brushRes();
-  let i = RES_STEPS.findIndex((r) => r >= n);
-  if (i < 0) i = RES_STEPS.length - 1;
-  const ni = Math.max(0, Math.min(RES_STEPS.length - 1, i + dir));
-  if (RES_STEPS[ni] === n) return toast(dir > 0 ? 'Resolución máxima' : 'Resolución mínima');
-  setRes(RES_STEPS[ni]);
+  if (merge) return mergeBusy();
+  if (sculpting || xr.stroking) return;
+  const L = active, n = L.grid.res;
+  if (remeshLocked(L)) return;
+  if (L.busy) return toast('Espera a que acabe el remesh');
+  if (L.frames.length > 1) return toast('Las capas con fotogramas no cambian de resolución');
+  const steps = dir > 0 ? RES_STEPS.filter((r) => r > n) : RES_STEPS.filter((r) => r < n).reverse();
+  if (!steps.length) return toast(dir > 0 ? 'Resolución máxima' : 'Resolución mínima');
+  const res = steps[0], o = mergePlan([L]).at(res);
+  const go = () => runMerge([L], res, 'Cambiando resolución', () => t('{0}: ahora a {1}³', L.name, res));
+  if (!o.fits) return toast('Resolución máxima');
+  if (dir < 0 || o.light) return go();
+  showMergeAsk({ T: L, choices: [o], title: 'Resolución', text: t('A {0}³ quedaría muy pesado: unos {1} polígonos.', res, fmtQuads(o.quads)),
+    note: 'Se puede deshacer.', label: () => t('Subir a {0}³', res), go });
 }
+// El selector de resolución del pincel no cambia lo que ya está hecho: es la del próximo trazo de Añadir.
+// Si no es la de la capa activa, el trazo sigue en una capa de esa resolución, o en una nueva si no hay.
+const brushRes = () => state.brushRes ?? active.grid.res;
 function setRes(n) {
   state.brushRes = n;
   updateHud();
@@ -1794,7 +1812,7 @@ function choose(id) {
       break;
     case 'stroke:sens':
       state.sens = !state.sens;
-      toast(state.sens ? 'Añadir engorda según aprietas el gatillo' : 'Añadir siempre del mismo grosor');
+      toast(state.sens ? 'Presión: Añadir engorda según aprietas el gatillo' : 'Sin presión: Añadir siempre del mismo grosor');
       break;
     case 'sym:lathe':
       state.lathe = !state.lathe;
@@ -3419,7 +3437,7 @@ function mergeBarPaint(p, dt) {
   const pct = Math.floor(p * 100);
   if (merge && merge.pct === pct) return;
   if (merge) merge.pct = pct;
-  const label = t('Uniendo capas') + ' · ' + pct + '%';
+  const label = t(merge?.title || 'Uniendo capas') + ' · ' + pct + '%';
   $('mergeBarText').textContent = label;
   $('mergeBarFill').style.width = pct + '%';
   if (!inXR) return;
@@ -3591,10 +3609,11 @@ function buildBrushTab() {
     text: () => Math.round(state.strength * 100) + '%',
   });
   W.push({
-    type: 'slider', x: M, y: 288, w: IW, h: 30, label: 'Estabilizar (línea recta)',
+    type: 'slider', x: M, y: 288, w: IW - 176, h: 30, label: 'Estabilizar (línea recta)',
     get: () => state.stab, set: (t) => (state.stab = Math.round(t * 20) / 20),
     text: () => (state.stab ? Math.round(state.stab * 100) + '%' : t('no')),
   });
+  W.push({ type: 'button', x: PW - M - 160, y: 262, w: 160, h: 58, label: 'Presión', size: 24, group: 'press', active: () => state.sens, onClick: () => choose('stroke:sens') });
   const tw = (IW - 4 * 8) / 5;
   TOOL_KEYS.forEach((tl, i) => W.push({
     type: 'button', x: M + (i % 5) * (tw + 8), y: 340 + Math.floor(i / 5) * 68, w: tw, h: 58, size: 24, group: 'tools',
@@ -3763,12 +3782,12 @@ function buildMergePage() {
   const W = [], plan = mergeAsk;
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 92, CERA.ink));
-  pageHead(W, 'Unir capas');
+  pageHead(W, plan?.title || 'Unir capas');
   W.push(panelBlock(108, 500, CERA.paper));
   if (!plan) return W;
-  W.push({ type: 'label', x: M, y: 150, size: 26, wrap: IW, text: mergeAskText(plan) });
-  plan.choices.forEach((o, i) => W.push({ type: 'button', x: M, y: 250 + i * 84, w: IW, h: 72, size: 24, label: mergeChoice(plan, o, i), active: () => !i, onClick: () => startMerge(o.res) }));
-  W.push({ type: 'label', x: M, y: 530, size: 22, wrap: IW, text: 'Reducir quita detalle fino. Se puede deshacer.' });
+  W.push({ type: 'label', x: M, y: 150, size: 26, wrap: IW, text: plan.text });
+  plan.choices.forEach((o, i) => W.push({ type: 'button', x: M, y: 250 + i * 84, w: IW, h: 72, size: 24, label: plan.label(o, i), active: () => !i, onClick: () => plan.go(o) }));
+  W.push({ type: 'label', x: M, y: 530, size: 22, wrap: IW, text: plan.note });
   return W;
 }
 function buildCallPage() {
@@ -3829,7 +3848,7 @@ function buildBrushPage() {
   y -= 16;
   W.push({ type: 'button', x: M, y, w: IW, h: 44, size: 22, label: 'Textura en todas', active: () => optionOn('tex:all'), onClick: () => choose('tex:all') });
   y += 74;
-  row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto'], ['stroke:sens', 'Sensible']]);
+  row('TRAZO', [['stroke:free', 'Libre'], ['stroke:line', 'Recto']]);
   W.push(panelBlock(yEnd + 8, 848, CERA.paper));
   y = yEnd + 52;
   row('SIMETRÍA', [['sym:x', 'X'], ['sym:y', 'Y'], ['sym:z', 'Z'], ['sym:radial', 'Radial'], ['sym:reset', 'Centrar']]);
