@@ -161,12 +161,12 @@ const SOUNDS = {
 // Cómo suena cada herramienta mientras la usas: qué grano, cuántos por segundo (quieto → rápido),
 // y un segundo grano que aparece de vez en cuando.
 const TOOL_FEEL = {
-  add: { hold: 'add' }, // estos dos no son granos: suenan seguido hasta soltar (anadir.js)
+  add: { hold: 'add' }, // estos no son granos: suenan seguido hasta soltar (anadir.js)
   paint: { hold: 'spray' },
   inflate: { g: 'bubble', still: 7, fast: 13, vol: 0.85, extra: 'squish', every: 0.2 },
   remove: { g: 'scrape', still: 3, fast: 28, extra: 'squish', every: 0.06 }, // arena cinética
   crease: { g: 'scrape', still: 2, fast: 24, vol: 0.85 },
-  smooth: { g: 'silk', still: 3, fast: 11 },
+  smooth: { hold: 'dedo' },
   flatten: { g: 'silk', still: 2, fast: 12, extra: 'knead', every: 0.1 },
   grab: { g: 'knead', still: 0, fast: 13, extra: 'bubble', every: 0.1 },
   pinch: { g: 'knead', still: 3, fast: 12, extra: 'bubble', every: 0.16 },
@@ -218,6 +218,7 @@ class Sonidos {
       // Listos antes de apretar, sin tirones.
       setTimeout(() => this.held.prepare(this.addSound), 300);
       setTimeout(() => this.held.prepare('spray'), 700);
+      setTimeout(() => this.held.prepare('dedo'), 1100);
     }
     if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   }

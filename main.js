@@ -1693,7 +1693,7 @@ function strokeFeel(p, tool, dt, pressure) {
   if (touching && !s.touched) {
     s.touched = true;
     if (tool === 'paint') sfx.play('rattle', { vol: 0.8 });
-    else sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
+    else if (tool !== 'smooth') sfx.play('press', { semi, vol: 0.6 + 0.4 * pressure });
   }
   // Un sello se pone de un golpe: no tiene sonido seguido.
   if (!(tool === 'add' && shapeActive() && state.shape === 'stamp')) sfx.stroke(tool, s.speed / 0.6, pressure, dt, touching, semi);
@@ -3013,9 +3013,14 @@ function duplicateHeld() {
   N.adoptFrames(L);
   L.group.updateMatrix();
   N.setPlace(N.f, new THREE.Matrix4().multiplyMatrices(L.group.matrix, L.f.voxels.matrix));
+  // Una capa con remesh se copia con su malla limpia y su horneado, no con los vóxeles de debajo.
   if (L.text) {
     N.text = { ...L.text };
     if (L.remesh) buildText(N);
+  } else if (L.remesh) {
+    const { positions, normals, quads, colors } = L.remesh.data;
+    N.setRemesh({ positions, normals, quads, colors });
+    if (L.remesh.bake) N.applyBake(L.remesh.bake);
   }
   layers.push(N);
   sfx.play('dup');
@@ -5707,5 +5712,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

@@ -146,6 +146,16 @@ export const OPCIONES = {
 // Los que no se eligen: el spray de Pintar.
 export const SEGUIDOS = {
   ...OPCIONES,
+  // Suavizar: la yema del dedo pasando por la plastilina. Muy bajito, sin golpes, y solo suena si mueves la mano.
+  dedo: {
+    name: 'Dedo', hint: 'La yema del dedo sobre la plastilina', lo: 380, hi: 950, rate: [0, 0], level: 0.32, spread: 0.02, gentle: true,
+    bed(o, sr, d) {
+      const a = wander(d, 0.5), b = wander(d, 1.3);
+      hiss(o, sr, { fc: (t) => 240 + 110 * a(t), q: 0.7, env: (t) => 0.12 + 0.05 * b(t) });
+      hiss(o, sr, { fc: (t) => 650 + 200 * b(t), q: 0.6, env: (t) => 0.02 + 0.015 * a(t) });
+    },
+    accent() {},
+  },
   spray: {
     name: 'Spray', hint: 'Aerosol pequeñito, con gotitas y la bolita del bote', lo: 3400, hi: 5000, rate: [0.15, 0.7], accentVol: 0.3, level: 0.55, spread: 0.03,
     bed(o, sr, d) {
@@ -205,7 +215,7 @@ export class Continuo {
     filter.Q.value = 0.4;
     const env = ctx.createGain();
     env.gain.value = 0;
-    env.gain.setTargetAtTime(0.75 * (op.level ?? 1), now, 0.022);
+    env.gain.setTargetAtTime((op.gentle ? 0.08 : 0.75) * (op.level ?? 1), now, op.gentle ? 0.09 : 0.022);
     const pan = ctx.createStereoPanner();
     filter.connect(env).connect(pan).connect(this.out);
     const sources = bank.loops.map((buffer, i) => {
@@ -228,7 +238,8 @@ export class Continuo {
     for (let i = 0; i < 4; i++) v.walk[i] = clamp(v.walk[i] + (rnd(-1, 1) * 2.4 - v.walk[i] * 0.8) * dt, -1, 1);
     const open = clamp(0.65 * move + 0.35 * pressure, 0, 1);
     v.filter.frequency.setTargetAtTime((v.op.lo + (v.op.hi - v.op.lo) * open) * (1 + v.walk[0] * 0.18), now, 0.05);
-    v.env.gain.setTargetAtTime((0.55 + 0.2 * pressure + 0.25 * move) * (1 + v.walk[1] * 0.12) * (v.op.level ?? 1), now, 0.05);
+    const loud = v.op.gentle ? 0.08 + 0.92 * move : 0.55 + 0.2 * pressure + 0.25 * move;
+    v.env.gain.setTargetAtTime(loud * (1 + v.walk[1] * 0.12) * (v.op.level ?? 1), now, v.op.gentle ? 0.12 : 0.05);
     v.pan.pan.setTargetAtTime(v.walk[2] * (v.op.spread ?? 0.14), now, 0.1);
     const rate = 2 ** ((semi + v.walk[3] * 0.45 + move * 0.3) / 12);
     v.sources.forEach(({ src, g }, i) => {
@@ -259,7 +270,7 @@ export class Continuo {
     this.voice = null;
     const now = this.ctx.currentTime;
     v.env.gain.cancelScheduledValues(now);
-    v.env.gain.setTargetAtTime(0, now, 0.035);
+    v.env.gain.setTargetAtTime(0, now, v.op.gentle ? 0.08 : 0.035);
     for (const { src } of v.sources) src.stop(now + 0.3);
     v.sources[0].src.onended = () => v.pan.disconnect();
   }
