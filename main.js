@@ -677,6 +677,8 @@ const layerById = (id) => layers.find((L) => L.id === id);
 
 function setActive(L) {
   active = L;
+  state.brushRes = L.grid.res;
+  showLayerRow(L);
   if (!L.visible) L.visible = true;
   paintOnion();
   updateHud();
@@ -701,14 +703,67 @@ function deleteLayer(L, ask = true) {
   if (layers.length === 1) return toast('No puedes borrar la única capa');
   if (ask && !confirm(t('¿Borrar {0}? No se puede deshacer.', L.name))) return;
   for (const s of [undoStack, redoStack]) {
-    for (let i = s.length - 1; i >= 0; i--) if (s[i].layer === L) forgetEntry(s.splice(i, 1)[0]);
+    for (let i = s.length - 1; i >= 0; i--) if (s[i]?.layer === L) forgetEntry(s.splice(i, 1)[0]);
   }
+  mergePick.delete(L);
   const idx = layers.indexOf(L);
   L.dispose();
   layers.splice(idx, 1);
   setActive(layers[Math.max(0, idx - 1)]);
   live.structure();
   sfx.play('poof');
+}
+
+// Unir capas: se eligen tocando su círculo de color. Queda la de más resolución, para no perder detalle,
+// y las demás se guardan por si se deshace.
+const mergePick = new Set();
+function pickForMerge(L) {
+  if (mergePick.has(L)) mergePick.delete(L);
+  else mergePick.add(L);
+  updateHud();
+  drawPanel();
+}
+async function mergeLayers() {
+  const list = layers.filter((L) => mergePick.has(L));
+  if (list.length < 2) return toast('Toca el círculo de color de dos capas o más');
+  if (list.some((L) => L.frames.length > 1)) return toast('Las capas con fotogramas no se pueden unir');
+  if (list.some((L) => L.busy)) return toast('Espera a que acabe el remesh');
+  const locked = list.find((L) => L.remesh);
+  if (locked) return remeshLocked(locked);
+  if (sculpting || xr.stroking) return;
+  toast(t('Uniendo {0} capas…', list.length), 20000);
+  await new Promise((r) => setTimeout(r, 30)); // que se llegue a ver el aviso
+  const T = list.reduce((a, L) => (L.grid.res > a.grid.res || (L.grid.res === a.grid.res && L === active) ? L : a));
+  const rest = list.filter((L) => L !== T), maps = [];
+  const v = new THREE.Vector3();
+  for (const L of rest) {
+    const toT = new THREE.Matrix4().multiplyMatrices(T.f.inv, L.f.voxels.matrix);
+    maps.push(new THREE.Matrix4().multiplyMatrices(L.f.inv, T.f.voxels.matrix));
+    const box = L.grid.occupied();
+    if (!box) continue;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let c = 0; c < 8; c++) {
+      v.set(c & 1 ? box.hi[0] : box.lo[0], c & 2 ? box.hi[1] : box.lo[1], c & 4 ? box.hi[2] : box.lo[2]).applyMatrix4(toT);
+      v.toArray().forEach((x, a) => { lo[a] = Math.min(lo[a], x); hi[a] = Math.max(hi[a], x); });
+    }
+    T.fit(lo, hi, 0);
+  }
+  noteEdit();
+  const removed = rest.map((L) => ({ L, at: layers.indexOf(L) }));
+  undoStack.push({ layer: T, grid: T.grid, merge: removed, present: true, full: T.grid.state(), bytes: T.grid.bytes() + rest.reduce((a, L) => a + L.grid.bytes(), 0) });
+  clearRedo();
+  trimUndo();
+  rest.forEach((L, i) => T.grid.absorb(L.grid, maps[i].elements, L.f.s / T.f.s, L.base));
+  T.rebuildAll();
+  for (const L of rest) {
+    layers.splice(layers.indexOf(L), 1);
+    spinner.remove(L.group);
+  }
+  mergePick.clear();
+  setActive(T);
+  live.structure();
+  sfx.play('thock');
+  toast(t('Capas unidas en {0}, a {1}³', T.name, T.grid.res));
 }
 
 function setLayerBase(L, hex) {
@@ -765,6 +820,11 @@ function trimUndo() {
 // Un fotograma borrado se guarda por si se deshace; cuando ya no se puede, se libera su malla.
 function forgetEntry(e) {
   if (e.frameOp && !e.present) e.layer.disposeFrame(e.f);
+  // Una unión que ya no se puede deshacer: sus capas de antes se van del todo.
+  if (e.merge && e.present) for (const { L } of e.merge) {
+    for (const s of [undoStack, redoStack]) for (let i = s.length - 1; i >= 0; i--) if (s[i]?.layer === L) forgetEntry(s.splice(i, 1)[0]);
+    L.dispose();
+  }
 }
 function clearRedo() {
   redoStack.forEach(forgetEntry);
@@ -781,6 +841,25 @@ function swapEntry(e) {
     L.moves++;
     live.move(L, e.f);
     return { ...e, place: cur };
+  }
+  if (e.merge) {
+    const cur = L.grid.state();
+    L.grid.setState(e.full);
+    L.rebuildAll();
+    if (e.present) {
+      for (const { L: o, at } of e.merge) {
+        layers.splice(at, 0, o);
+        spinner.add(o.group);
+      }
+    } else {
+      for (const { L: o } of e.merge) {
+        layers.splice(layers.indexOf(o), 1);
+        spinner.remove(o.group);
+      }
+    }
+    mergePick.clear();
+    live.structure();
+    return { ...e, full: cur, present: !e.present };
   }
   if (e.frameOp) {
     if (e.present) L.removeFrame(e.f);
@@ -1074,6 +1153,7 @@ function beginStroke() {
   strokeFx = null;
   strokeRadius = null;
   strokeInk = null;
+  layerForStroke();
   if (remeshLocked()) return;
   latheDepth = null;
   strokeRec = pushStroke(active);
@@ -1456,8 +1536,11 @@ function applyAt(p, dt, pressure = 1) {
   brushStep(tool, a, p, dt, pressure);
 }
 
+// La resolución no cambia lo que ya está hecho: es la del próximo trazo de Añadir. Si no es la de la
+// capa activa, el trazo sigue en una capa de esa resolución, o en una nueva si no hay ninguna.
+const brushRes = () => state.brushRes ?? active.grid.res;
 function changeRes(dir) {
-  const n = active.grid.res;
+  const n = brushRes();
   let i = RES_STEPS.findIndex((r) => r >= n);
   if (i < 0) i = RES_STEPS.length - 1;
   const ni = Math.max(0, Math.min(RES_STEPS.length - 1, i + dir));
@@ -1465,15 +1548,21 @@ function changeRes(dir) {
   setRes(RES_STEPS[ni]);
 }
 function setRes(n) {
-  if (remeshLocked() || active.grid.res === n) return;
-  if (active.grid.samplesFor(n) > MAX_SAMPLES) return toast('Esta capa ocupa demasiado para subir la resolución');
-  pushFull(active);
-  active.grid.resample(n);
-  active.rebuildAll();
+  state.brushRes = n;
   updateHud();
   drawPanel();
+  if (n !== active.grid.res) toast(t('El próximo trazo de Añadir irá a {0}³, en otra capa', n));
+}
+function layerForStroke() {
+  const n = brushRes();
+  if (active.grid.res === n || activeTool() !== 'add' || state.invert) return;
+  const same = [...layers].reverse().find((L) => L.grid.res === n && L.visible && !L.remesh && !L.busy && L.frames.length === 1);
+  if (same) return setActive(same);
+  const L = new Layer(n, 'empty');
+  layers.push(L);
+  setActive(L);
   live.structure();
-  toast(t('{0}: resolución {1}³', active.name, active.grid.res));
+  toast(t('{0}: capa nueva a {1}³', L.name, n));
 }
 
 function resetLayer(shape) {
@@ -2338,6 +2427,7 @@ $('btnRemeshMac').onclick = () => remeshBlender(active);
 $('layerAdd').onclick = newLayer;
 $('layerDel').onclick = () => deleteLayer(active);
 $('layerSphere').onclick = () => resetLayer('sphere');
+$('layerMerge').onclick = () => mergeLayers();
 $('layerClear').onclick = () => resetLayer('empty');
 $('btnMenu').onclick = (e) => {
   const b = e.currentTarget.getBoundingClientRect();
@@ -2386,6 +2476,12 @@ function renderLayers() {
     const dot = document.createElement('span');
     dot.className = 'dot';
     dot.style.background = L.color;
+    dot.classList.toggle('pick', mergePick.has(L));
+    dot.title = t('Elegir para unir');
+    dot.onclick = (e) => {
+      e.stopPropagation();
+      pickForMerge(L);
+    };
     const name = document.createElement('span');
     name.className = 'lname';
     name.textContent = L.name + (L.remesh ? ' ⊞' : '') + (L.busy ? ' …' : '') + (L.frames.length > 1 ? ` · ${frameIndex(L) + 1}/${L.frames.length}` : '');
@@ -2411,6 +2507,8 @@ function renderLayers() {
     row.append(dot, name, res, eye);
     list.append(row);
   }
+  $('layerMerge').hidden = mergePick.size < 2;
+  $('layerMerge').textContent = t('Unir {0} capas', mergePick.size);
   $('frameInfo').textContent = t('Fotograma {0} de {1}', frameIndex() + 1, active.frames.length);
   $('btnFramePlay').textContent = t(anim.playing ? 'Pausa' : 'Play');
   $('btnFramePlay').classList.toggle('on', anim.playing);
@@ -2437,7 +2535,7 @@ function updateHud() {
   $('latheSpeed').value = state.latheSpeed;
   $('latheBox').hidden = !state.lathe;
   $('btnVoxel').hidden = !active.remesh;
-  document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === active.grid.res));
+  document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === brushRes()));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
   document.querySelectorAll('#shapes [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === state.shape));
@@ -3295,9 +3393,24 @@ function buildBrushTab() {
   const rw = (IW - (RES_STEPS.length - 1) * 6) / RES_STEPS.length;
   RES_STEPS.forEach((n, i) => W.push({
     type: 'button', x: M + i * (rw + 6), y: 650, w: rw, h: 44, label: String(n), plain: true, size: 22, group: 'res',
-    active: () => active.grid.res === n, onClick: () => setRes(n),
+    active: () => brushRes() === n, onClick: () => setRes(n),
   }));
   return W;
+}
+const LAYER_ROWS = 4;
+let layerTop = null; // la primera capa que se ve en la lista del panel; null = las últimas
+const layerFirst = () => Math.max(0, Math.min(layerTop ?? Infinity, layers.length - LAYER_ROWS));
+function scrollLayers(dir) {
+  const next = Math.max(0, Math.min(layers.length - LAYER_ROWS, layerFirst() + dir));
+  if (next === layerFirst()) return;
+  layerTop = next;
+  sfx.play('dial', { semi: dir < 0 ? 3 : -2, pan: -0.2 });
+  drawPanel();
+}
+function showLayerRow(L) {
+  const i = layers.indexOf(L), first = layerFirst();
+  if (i >= 0 && i < first) layerTop = i;
+  else if (i >= first + LAYER_ROWS) layerTop = i - LAYER_ROWS + 1;
 }
 function buildColorTab() {
   const W = [];
@@ -3325,13 +3438,22 @@ function buildColorTab() {
     drawPanel();
   } });
   W.push({ type: 'button', x: PW - M - 2 * 134 - 16 - 150, y: yl - 26, w: 150, h: 50, label: 'Animar ▸', size: 22, group: 'lay', onClick: () => { panelPage = 'anim'; drawPanel(); } });
-  layers.slice(-5).forEach((L, i) => {
+  const first = layerFirst();
+  layers.slice(first, first + LAYER_ROWS).forEach((L, i) => {
     const y = yl + 36 + i * 60;
     W.push({ type: 'button', x: M, y, w: IW - 96, h: 50, label: `${L.name}  ·  ${L.frames.length > 1 ? t('{0} fot.', L.frames.length) : L.grid.res + '³'}${L.remesh ? '  ⊞' : ''}`, plain: true,
       dot: L.color, size: 22, active: () => L === active, onClick: () => setActive(L) });
+    // El círculo de color elige la capa para unirla; se puede pulsar con holgura.
+    W.push({ type: 'swatch', x: M + 3, y: y + 1, w: 48, h: 48, color: L.color, active: () => mergePick.has(L), onClick: () => pickForMerge(L) });
     W.push({ type: 'button', x: PW - M - 84, y, w: 84, h: 50, label: L.visible ? 'Ver' : '—', size: 20,
       onClick: () => { L.visible = !L.visible; updateHud(); live.structure(); } });
   });
+  const yb = yl + 36 + LAYER_ROWS * 60;
+  W.push({ type: 'button', x: M, y: yb, w: 76, h: 50, label: '▲', size: 24, plain: true, group: 'scroll', onClick: () => scrollLayers(-1) });
+  W.push({ type: 'button', x: M + 84, y: yb, w: 76, h: 50, label: '▼', size: 24, plain: true, group: 'scroll', onClick: () => scrollLayers(1) });
+  W.push({ type: 'label', x: M + 172, y: yb + 25, size: 22, text: `${first + 1}–${Math.min(first + LAYER_ROWS, layers.length)} / ${layers.length}` });
+  if (mergePick.size > 1) W.push({ type: 'button', x: PW - M - 240, y: yb, w: 240, h: 50, label: t('Unir {0} capas', mergePick.size), plain: true, size: 24, active: () => true, onClick: mergeLayers });
+  else W.push({ type: 'label', x: PW - M - 300, y: yb + 25, size: 20, max: 300, text: 'Toca los círculos para unir' });
   W.push(panelBlock(632, 60, CERA.red));
   W.push({ type: 'label', x: M, y: 666, head: true, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 24, max: IW - 190 });
   W.push({ type: 'button', x: PW - M - 170, y: 642, w: 170, h: 46, label: 'Guardar', size: 22, active: () => obraDirty(), onClick: () => saveObra() });
@@ -3861,6 +3983,12 @@ function xrFrame(dt) {
       ray.visible = true;
       ray.scale.z = hit.distance;
       if (panel.pointer(hit.uv.x * CW, (1 - hit.uv.y) * CH, trigDown)) drawPanel();
+      // Apuntando a la columna de las capas, el stick derecho sube y baja por la lista.
+      xr.layerFlick = Math.max(0, (xr.layerFlick || 0) - dt);
+      if (hit.uv.x > 0.5 && panelTab[1] === 'color' && panelPage === 'main' && Math.abs(ay) > 0.5 && !xr.layerFlick) {
+        scrollLayers(ay > 0 ? 1 : -1);
+        xr.layerFlick = 0.2;
+      }
       xr.trigPrev = trigDown;
       return;
     }
@@ -5007,5 +5135,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { mergeLayers, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

@@ -59,7 +59,8 @@
       background: var(--white); border: 3px solid var(--ink); }
     .layer:hover, .obra:hover { background: #ffe98a; }
     .layer.active, .obra.active { background: var(--yellow); }
-    .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ink); flex: 0 0 auto; }
+    .dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--ink); flex: 0 0 auto; }
+    .dot.pick { outline: 4px solid var(--red); outline-offset: 1px; }
     .lname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .lres { color: #4d483f; font-size: 12px; }
     button.eye { flex: 0 0 auto; padding: 2px 6px; background: transparent; border: 0; box-shadow: none; }
@@ -219,6 +220,7 @@
       <button id="layerSphere" title="Rellenar la capa con una esfera">Esfera</button>
       <button id="layerClear" title="Vaciar la capa">Vaciar</button>
       <button id="layerDel" title="Borrar la capa">Borrar</button>
+      <button id="layerMerge" class="primary" title="Une las capas elegidas con su círculo de color" hidden></button>
     </div>
   </div>
   <div class="blk red">

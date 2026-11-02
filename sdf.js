@@ -365,6 +365,58 @@ export class SDFGrid {
     );
   }
 
+  // Une otra capa a esta sin tocar lo que hay. e: matriz (por columnas) de esta rejilla a la otra;
+  // scale: cómo pasar sus distancias a las de esta; base: su color donde no está pintada.
+  absorb(src, e, scale, base) {
+    const old = new SDFGrid(2, 'empty');
+    old.setState(this.state());
+    this.view = null;
+    this.alloc();
+    const s = src.n - 1, h = this.h, g0 = this.o, tint = [base[0], base[1], base[2], 255];
+    const tp = (x, y, z) => [
+      e[0] * x + e[4] * y + e[8] * z + e[12],
+      e[1] * x + e[5] * y + e[9] * z + e[13],
+      e[2] * x + e[6] * y + e[10] * z + e[14],
+    ];
+    const at = (i) => (this.o + i * B * h - old.o) / old.h;
+    const srcFill = (bx, by, bz) => {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let c = 0; c < 8; c++) {
+        const p = tp(g0 + (bx * B + (c & 1) * (B - 1)) * h, g0 + (by * B + ((c >> 1) & 1) * (B - 1)) * h, g0 + (bz * B + (c >> 2) * (B - 1)) * h);
+        for (let a = 0; a < 3; a++) {
+          const v = (p[a] - src.o) / src.h;
+          lo[a] = Math.min(lo[a], Math.floor(v) - 1);
+          hi[a] = Math.max(hi[a], Math.ceil(v) + 1);
+        }
+      }
+      if (hi.some((v) => v < 0) || lo.some((v) => v > s)) return 1;
+      const partial = lo.some((v) => v < 0) || hi.some((v) => v > s);
+      const L = lo.map((v) => Math.max(0, v)), H = hi.map((v) => Math.min(s, v));
+      if (!src.regionUniform(L[0], L[1], L[2], H[0], H[1], H[2])) return 0;
+      const f = src.fill[(L[0] >> 3) + src.nb * ((L[1] >> 3) + src.nb * (L[2] >> 3))];
+      return partial && f !== 1 ? 0 : f;
+    };
+    const oldFill = (bx, by, bz) => {
+      const lo = (i) => Math.max(0, Math.min(old.n - 1, Math.floor(at(i)) - 1));
+      const hi = (i) => Math.max(0, Math.min(old.n - 1, Math.ceil(at(i + 1)) + 1));
+      if (!old.regionUniform(lo(bx), lo(by), lo(bz), hi(bx), hi(by), hi(bz))) return 0;
+      return old.fill[(lo(bx) >> 3) + old.nb * ((lo(by) >> 3) + old.nb * (lo(bz) >> 3))];
+    };
+    this.build(
+      (x, y, z) => { const p = tp(x, y, z); return Math.min(old.sample(x, y, z), src.sample(p[0], p[1], p[2]) * scale); },
+      (bx, by, bz) => {
+        const a = oldFill(bx, by, bz), b = srcFill(bx, by, bz);
+        if (a === -1 || b === -1) return -1;
+        return a === 1 && b === 1 ? 1 : 0;
+      },
+      (x, y, z) => {
+        const p = tp(x, y, z);
+        if (src.sample(p[0], p[1], p[2]) * scale < old.sample(x, y, z)) return src.sampleColor(p[0], p[1], p[2]) || tint;
+        return old.sampleColor(x, y, z);
+      },
+    );
+  }
+
   // Rayo (local) contra la superficie. Devuelve [x,y,z, t] o null.
   raymarch(o, d) {
     let t0 = -Infinity, t1 = Infinity;
