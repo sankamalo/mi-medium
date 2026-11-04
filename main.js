@@ -15,7 +15,7 @@ import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang, translateDOM } from './i18n.js';
 import { textMesh, textField, readLetter, splitLetters, TEXT_KEYS } from './texto.js';
-import { newShape, copyShape, shapeMesh, shapeHandles, handlePos, shapeField } from './formas.js';
+import { newShape, copyShape, shapeMesh, shapeHandles, handlePos, shapeField, extrudeFace, faceDir } from './formas.js';
 import { sfx, PENTATONIC } from './sonidos.js';
 import { OPCIONES } from './anadir.js';
 import { Receptor } from './llamada.js';
@@ -32,6 +32,7 @@ const MAX_SAMPLES = 1600;
 const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
 const UNDO_BYTES = ON_QUEST ? 300e6 : 800e6;
 const BRICK_BYTES = 512 * 4;
+let uso = null; // lo que más usas: se carga con el panel (ver «Lo que más usas»)
 const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab', 'pinch', 'crease'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
 const PALETTE = [
@@ -1016,8 +1017,8 @@ function swapEntry(e) {
   const L = e.layer;
   noteEdit();
   if (e.shapeEdit) {
-    const cur = L.shape.v;
-    L.shape.v = e.shapeEdit;
+    const cur = shapeSnap(L.shape);
+    Object.assign(L.shape, shapeSnap(e.shapeEdit));
     buildShape(L);
     live.structure();
     return { ...e, shapeEdit: cur };
@@ -1794,6 +1795,7 @@ function resetLayer(shape) {
 }
 
 function choose(id) {
+  noteUse(id);
   // La simetría y el torno se excluyen: el torno ya da la vuelta entera.
   if (/^(sym$|sym:[xyz]$|sym:radial$|radial:)/.test(id) || id === 'move') state.lathe = false;
   switch (id) {
@@ -2631,6 +2633,7 @@ $('shapePyramid').onclick = () => makeShape('pyramid');
 $('shapeWedge').onclick = () => makeShape('wedge');
 $('shapeMode').onclick = () => (active.remesh ? toVoxel() : textToQuads(active));
 $('shapeReset').onclick = () => resetShape(active);
+$('shapeExtrude').onclick = () => setExtrude(!shapeUI.extrude);
 $('textInput').onkeydown = (e) => e.stopPropagation();
 $('textInput').oninput = (e) => {
   const str = [...e.target.value.toUpperCase()].map((c) => (TEXT_KEYS.includes(c) ? c : ' ')).join('');
@@ -2781,6 +2784,8 @@ function updateHud() {
   $('shapeMode').hidden = !active.shape;
   $('shapeMode').textContent = t(active.remesh ? 'A vóxel' : 'A forma');
   $('shapeReset').hidden = !active.shape || !active.remesh;
+  $('shapeExtrude').hidden = !active.shape || !active.remesh;
+  $('shapeExtrude').classList.toggle('on', shapeUI.extrude);
   document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === brushRes()));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
@@ -3740,7 +3745,14 @@ const HANDLE_LOOK = {
 };
 const HANDLE_MATS = Object.fromEntries(Object.entries(HANDLE_LOOK).map(([k, [, c]]) => [k, new THREE.MeshBasicMaterial({ color: c, toneMapped: false })]));
 const HANDLE_RING = new THREE.MeshBasicMaterial({ color: CERA.ink, side: THREE.BackSide, toneMapped: false });
-const shapeUI = { L: null, group: new THREE.Group(), list: [], meshes: [], hot: -1, drag: null };
+const shapeUI = { L: null, group: new THREE.Group(), list: [], meshes: [], hot: -1, drag: null, extrude: false };
+const shapeSnap = (s) => ({ v: s.v.map((p) => [...p]), f: s.f.map((f) => [...f]) });
+function setExtrude(on) {
+  shapeUI.extrude = on;
+  toast(on ? 'Extruir: coge una cara roja y tira de ella' : 'Extruir apagado: las caras se mueven', 2200);
+  updateHud();
+  drawPanel();
+}
 function buildShape(L) {
   const m = shapeMesh(L.shape), base = L.base, colors = new Float32Array(m.positions.length);
   for (let i = 0; i < colors.length; i += 3) {
@@ -3772,8 +3784,9 @@ function makeShape(kind) {
 const SHAPE_SIZE = 0.16;
 function resetShape(L) {
   if (!L.shape || !L.remesh) return;
-  const before = L.shape.v, fresh = newShape(L.shape.kind, SHAPE_SIZE);
+  const before = shapeSnap(L.shape), fresh = newShape(L.shape.kind, SHAPE_SIZE);
   L.shape.v = fresh.v;
+  L.shape.f = fresh.f;
   pushShapeEdit(L, before);
   buildShape(L);
 }
@@ -3821,15 +3834,29 @@ function placeHandles() {
   shapeUI.list = list;
   list.forEach((h, i) => shapeUI.meshes[i].position.fromArray(handlePos(L.shape, h)));
 }
+// Con Extruir, coger una cara saca una copia de ella con paredes y lleva la copia, solo hacia fuera.
 function startShapeDrag(i, p) {
-  const L = shapeUI.L;
-  shapeUI.drag = { i, p0: p, v0: L.shape.v.map((v) => [...v]), moved: false };
+  const L = shapeUI.L, h = shapeUI.list[i], before = shapeSnap(L.shape);
+  let normal = null;
+  if (shapeUI.extrude && h.type === 'face') {
+    const fi = L.shape.f.findIndex((f) => f.length === h.ids.length && f.every((id, k) => id === h.ids[k]));
+    normal = faceDir(L.shape, fi);
+    extrudeFace(L.shape, fi);
+    placeHandles();
+    const list = shapeUI.list;
+    i = list.length - L.shape.f.length + fi;
+  }
+  shapeUI.drag = { i, p0: p, v0: L.shape.v.map((v) => [...v]), before, normal, moved: false };
   sfx.play('grab');
 }
 function moveShapeDrag(p) {
   const d = shapeUI.drag, L = shapeUI.L;
   if (!d || !L) return;
-  const delta = [p[0] - d.p0[0], p[1] - d.p0[1], p[2] - d.p0[2]];
+  let delta = [p[0] - d.p0[0], p[1] - d.p0[1], p[2] - d.p0[2]];
+  if (d.normal) {
+    const k = Math.max(0, delta[0] * d.normal[0] + delta[1] * d.normal[1] + delta[2] * d.normal[2]);
+    delta = d.normal.map((x) => x * k);
+  }
   L.shape.v = d.v0.map((v) => [...v]);
   for (const id of shapeUI.list[d.i].ids) for (let a = 0; a < 3; a++) L.shape.v[id][a] = d.v0[id][a] + delta[a];
   d.moved = true;
@@ -3838,8 +3865,17 @@ function moveShapeDrag(p) {
 function endShapeDrag() {
   const d = shapeUI.drag, L = shapeUI.L;
   shapeUI.drag = null;
-  if (!d || !L || !d.moved) return;
-  pushShapeEdit(L, d.v0);
+  if (!d || !L) return;
+  // Una extrusión que no ha salido nada no deja caras metidas una dentro de otra.
+  const flat = d.normal && d.v0.every((v, i) => v.every((x, a) => Math.abs(x - L.shape.v[i][a]) < 1e-4));
+  if (!d.moved || flat) {
+    if (d.normal) {
+      Object.assign(L.shape, d.before);
+      buildShape(L);
+    }
+    return;
+  }
+  pushShapeEdit(L, d.before);
   sfx.play('thock');
   updateHud();
   drawPanel();
@@ -3889,7 +3925,8 @@ function buildShapesTab() {
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 684, CERA.red));
   W.push({ type: 'label', x: M, y: 54, head: true, text: 'Formas', size: 44 });
-  W.push({ type: 'label', x: M, y: 94, size: 22, wrap: IW, text: 'Con la mínima geometría: una caja son 6 caras.' });
+  W.push({ type: 'button', x: PW - M - 220, y: 18, w: 220, h: 60, label: 'Texto ▸', size: 26, onClick: () => { noteUse('text'); openText(); } });
+  W.push({ type: 'label', x: M, y: 94, size: 22, wrap: IW - 230, text: 'Mínima geometría: una caja son 6 caras.' });
   const bw = (IW - 20) / 3;
   [['box', 'Caja'], ['pyramid', 'Pirámide'], ['wedge', 'Cuña']].forEach(([k, l], i) => W.push({ type: 'button', x: M + i * (bw + 10), y: 124, w: bw, h: 80, label: l, size: 28, onClick: () => makeShape(k) }));
   if (L) {
@@ -3897,9 +3934,10 @@ function buildShapesTab() {
     const hw = (IW - 10) / 2;
     W.push({ type: 'button', x: M, y: 276, w: hw, h: 64, label: L.remesh ? 'A vóxel' : 'A forma', size: 26, onClick: () => (L.remesh ? toVoxel(L) : textToQuads(L)) });
     if (L.remesh) W.push({ type: 'button', x: M + hw + 10, y: 276, w: hw, h: 64, label: 'Como al principio', size: 24, onClick: () => resetShape(L) });
+    if (L.remesh) W.push({ type: 'button', x: M, y: 352, w: IW, h: 64, label: shapeUI.extrude ? 'Extruir: sí (tira de una cara roja)' : 'Extruir: no', size: 26, active: () => shapeUI.extrude, onClick: () => setExtrude(!shapeUI.extrude) });
   }
   ['Coge con el gatillo: amarillo = esquina, azul = arista, rojo = cara.', 'Con Mover la llevas, giras y escalas entera.', '«A vóxel» la convierte en plastilina; «A forma» vuelve a la forma limpia.']
-    .forEach((text, i) => W.push({ type: 'label', x: M, y: 400 + i * 84, size: 22, wrap: IW, text }));
+    .forEach((text, i) => W.push({ type: 'label', x: M, y: 460 + i * 76, size: 22, wrap: IW, text }));
   return W;
 }
 
@@ -4075,11 +4113,12 @@ Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => doc
 
 // Bloque de color: agrupa lo que va junto. Azul: el pincel. Papel: color y capas. Rojo: la obra. Negro: lo técnico.
 const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
-const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink], ['text', 'Texto', CERA.paper], ['shapes', 'Formas', CERA.red]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
+const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['shapes', 'Crear', CERA.red], ['tech', 'Técnico', CERA.ink]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
 const panelTab = ['brush', 'color'];
-const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, unir: buildMergePage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
+const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, unir: buildMergePage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage, todo: buildAllPage };
 const PAGE_PANE = { export: 1, unir: 1 }; // las demás se abren en la columna izquierda
-const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']); // su segundo bloque va en la otra columna
+const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']);
+let countedPage = null; // su segundo bloque va en la otra columna
 const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, text: buildTextTab, shapes: buildShapesTab, color: buildColorTab, obra: buildObraTab };
 function buildPanel() {
   const W = [];
@@ -4091,6 +4130,7 @@ function buildPanel() {
     W.push(...list);
   };
   const page = PANEL_PAGES[panelPage] ? panelPage : null;
+  if (page !== countedPage) noteUse('page:' + (countedPage = page));
   const held = [null, null];
   if (page && PAGE_SPAN.has(page)) {
     const list = PANEL_PAGES[page](), blocks = list.filter((w) => w.type === 'block'), at = list.indexOf(blocks[1]), dy = blocks[1].y - 8;
@@ -4105,9 +4145,10 @@ function buildPanel() {
     const room = PW - 16 - (pane ? 176 : 0), tw = (room - 8 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, name, color], i) => W.push({
       type: 'tab', x: pane * PW + 8 + i * (tw + 8), y: 8, w: tw, h: TAB_H - 8, label: name, color,
-      active: () => panelTab[pane] === id && !held[pane],
+      active: () => (panelTab[pane] === id || (id === 'shapes' && panelTab[pane] === 'text')) && !held[pane],
       onClick: () => {
         panelTab[pane] = id;
+        noteUse(id);
         if (held[pane]) panelPage = 'main';
         if (id === 'text') return openText();
         if (!pane) text.writing = false;
@@ -4118,12 +4159,81 @@ function buildPanel() {
   W.push({ type: 'button', x: CW - 8 - 168, y: 12, w: 168, h: TAB_H - 20, size: 24, label: xr.panelPinned ? 'A la mano' : 'Fijar', onClick: () => pinPanel(!xr.panelPinned) });
   return W;
 }
+// ---------- Lo que más usas ----------
+// Se cuenta solo en estas gafas (o este Mac) y no sale de aquí. Los botones de «Lo que más usas» se fijan
+// al abrir la app con lo de las sesiones anteriores: así no cambian de sitio mientras trabajas.
+const FAV = {
+  ...Object.fromEntries(TOOL_KEYS.map((k) => [k, { label: () => ({ move: 'Mover', grab: 'Arrastrar', smooth: 'Suaviz.' }[k] || label(k)), go: () => choose(k), on: () => state.tool === k && !clayTool }])),
+  ...Object.fromEntries(['tool:palillo', 'tool:cuter', 'tool:cuchara', 'tool:dedo', 'tool:rodillo', 'tool:espatula'].map((k) => [k, { label: () => label(k), go: () => choose(k), on: () => clayTool === k }])),
+  sym: { label: () => 'Simetría', go: () => choose('sym'), on: () => symOn() },
+  'sym:lathe': { label: () => 'Torno', go: () => choose('sym:lathe'), on: () => state.lathe },
+  'stroke:sens': { label: () => 'Presión', go: () => choose('stroke:sens'), on: () => state.sens },
+  remesh: { label: () => (active.remesh ? 'A vóxel' : 'Remesh'), go: () => choose(active.remesh ? 'voxel' : 'remesh') },
+  resDown: { label: () => '− Res', go: () => choose('resDown') },
+  resUp: { label: () => '+ Res', go: () => choose('resUp') },
+  wire: { label: () => 'Malla', go: () => choose('wire'), on: () => state.wire },
+  floor: { label: () => 'Suelo', go: () => choose('floor'), on: () => state.floor },
+  text: { label: () => 'Texto', go: () => { noteUse('text'); openText(); } },
+  shapes: { label: () => 'Formas', go: () => { noteUse('shapes'); panelTab[0] = 'shapes'; panelPage = 'main'; drawPanel(); } },
+  traer: { label: () => 'Traer aquí', go: () => { noteUse('traer'); placeWorkspace(true); } },
+  ...Object.fromEntries([['pincel', 'Pincel ▸'], ['material', 'Material ▸'], ['bg', 'Fondo ▸'], ['sellos', 'Sellos ▸'], ['anim', 'Animar ▸'], ['refs', 'Importar ▸']]
+    .map(([k, l]) => ['page:' + k, { label: () => l, go: () => (k === 'refs' ? openRefPage() : ((panelPage = k), drawPanel())) }])),
+};
+uso = (() => { try { return JSON.parse(localStorage.getItem('plastilinaUso')) || {}; } catch { return {}; } })();
+const FAV_N = 10, FAV_DEFAULT = ['add', 'remove', 'smooth', 'move', 'grab', 'flatten', 'inflate', 'paint', 'sym', 'page:material'];
+const favorites = (() => {
+  const ranked = Object.keys(uso).filter((k) => FAV[k] && uso[k] >= 3).sort((a, b) => uso[b] - uso[a]);
+  const out = ranked.slice(0, FAV_N);
+  for (const k of FAV_DEFAULT) if (out.length < FAV_N && !out.includes(k)) out.push(k);
+  return out;
+})();
+function noteUse(id) {
+  id = id === 'voxel' ? 'remesh' : id;
+  if (!uso || !FAV[id]) return;
+  uso[id] = (uso[id] || 0) + 1;
+  clearTimeout(noteUse.t);
+  noteUse.t = setTimeout(() => { try { localStorage.setItem('plastilinaUso', JSON.stringify(uso)); } catch {} }, 2000);
+}
+// La pestaña Pincel: lo justo. Tamaño, fuerza y tus diez botones; el resto en «Todo ▸».
 function buildBrushTab() {
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 548, CERA.blue));
   W.push({ type: 'label', x: M, y: 54, head: true, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), size: 50, max: IW * 0.55 });
   W.push({ type: 'label', x: PW - M, y: 54, text: infoText(), align: 'right', size: 22, max: IW * 0.43 });
+  W.push({
+    type: 'slider', x: M, y: 128, w: IW, h: 30, label: 'Tamaño',
+    get: () => radiusToT(state.radius), set: (t) => (state.radius = tToRadius(t)),
+    text: () => Math.round(state.radius * 1000) / 10 + '',
+  });
+  W.push({
+    type: 'slider', x: M, y: 208, w: IW, h: 30, label: 'Fuerza',
+    get: () => (state.strength - 0.05) / 0.95, set: (t) => (state.strength = 0.05 + t * 0.95),
+    text: () => Math.round(state.strength * 100) + '%',
+  });
+  W.push({ type: 'label', x: M, y: 280, size: 22, text: 'Lo que más usas' });
+  const fw = (IW - 4 * 8) / 5;
+  favorites.forEach((k, i) => W.push({
+    type: 'button', x: M + (i % 5) * (fw + 8), y: 300 + Math.floor(i / 5) * 68, w: fw, h: 58, size: 22, group: 'fav',
+    label: FAV[k].label(), active: () => FAV[k].on?.() || false, onClick: FAV[k].go,
+  }));
+  W.push({ type: 'button', x: M, y: 450, w: IW, h: 64, label: 'Todo ▸', size: 28, onClick: () => { panelPage = 'todo'; drawPanel(); } });
+  if (state.lathe) {
+    W.push({ type: 'slider', x: M, y: 606, w: IW, h: 28, label: 'Velocidad del torno', get: () => state.latheSpeed / 1.5, set: (v) => (state.latheSpeed = Math.max(0.05, v * 1.5)), text: () => Math.round(state.latheSpeed * 60) + ' rpm' });
+  } else if (tut?.active) {
+    const bw = (IW - 10) / 2;
+    W.push({ type: 'button', x: M, y: 576, w: bw, h: 54, label: 'Saltar paso', size: 24, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
+    W.push({ type: 'button', x: M + bw + 10, y: 576, w: bw, h: 54, label: 'Salir del tutorial', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
+  } else W.push({ type: 'label', x: M, y: 600, size: 20, wrap: IW, text: 'Estos botones se ordenan solos con lo que más usas, cada vez que abres la app.' });
+  return W;
+}
+// Todo lo del pincel, como estaba antes.
+function buildAllPage() {
+  const W = [];
+  const M = 32, IW = PW - 2 * M;
+  W.push(panelBlock(8, 548, CERA.blue));
+  W.push({ type: 'label', x: M, y: 54, head: true, text: label(activeTool()) + (state.invert ? ' ' + t('(invertido)') : ''), size: 50, max: IW * 0.55 });
+  W.push({ type: 'button', x: PW - M - 160, y: 24, w: 160, h: 56, label: '◂ Volver', size: 24, onClick: () => { panelPage = 'main'; drawPanel(); } });
   W.push({
     type: 'slider', x: M, y: 128, w: IW, h: 30, label: 'Tamaño',
     get: () => radiusToT(state.radius), set: (t) => (state.radius = tToRadius(t)),
@@ -4148,7 +4258,7 @@ function buildBrushTab() {
   }));
   const hw = (IW - 3 * 10) / 4;
   W.push({ type: 'button', x: M, y: 480, w: hw, h: 58, label: 'Traer aquí', size: 24, group: 'nav',
-    onClick: () => placeWorkspace(true) });
+    onClick: FAV.traer.go });
   W.push({ type: 'button', x: M + hw + 10, y: 480, w: hw, h: 58, label: 'Pincel ▸', size: 24, group: 'nav',
     onClick: () => { panelPage = 'pincel'; drawPanel(); } });
   W.push({ type: 'button', x: M + 2 * (hw + 10), y: 480, w: hw, h: 58, label: 'Material ▸', size: 24, group: 'nav',
@@ -5933,5 +6043,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };

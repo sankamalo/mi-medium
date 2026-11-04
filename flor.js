@@ -616,9 +616,9 @@ export function wheelSpot(hex) {
   return [Math.cos((h / 6) * Math.PI * 2) * rad, Math.sin((h / 6) * Math.PI * 2) * rad];
 }
 const DWELL = 0.2;
-// Un segundo encima de una opción la pone sin apretar nada, sin avisos en pantalla. Al cruzar la frontera entre dos
-// pétalos, el de ahora aguanta un poco: sin esto, el temblor de la mano reiniciaba la espera.
-const HOLD = 1, STICKY = 7;
+// Medio segundo encima de una opción la pone sin apretar nada, sin avisos en pantalla. Al cruzar la frontera entre
+// dos pétalos, el de ahora aguanta un poco: sin esto, el temblor de la mano reiniciaba la espera.
+const HOLD = 0.5, STICKY = 7;
 // El pétalo grande de los sellos: un círculo sobre la flor, con dos anillos de dibujitos.
 const STAMP_DISC = 0.245, STAMP_THUMB = 0.034, STAMP_HOLE = 0.05;
 const STAMP_RINGS = [{ r: 0.098, n: 8 }, { r: 0.188, n: 14 }];
