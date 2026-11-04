@@ -113,12 +113,12 @@ export function shapeField(s) {
 }
 
 // Extruir: la cara sale con sus propias esquinas (pegadas al principio a las de antes) y una pared por
-// cada lado. Las paredes recorren su arista al revés que la cara, para que todo mire hacia fuera.
+// cada lado. Cada pared recorre su arista en el mismo sentido que la cara que se va, para mirar hacia fuera.
 export function extrudeFace(s, fi) {
   const f = s.f[fi], top = f.map((i) => (s.v.push([...s.v[i]]), s.v.length - 1));
   for (let k = 0; k < f.length; k++) {
     const a = f[k], b = f[(k + 1) % f.length];
-    s.f.push([b, a, top[k], top[(k + 1) % f.length]]);
+    s.f.push([a, b, top[(k + 1) % f.length], top[k]]);
   }
   s.f[fi] = top;
   return top;

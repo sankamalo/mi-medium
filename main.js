@@ -3080,6 +3080,11 @@ function pickLocal(allowAir) {
   const frozen = sculpting && (activeTool() === 'add' || activeTool() === 'remove');
   for (const L of layers) {
     if (!L.visible) continue;
+    if (paramLive(L)) {
+      const hit = paramRay(L, so);
+      if (hit && (!best || hit[3] < best[3])) { best = hit; bestLayer = L; }
+      continue;
+    }
     if (frozen && L === active) L.grid.view = strokeRec;
     const f = L.f;
     const hit = f.moved
@@ -3751,9 +3756,29 @@ const shapeUI = { L: null, group: new THREE.Group(), list: [], meshes: [], hot: 
 const shapeSnap = (s) => ({ v: s.v.map((p) => [...p]), f: s.f.map((f) => [...f]) });
 function setExtrude(on) {
   shapeUI.extrude = on;
+  if (shapeUI.L) placeHandles();
   toast(on ? 'Extruir: coge una cara roja y tira de ella' : 'Extruir apagado: las caras se mueven', 2200);
   updateHud();
   drawPanel();
+}
+// Formas y textos en quads no tienen vóxeles debajo: Mover los encuentra por su propia malla.
+const paramLive = (L) => (L.shape || L.text) && L.remesh;
+const vP = new THREE.Vector3(), vQ = new THREE.Vector3();
+function paramField(L) {
+  if (L.pField?.v !== L.version) L.pField = { v: L.version, f: L.shape ? shapeField(L.shape) : textField(L.text.str, L.text.height, L.text.depth) };
+  return L.pField.f;
+}
+function paramDist(L, tipL) {
+  model.updateMatrixWorld();
+  const p = L.reGroup.worldToLocal(model.localToWorld(vP.fromArray(tipL)));
+  const k = L.reGroup.getWorldScale(vQ).x / model.getWorldScale(vP.clone()).x;
+  return paramField(L).at(p.x, p.y, p.z, 1) * k;
+}
+function paramRay(L, so) {
+  const hit = raycaster.intersectObject(L.remesh.mesh, false)[0];
+  if (!hit) return null;
+  const p = spinner.worldToLocal(hit.point.clone());
+  return [p.x, p.y, p.z, Math.hypot(p.x - so[0], p.y - so[1], p.z - so[2])];
 }
 function buildShape(L) {
   const m = shapeMesh(L.shape), base = L.base, colors = new Float32Array(m.positions.length);
@@ -3834,7 +3859,11 @@ function placeHandles() {
     });
   }
   shapeUI.list = list;
-  list.forEach((h, i) => shapeUI.meshes[i].position.fromArray(handlePos(L.shape, h)));
+  list.forEach((h, i) => {
+    shapeUI.meshes[i].position.fromArray(handlePos(L.shape, h));
+    // Extruyendo solo se cogen caras: las esquinas y aristas se apartan para no estorbar.
+    shapeUI.meshes[i].visible = !shapeUI.extrude || h.type === 'face';
+  });
 }
 // Con Extruir, coger una cara saca una copia de ella con paredes y lleva la copia, solo hacia fuera.
 function startShapeDrag(i, p) {
@@ -3895,6 +3924,7 @@ function shapeXR(tipW, trig, gp) {
   if (xr.stroking || moveOp.L) return false;
   let best = -1, bd = 0.035;
   shapeUI.meshes.forEach((m, i) => {
+    if (!m.visible) return;
     const d = m.getWorldPosition(vShape).distanceTo(tipW);
     if (d < bd) { bd = d; best = i; }
   });
@@ -3908,19 +3938,33 @@ function shapeXR(tipW, trig, gp) {
 function shapeMouseDown() {
   if (!shapeUI.L) return false;
   raycaster.setFromCamera(mouse.ndc, camera);
-  const hit = raycaster.intersectObjects(shapeUI.meshes, false)[0];
+  const hit = raycaster.intersectObjects(shapeUI.meshes.filter((m) => m.visible), false)[0];
   if (!hit) return false;
   const L = shapeUI.L, i = hit.object.userData.handle, at = hit.object.getWorldPosition(new THREE.Vector3());
   shapeUI.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), at);
   startShapeDrag(i, L.reGroup.worldToLocal(at.clone()).toArray());
+  shapeUI.drag.y0 = mouse.ndc.y;
   controls.enabled = false;
   return true;
 }
 function shapeMouseMove() {
   if (!shapeUI.drag || !shapeUI.plane || renderer.xr.isPresenting) return;
   raycaster.setFromCamera(mouse.ndc, camera);
+  const d = shapeUI.drag, L = shapeUI.L;
+  if (d.normal) {
+    // Extruir: el punto de la línea de la cara más cercano al rayo del ratón. Si la cara te mira de
+    // frente esa línea no se ve: entonces sale al subir el ratón.
+    const o = L.reGroup.localToWorld(new THREE.Vector3().fromArray(d.p0));
+    const n = L.reGroup.localToWorld(new THREE.Vector3().fromArray(d.p0).add(new THREE.Vector3().fromArray(d.normal))).sub(o).normalize();
+    const r = raycaster.ray, w = o.clone().sub(r.origin), b = n.dot(r.direction), den = 1 - b * b;
+    let t;
+    if (den > 0.02) t = (b * w.dot(r.direction) - w.dot(n)) / den;
+    else t = (d.y0 - mouse.ndc.y) * -0.5 * o.distanceTo(camera.position);
+    moveShapeDrag(L.reGroup.worldToLocal(o.addScaledVector(n, t)).toArray());
+    return;
+  }
   const p = raycaster.ray.intersectPlane(shapeUI.plane, new THREE.Vector3());
-  if (p) moveShapeDrag(shapeUI.L.reGroup.worldToLocal(p).toArray());
+  if (p) moveShapeDrag(L.reGroup.worldToLocal(p).toArray());
 }
 function buildShapesTab() {
   const W = [], L = active.shape ? active : null;
@@ -5098,7 +5142,7 @@ function xrMove(right, gp, tipL, down) {
     for (const L of layers) {
       if (!L.visible) continue;
       const q = toGrid(L.f, tipL);
-      const d = L.grid.sample(q[0], q[1], q[2]) * L.f.s;
+      const d = paramLive(L) ? paramDist(L, tipL) : L.grid.sample(q[0], q[1], q[2]) * L.f.s;
       if (d < bestD) { bestD = d; best = L; }
     }
     if (!best) {
@@ -6085,5 +6129,5 @@ if (!SPECTATOR) {
 
 buildFavRow();
 updateHud();
-window.__miMedium = { setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { paramDist, model, setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
