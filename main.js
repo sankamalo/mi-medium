@@ -15,6 +15,7 @@ import { remeshSDF, bakeMesh, meshArea, subdivideQuads } from './remesh.js';
 import { createWebcam, calibUI } from './camara.js';
 import { t, getLang, setLang, translateDOM } from './i18n.js';
 import { textMesh, textField, readLetter, splitLetters, TEXT_KEYS } from './texto.js';
+import { newShape, copyShape, shapeMesh, shapeHandles, handlePos, shapeField } from './formas.js';
 import { sfx, PENTATONIC } from './sonidos.js';
 import { OPCIONES } from './anadir.js';
 import { Receptor } from './llamada.js';
@@ -941,9 +942,9 @@ function finishMerge(m) {
 }
 
 function setLayerBase(L, hex) {
-  if (L.text && L.remesh) {
+  if ((L.text || L.shape) && L.remesh) {
     L.color = hex;
-    buildText(L);
+    rebuildParam(L);
     updateHud();
     live.structure();
     return;
@@ -1014,6 +1015,13 @@ function clearRedo() {
 function swapEntry(e) {
   const L = e.layer;
   noteEdit();
+  if (e.shapeEdit) {
+    const cur = L.shape.v;
+    L.shape.v = e.shapeEdit;
+    buildShape(L);
+    live.structure();
+    return { ...e, shapeEdit: cur };
+  }
   if (e.place) {
     if (!L.frames.includes(e.f)) return e;
     if (e.f !== L.f) goToFrame(L, e.f);
@@ -1027,7 +1035,7 @@ function swapEntry(e) {
     const cur = L.grid.state();
     L.grid.setState(e.full);
     L.rebuildAll();
-    if (e.textBack && e.present) buildText(L);
+    if (e.textBack && e.present) rebuildParam(L);
     if (e.present) {
       for (const { L: o, at } of e.merge) {
         layers.splice(at, 0, o);
@@ -1286,7 +1294,7 @@ function updateAnim(dt) {
 function undo() {
   if (merge) return mergeBusy();
   if (!undoStack.length) return toast('Nada que deshacer');
-  if (remeshLocked(undoStack.at(-1).layer)) return;
+  if (!undoStack.at(-1).shapeEdit && remeshLocked(undoStack.at(-1).layer)) return;
   const e = undoStack.pop();
   if (e.rec && e.layer === text.L && text.strokes.length) text.undone.push(text.strokes.pop());
   redoStack.push(swapEntry(e));
@@ -1298,7 +1306,7 @@ function undo() {
 function redo() {
   if (merge) return mergeBusy();
   if (!redoStack.length) return toast('Nada que rehacer');
-  if (!redoStack.at(-1).textBack && remeshLocked(redoStack.at(-1).layer)) return;
+  if (!redoStack.at(-1).textBack && !redoStack.at(-1).shapeEdit && remeshLocked(redoStack.at(-1).layer)) return;
   const e = redoStack.pop();
   if (e.rec && e.layer === text.L && text.undone.length) text.strokes.push(text.undone.pop());
   undoStack.push(swapEntry(e));
@@ -1327,6 +1335,7 @@ function remeshLocked(L = active) {
 function toVoxel(L = active) {
   if (!L.remesh) return;
   if (L.text) return textToVoxel(L);
+  if (L.shape) return shapeToVoxel(L);
   L.clearRemesh();
   L.version++;
   noteEdit();
@@ -2617,6 +2626,11 @@ $('btnVoxel').onclick = () => toVoxel();
 $('textWrite').onclick = () => { panelTab[0] = 'text'; startWriting(); updateHud(); };
 $('textMake').onclick = () => convertWriting();
 $('textMode').onclick = () => (active.remesh ? toVoxel() : textToQuads(active));
+$('shapeBox').onclick = () => makeShape('box');
+$('shapePyramid').onclick = () => makeShape('pyramid');
+$('shapeWedge').onclick = () => makeShape('wedge');
+$('shapeMode').onclick = () => (active.remesh ? toVoxel() : textToQuads(active));
+$('shapeReset').onclick = () => resetShape(active);
 $('textInput').onkeydown = (e) => e.stopPropagation();
 $('textInput').oninput = (e) => {
   const str = [...e.target.value.toUpperCase()].map((c) => (TEXT_KEYS.includes(c) ? c : ' ')).join('');
@@ -2764,6 +2778,9 @@ function updateHud() {
   $('textMode').hidden = !active.text;
   $('textMode').textContent = t(active.remesh ? 'A vóxel' : 'A quads');
   $('textWrite').classList.toggle('on', text.writing);
+  $('shapeMode').hidden = !active.shape;
+  $('shapeMode').textContent = t(active.remesh ? 'A vóxel' : 'A forma');
+  $('shapeReset').hidden = !active.shape || !active.remesh;
   document.querySelectorAll('#resRow [data-res]').forEach((b) => b.classList.toggle('on', +b.dataset.res === brushRes()));
   $('btnWire').classList.toggle('on', state.wire);
   document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => b.classList.toggle('on', +b.dataset.bake === state.bakeSize));
@@ -3017,6 +3034,9 @@ function duplicateHeld() {
   if (L.text) {
     N.text = { ...L.text };
     if (L.remesh) buildText(N);
+  } else if (L.shape) {
+    N.shape = copyShape(L.shape);
+    if (L.remesh) buildShape(N);
   } else if (L.remesh) {
     const { positions, normals, quads, colors } = L.remesh.data;
     N.setRemesh({ positions, normals, quads, colors });
@@ -3140,6 +3160,10 @@ if (!SPECTATOR) {
       if (hit) { pickColor(hit); e.stopPropagation(); }
       return;
     }
+    if (state.tool !== 'move' && shapeMouseDown()) {
+      e.stopPropagation();
+      return;
+    }
     if (symBallUnderMouse(e)) {
       symDrag = { x: e.clientX, y: e.clientY, pos: symFrame.position.clone(), q: symFrame.quaternion.clone(), rotate: e.shiftKey };
       controls.enabled = false;
@@ -3199,6 +3223,7 @@ function dragSym(e) {
 addEventListener('pointermove', (e) => {
   setMouse(e);
   if (symDrag) dragSym(e);
+  shapeMouseMove();
   if (!renderer.xr.isPresenting && !SPECTATOR) setModifiers(e);
   mouse.inside = e.target === renderer.domElement;
   if (radialOpen && radialMode === 'hold') hoverMenu(e.clientX, e.clientY, e.buttons);
@@ -3231,6 +3256,11 @@ if (!SPECTATOR) {
 }
 addEventListener('pointerup', (e) => {
   radialDrag = -1;
+  if (shapeUI.drag && !renderer.xr.isPresenting) {
+    endShapeDrag();
+    shapeUI.plane = null;
+    controls.enabled = true;
+  }
   if (symDrag) {
     symDrag = null;
     controls.enabled = true;
@@ -3629,10 +3659,18 @@ function textToVoxel(L) {
   if (merge || text.job) return mergeBusy();
   if (L.frames.length > 1 || L.busy) return;
   const res = Math.max(L.grid.res, TEXT_RES);
-  runMerge([L], res, 'Pasando a vóxel', () => t('{0}: otra vez en vóxel', L.name), { textBack: true, makeJob: (m) => textVoxelJob(m, L, res) });
+  const { str, height, depth } = L.text;
+  runMerge([L], res, 'Pasando a vóxel', () => t('{0}: otra vez en vóxel', L.name), { textBack: true, makeJob: (m) => fieldVoxelJob(m, textField(str, height, depth), res) });
 }
-function* textVoxelJob(m, L, res) {
-  const { str, height, depth } = L.text, f = textField(str, height, depth);
+function shapeToVoxel(L) {
+  if (merge || text.job) return mergeBusy();
+  if (L.frames.length > 1 || L.busy) return;
+  endShapeDrag();
+  const res = Math.max(L.grid.res, TEXT_RES);
+  runMerge([L], res, 'Pasando a vóxel', () => t('{0}: otra vez en vóxel', L.name), { textBack: true, makeJob: (m) => fieldVoxelJob(m, shapeField(L.shape), res) });
+}
+// La rejilla nueva a partir de una distancia con signo (texto o forma), poco a poco.
+function* fieldVoxelJob(m, f, res) {
   const g = new SDFGrid(res, 'empty');
   g.growTo(f.lo, f.hi, MAX_SAMPLES);
   const b = (8 * Math.sqrt(3)) / 2 * g.h + g.band;
@@ -3649,12 +3687,12 @@ function* textVoxelJob(m, L, res) {
 }
 function textToQuads(L) {
   if (merge) return mergeBusy();
-  if (!L.text || L.remesh) return;
-  buildText(L);
+  if (!(L.text || L.shape) || L.remesh) return;
+  rebuildParam(L);
   updateHud();
   drawPanel();
   live.structure();
-  toast('Otra vez en quads, limpio');
+  toast(L.shape ? 'Otra vez en forma, limpia' : 'Otra vez en quads, limpio');
 }
 const TEXT_ROWS = ['QWERTYUIOP⌫', 'ASDFGHJKLÑ-', 'ZXCVBNM.,! ', '0123456789'];
 function buildTextTab() {
@@ -3687,6 +3725,181 @@ function buildTextTab() {
   }
   const kw = (IW - 10 * 6) / 11;
   TEXT_ROWS.forEach((row, r) => [...row].forEach((k, i) => W.push({ type: 'button', x: M + i * (kw + 6), y: 296 + r * 74, w: kw, h: 66, label: k === ' ' ? '␣' : k, plain: true, size: 26, onClick: () => typeKey(k) })));
+  return W;
+}
+
+// ---------- Formas paramétricas ----------
+// Una capa con una caja, pirámide o cuña: la malla es la forma tal cual (una caja son 6 caras). Se edita
+// cogiendo sus tiradores: amarillo = esquina, azul = arista, rojo = cara. «A vóxel» la pasa a plastilina.
+const rebuildParam = (L) => (L.text ? buildText(L) : buildShape(L));
+const SHAPE_NAMES = { box: 'Caja', pyramid: 'Pirámide', wedge: 'Cuña' };
+const HANDLE_LOOK = {
+  vertex: [new THREE.BoxGeometry(1, 1, 1), CERA.yellow],
+  edge: [new THREE.SphereGeometry(0.55, 14, 10), CERA.blue],
+  face: [new THREE.OctahedronGeometry(0.7), CERA.red],
+};
+const HANDLE_MATS = Object.fromEntries(Object.entries(HANDLE_LOOK).map(([k, [, c]]) => [k, new THREE.MeshBasicMaterial({ color: c, toneMapped: false })]));
+const HANDLE_RING = new THREE.MeshBasicMaterial({ color: CERA.ink, side: THREE.BackSide, toneMapped: false });
+const shapeUI = { L: null, group: new THREE.Group(), list: [], meshes: [], hot: -1, drag: null };
+function buildShape(L) {
+  const m = shapeMesh(L.shape), base = L.base, colors = new Float32Array(m.positions.length);
+  for (let i = 0; i < colors.length; i += 3) {
+    colors[i] = base[0] / 255; colors[i + 1] = base[1] / 255; colors[i + 2] = base[2] / 255;
+  }
+  L.version++;
+  L.setRemesh({ ...m, colors });
+  if (state.wire) L.setWire(true);
+  if (shapeUI.L === L) placeHandles();
+}
+function makeShape(kind) {
+  if (merge) return mergeBusy();
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const eye = cam.getWorldPosition(new THREE.Vector3()), dir = cam.getWorldDirection(new THREE.Vector3());
+  const c = spinner.worldToLocal(eye.addScaledVector(dir, renderer.xr.isPresenting ? 0.55 : 1));
+  const L = new Layer(TEXT_RES, 'empty', { name: t(SHAPE_NAMES[kind]) });
+  L.shape = newShape(kind, SHAPE_SIZE);
+  L.setPlace(L.f, new THREE.Matrix4().setPosition(c));
+  layers.push(L);
+  buildShape(L);
+  if (state.tool === 'move') choose('add');
+  setActive(L);
+  noteEdit();
+  live.structure();
+  drawPanel();
+  sfx.play('pop');
+  toast(t('{0}: coge las esquinas, aristas o caras con el gatillo', L.name), 3500);
+}
+const SHAPE_SIZE = 0.16;
+function resetShape(L) {
+  if (!L.shape || !L.remesh) return;
+  const before = L.shape.v, fresh = newShape(L.shape.kind, SHAPE_SIZE);
+  L.shape.v = fresh.v;
+  pushShapeEdit(L, before);
+  buildShape(L);
+}
+function pushShapeEdit(L, before) {
+  noteEdit();
+  undoStack.push({ layer: L, grid: L.grid, shapeEdit: before, bytes: 512 });
+  clearRedo();
+  trimUndo();
+  live.structure();
+}
+// Los tiradores salen en la forma activa mientras está en quads (no con Mover, que coge la capa entera).
+function shapeFrame() {
+  const want = active.shape && active.remesh && state.tool !== 'move' && !merge && active.visible ? active : null;
+  if (want !== shapeUI.L) {
+    endShapeDrag();
+    shapeUI.group.removeFromParent();
+    shapeUI.L = want;
+    if (want) {
+      want.reGroup.add(shapeUI.group);
+      placeHandles();
+    }
+  }
+  if (!shapeUI.L) return;
+  // Del mismo tamaño en la vista aunque la forma esté escalada.
+  const k = (renderer.xr.isPresenting ? 0.011 : 0.014) / (shapeUI.L.reGroup.getWorldScale(vShape).x || 1);
+  shapeUI.meshes.forEach((m, i) => m.scale.setScalar(k * (i === shapeUI.hot || i === shapeUI.drag?.i ? 1.7 : 1)));
+}
+const vShape = new THREE.Vector3();
+function placeHandles() {
+  const L = shapeUI.L;
+  if (!L) return;
+  const list = shapeHandles(L.shape);
+  if (list.length !== shapeUI.list.length || list.some((h, i) => h.type !== shapeUI.list[i].type)) {
+    shapeUI.meshes.forEach((m) => shapeUI.group.remove(m));
+    shapeUI.meshes = list.map((h, i) => {
+      const m = new THREE.Mesh(HANDLE_LOOK[h.type][0], HANDLE_MATS[h.type]);
+      const ring = new THREE.Mesh(HANDLE_LOOK[h.type][0], HANDLE_RING);
+      ring.scale.setScalar(1.35);
+      m.add(ring);
+      m.userData.handle = i;
+      shapeUI.group.add(m);
+      return m;
+    });
+  }
+  shapeUI.list = list;
+  list.forEach((h, i) => shapeUI.meshes[i].position.fromArray(handlePos(L.shape, h)));
+}
+function startShapeDrag(i, p) {
+  const L = shapeUI.L;
+  shapeUI.drag = { i, p0: p, v0: L.shape.v.map((v) => [...v]), moved: false };
+  sfx.play('grab');
+}
+function moveShapeDrag(p) {
+  const d = shapeUI.drag, L = shapeUI.L;
+  if (!d || !L) return;
+  const delta = [p[0] - d.p0[0], p[1] - d.p0[1], p[2] - d.p0[2]];
+  L.shape.v = d.v0.map((v) => [...v]);
+  for (const id of shapeUI.list[d.i].ids) for (let a = 0; a < 3; a++) L.shape.v[id][a] = d.v0[id][a] + delta[a];
+  d.moved = true;
+  buildShape(L);
+}
+function endShapeDrag() {
+  const d = shapeUI.drag, L = shapeUI.L;
+  shapeUI.drag = null;
+  if (!d || !L || !d.moved) return;
+  pushShapeEdit(L, d.v0);
+  sfx.play('thock');
+  updateHud();
+  drawPanel();
+}
+// En las gafas: la punta del mando cerca de un tirador lo marca; con el gatillo lo llevas.
+function shapeXR(tipW, trig, gp) {
+  const L = shapeUI.L;
+  if (!L) return false;
+  const local = () => L.reGroup.worldToLocal(tipW.clone()).toArray();
+  if (shapeUI.drag) {
+    if (trig > 0.08) moveShapeDrag(local());
+    else endShapeDrag();
+    return true;
+  }
+  if (xr.stroking || moveOp.L) return false;
+  let best = -1, bd = 0.035;
+  shapeUI.meshes.forEach((m, i) => {
+    const d = m.getWorldPosition(vShape).distanceTo(tipW);
+    if (d < bd) { bd = d; best = i; }
+  });
+  shapeUI.hot = best;
+  if (best < 0 || trig <= 0.08) return best >= 0;
+  startShapeDrag(best, local());
+  gp?.hapticActuators?.[0]?.pulse?.(0.5, 25);
+  return true;
+}
+// En el Mac: clic sobre un tirador y arrastrar; se mueve en el plano que mira a la cámara.
+function shapeMouseDown() {
+  if (!shapeUI.L) return false;
+  raycaster.setFromCamera(mouse.ndc, camera);
+  const hit = raycaster.intersectObjects(shapeUI.meshes, false)[0];
+  if (!hit) return false;
+  const L = shapeUI.L, i = hit.object.userData.handle, at = hit.object.getWorldPosition(new THREE.Vector3());
+  shapeUI.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), at);
+  startShapeDrag(i, L.reGroup.worldToLocal(at.clone()).toArray());
+  controls.enabled = false;
+  return true;
+}
+function shapeMouseMove() {
+  if (!shapeUI.drag || !shapeUI.plane || renderer.xr.isPresenting) return;
+  raycaster.setFromCamera(mouse.ndc, camera);
+  const p = raycaster.ray.intersectPlane(shapeUI.plane, new THREE.Vector3());
+  if (p) moveShapeDrag(shapeUI.L.reGroup.worldToLocal(p).toArray());
+}
+function buildShapesTab() {
+  const W = [], L = active.shape ? active : null;
+  const M = 32, IW = PW - 2 * M;
+  W.push(panelBlock(8, 684, CERA.red));
+  W.push({ type: 'label', x: M, y: 54, head: true, text: 'Formas', size: 44 });
+  W.push({ type: 'label', x: M, y: 94, size: 22, wrap: IW, text: 'Con la mínima geometría: una caja son 6 caras.' });
+  const bw = (IW - 20) / 3;
+  [['box', 'Caja'], ['pyramid', 'Pirámide'], ['wedge', 'Cuña']].forEach(([k, l], i) => W.push({ type: 'button', x: M + i * (bw + 10), y: 124, w: bw, h: 80, label: l, size: 28, onClick: () => makeShape(k) }));
+  if (L) {
+    W.push({ type: 'label', x: M, y: 252, size: 26, text: L.remesh ? t('{0}: {1} caras', L.name, L.shape.f.length) : t('{0}: en vóxel', L.name) });
+    const hw = (IW - 10) / 2;
+    W.push({ type: 'button', x: M, y: 276, w: hw, h: 64, label: L.remesh ? 'A vóxel' : 'A forma', size: 26, onClick: () => (L.remesh ? toVoxel(L) : textToQuads(L)) });
+    if (L.remesh) W.push({ type: 'button', x: M + hw + 10, y: 276, w: hw, h: 64, label: 'Como al principio', size: 24, onClick: () => resetShape(L) });
+  }
+  ['Coge con el gatillo: amarillo = esquina, azul = arista, rojo = cara.', 'Con Mover la llevas, giras y escalas entera.', '«A vóxel» la convierte en plastilina; «A forma» vuelve a la forma limpia.']
+    .forEach((text, i) => W.push({ type: 'label', x: M, y: 400 + i * 84, size: 22, wrap: IW, text }));
   return W;
 }
 
@@ -3862,12 +4075,12 @@ Promise.all(['500 30px Kanit', '600 30px Kanit', '700 30px Mali'].map((f) => doc
 
 // Bloque de color: agrupa lo que va junto. Azul: el pincel. Papel: color y capas. Rojo: la obra. Negro: lo técnico.
 const panelBlock = (y, h, color) => ({ type: 'block', x: 8, y, w: PW - 16, h, color });
-const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink], ['text', 'Texto', CERA.paper]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
+const PANEL_TABS = [[['brush', 'Pincel', CERA.blue], ['tech', 'Técnico', CERA.ink], ['text', 'Texto', CERA.paper], ['shapes', 'Formas', CERA.red]], [['color', 'Color y capas', CERA.paper], ['obra', 'Obra', CERA.red]]];
 const panelTab = ['brush', 'color'];
 const PANEL_PAGES = { sonido: buildSoundPage, llamada: buildCallPage, unir: buildMergePage, pincel: buildBrushPage, sellos: buildStampsPage, material: buildMaterialPage, bg: buildBgPage, refs: buildRefPage, anim: buildAnimPage, export: buildExportPage };
 const PAGE_PANE = { export: 1, unir: 1 }; // las demás se abren en la columna izquierda
 const PAGE_SPAN = new Set(['pincel', 'refs', 'anim']); // su segundo bloque va en la otra columna
-const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, text: buildTextTab, color: buildColorTab, obra: buildObraTab };
+const PANEL_TAB_PAGES = { brush: buildBrushTab, tech: buildTechTab, text: buildTextTab, shapes: buildShapesTab, color: buildColorTab, obra: buildObraTab };
 function buildPanel() {
   const W = [];
   const put = (list, pane) => {
@@ -4657,6 +4870,11 @@ function xrFrame(dt) {
     cursor.visible = false;
     return;
   }
+  // Los tiradores de una forma se cogen con la punta, antes que esculpir.
+  if (!xr.refGrab && shapeXR(tipW, trig, gpR)) {
+    cursor.visible = false;
+    return;
+  }
   // La bola azul de la referencia se coge igual.
   if (xr.refGrab) {
     if (trig > 0.08) {
@@ -4898,6 +5116,7 @@ function packScene() {
     const lm = { id: L.id, name: L.name, color: L.color, visible: L.visible, grid: s.meta, places: L.frames.map((f) => (f.moved ? Array.from(f.voxels.matrix.elements) : null)) };
     parts.push(...s.parts);
     if (L.text) lm.text = L.text;
+    if (L.shape) lm.shape = L.shape;
     if (L.remesh) {
       const d = L.remesh.data;
       lm.remesh = { nv: d.positions.length, nq: d.quads.length, bake: L.remesh.bake ? L.remesh.bake.size : 0 };
@@ -4924,6 +5143,7 @@ function applySnapshot(buf) {
     if (fr) fr.grids.slice(1).forEach((g, i) => L.insertFrame(L.frameFromGrid(g), i + 1));
     lm.places?.forEach((m, i) => { if (m && L.frames[i]) L.setPlace(L.frames[i], new THREE.Matrix4().fromArray(m)); });
     if (lm.text) L.text = lm.text;
+    if (lm.shape) L.shape = lm.shape;
     if (lm.remesh) {
       const { nv, nq } = lm.remesh;
       const positions = new Float32Array(buf.slice(off, off + nv * 4)); off += nv * 4;
@@ -5279,6 +5499,7 @@ renderer.setAnimationLoop(() => {
   if (poseT > 1 / 30) { poseT = 0; live.pose(); }
   mergeFrame(dt);
   textFrame(dt);
+  shapeFrame();
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
   // En el casco cada imagen tiene unos 13 ms: el remallado no puede comérselos todos.
   const inXR = renderer.xr.isPresenting;
@@ -5712,5 +5933,5 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
-window.__miMedium = { duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
