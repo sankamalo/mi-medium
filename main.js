@@ -5142,7 +5142,8 @@ function xrMove(right, gp, tipL, down) {
     for (const L of layers) {
       if (!L.visible) continue;
       const q = toGrid(L.f, tipL);
-      const d = paramLive(L) ? paramDist(L, tipL) : L.grid.sample(q[0], q[1], q[2]) * L.f.s;
+      // Las letras y formas son finas: se cogen con 3 cm de margen.
+      const d = paramLive(L) ? paramDist(L, tipL) - 0.03 : L.grid.sample(q[0], q[1], q[2]) * L.f.s;
       if (d < bestD) { bestD = d; best = L; }
     }
     if (!best) {
