@@ -70,6 +70,9 @@
     button.swatch.on { transform: none; box-shadow: 0 0 0 3px var(--yellow), 0 0 0 6px var(--ink); }
     #shapes button { padding: 8px 2px; }
     #material { margin-top: 12px; }
+    details.fold { margin-top: 12px; }
+    details.fold > summary { cursor: pointer; font: 600 15px/1.1 Kanit, 'Noto Sans Thai', sans-serif; padding: 6px 0; color: var(--fg); }
+    #favRow button { flex: 1 1 18%; padding: 8px 2px; font-size: 11px; }
     #material summary { cursor: pointer; font: 600 15px/1.1 Kanit, 'Noto Sans Thai', sans-serif; padding: 4px 0; }
     .opts { flex-wrap: nowrap; gap: 5px; }
     .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 10.5px; box-shadow: 2px 2px 0 var(--ink); }
@@ -141,11 +144,9 @@
   <div id="hud">
   <div class="blk ink">
     <h1>LA PLASTILINA</h1>
-    <div class="row"><button id="btnTut">▶ Jugar tutorial</button></div>
-    <div class="lang"><b>Idiomas</b>
-      <div class="row">
-        <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
-      </div>
+    <div class="row">
+      <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
+      <button id="btnVR" disabled>Gafas: VR</button>
     </div>
   </div>
   <div class="blk blue">
@@ -153,16 +154,17 @@
     <div id="info"></div>
     <label>Tamaño <input id="size" type="range" min="0" max="1" step="0.002" /></label>
     <label>Fuerza <input id="strength" type="range" min="0.05" max="1" step="0.05" /></label>
+    <div class="sec">Lo que más usas</div>
+    <div class="row" id="favRow"></div>
+    <div class="row"><button id="btnUndo">Deshacer</button><button id="btnMenu">Herramientas</button></div>
+    <details class="fold" id="foldPincel">
+      <summary>Todo el pincel</summary>
     <div class="sec">Resolución</div>
     <div class="row opts" id="resRow"></div>
     <label id="latheBox" hidden><span>Velocidad del torno</span> <input type="range" id="latheSpeed" min="0.05" max="1.5" step="0.05"></label>
     <label title="El pincel va detrás del ratón como con una cuerda: trazos rectos y seguros"><span>Estabilizar <b id="stabVal"></b></span>
       <input id="stab" type="range" min="0" max="1" step="0.05" style="width: 110px" /></label>
     <div class="row"><button data-opt="stroke:sens" title="En las gafas: Añadir engorda según aprietas el gatillo">Presión</button></div>
-    <div class="row">
-      <button id="btnMenu">Herramientas</button>
-      <button id="btnUndo">Deshacer</button>
-    </div>
     <div class="row" id="shapes">
       <button data-shape="sphere" title="Pincel esfera (Añadir/Quitar)">● Esfera</button>
       <button data-shape="cube" title="Pincel cubo">■ Cubo</button>
@@ -188,10 +190,25 @@
     <div class="row opts">
       <button data-opt="stroke:free">Libre</button><button data-opt="stroke:line" title="L">Recto</button>
     </div>
+    </details>
   </div>
   <div class="blk paper">
-    <div class="sec">Simetría</div>
-    <div class="row opts">
+    <div class="sec">Color <input id="color" type="color" title="Color actual" /></div>
+    <div id="swatches"></div>
+    <div class="row">
+      <button id="btnPaint" title="Pincel de pintar (P)">✎ Pintar</button>
+      <button id="btnBase" title="Usar el color actual como color base de la capa activa">Color → base capa</button>
+    </div>
+    <div class="sec">Capas <button id="layerAdd" class="mini" title="Nueva capa (N)">+ Capa</button></div>
+    <div id="layerList"></div>
+    <div class="row">
+      <button id="layerSphere" title="Rellenar la capa con una esfera">Esfera</button>
+      <button id="layerClear" title="Vaciar la capa">Vaciar</button>
+      <button id="layerDel" title="Borrar la capa">Borrar</button>
+      <button id="layerMerge" class="primary" title="Une las capas elegidas con su círculo de color" hidden></button>
+    </div>
+    <details class="fold" id="foldSym"><summary>Simetría y torno</summary>
+        <div class="row opts">
       <button data-opt="sym:x">X</button><button data-opt="sym:y">Y</button><button data-opt="sym:z">Z</button><button data-opt="sym:radial">Radial</button><button data-opt="sym:reset">Centrar</button>
     </div>
     <div class="row opts">
@@ -203,14 +220,9 @@
       <button id="btnWire" title="W">Ver malla</button>
       <button data-opt="floor">Suelo</button>
     </div>
-    <div class="sec">Color <input id="color" type="color" title="Color actual" /></div>
-    <div id="swatches"></div>
-    <div class="row">
-      <button id="btnPaint" title="Pincel de pintar (P)">✎ Pintar</button>
-      <button id="btnBase" title="Usar el color actual como color base de la capa activa">Color → base capa</button>
-    </div>
-    <div class="sec">Animación</div>
-    <div class="row"><span id="frameInfo"></span></div>
+    </details>
+    <details class="fold" id="foldAnim"><summary>Animación</summary>
+        <div class="row"><span id="frameInfo"></span></div>
     <div class="row">
       <button id="btnFramePrev" title="Fotograma anterior (,)">◂</button>
       <button id="btnFramePlay" title="Reproducir (O)">Play</button>
@@ -223,25 +235,17 @@
       <button id="btnFrameDel" title="Borrar este fotograma">Borrar fot.</button>
     </div>
     <div class="row"><label>Velocidad <input id="frameFps" type="range" min="2" max="24" step="1" value="8"> <span id="frameFpsVal">8</span></label></div>
-    <div class="sec">Capas <button id="layerAdd" class="mini" title="Nueva capa (N)">+ Capa</button></div>
-    <div id="layerList"></div>
-    <div class="row">
-      <button id="layerSphere" title="Rellenar la capa con una esfera">Esfera</button>
-      <button id="layerClear" title="Vaciar la capa">Vaciar</button>
-      <button id="layerDel" title="Borrar la capa">Borrar</button>
-      <button id="layerMerge" class="primary" title="Une las capas elegidas con su círculo de color" hidden></button>
-    </div>
+    </details>
   </div>
-  <div class="blk paper">
-    <div class="sec">Texto</div>
+  <div class="blk red">
+    <div class="sec">Crear</div>
+    <div class="row"><button id="shapeBox" title="6 caras">Caja</button><button id="shapePyramid">Pirámide</button><button id="shapeWedge">Cuña</button></div>
+    <div class="row"><button id="shapeMode" hidden>A vóxel</button><button id="shapeReset" hidden>Como al principio</button><button id="shapeExtrude" hidden title="Coge una cara roja y tira de ella">Extruir</button></div>
+    <details class="fold" id="foldText"><summary>Texto 3D</summary>
     <div class="row"><button id="textWrite" title="Escribe con Añadir, en mayúsculas y con las letras separadas">Escribir</button><button id="textMake" class="primary">Convertir en texto</button></div>
     <input id="textInput" maxlength="40" placeholder="O teclea aquí" style="width: 100%; font: inherit; padding: 6px; border: 3px solid var(--ink); box-sizing: border-box; margin-top: 6px" />
     <div class="row"><button id="textMode" hidden>A vóxel</button></div>
-  </div>
-  <div class="blk red">
-    <div class="sec">Formas</div>
-    <div class="row"><button id="shapeBox" title="6 caras">Caja</button><button id="shapePyramid">Pirámide</button><button id="shapeWedge">Cuña</button></div>
-    <div class="row"><button id="shapeMode" hidden>A vóxel</button><button id="shapeReset" hidden>Como al principio</button><button id="shapeExtrude" hidden title="Coge una cara roja y tira de ella">Extruir</button></div>
+    </details>
   </div>
   <div class="blk red">
     <div class="sec">Obra <span id="obraName"></span></div>
@@ -253,6 +257,7 @@
     <div id="obraList"></div>
   </div>
   <div class="blk ink">
+    <details class="fold" id="foldTech"><summary>Técnico: remesh, Blender, importar, fondo</summary>
     <div class="sec">Remesh + horneado</div>
     <label>Quads <span id="quadsVal"></span></label>
     <input id="quads" type="range" min="1000" max="60000" step="1000" class="wide" />
@@ -293,10 +298,17 @@
     <div class="row" id="bgRow"></div>
     <label><span>Girar la luz</span> <input type="range" id="bgRot" min="0" max="1" step="0.01" value="0"></label>
     <label><span>Cuánto se ve el fondo</span> <input type="range" id="bgShow" min="0.1" max="1" step="0.01" value="0.6"></label>
-    <div class="row">
-      <button id="btnAR" class="primary" disabled>Gafas: AR (sin fondo)</button>
-      <button id="btnVR" disabled>Gafas: VR</button>
+    </details>
+  </div>
+  <div class="blk ink">
+    <details class="fold" id="foldMas"><summary>Tutorial e idiomas</summary>
+    <div class="row"><button id="btnTut">▶ Jugar tutorial</button></div>
+    <div class="lang"><b>Idiomas</b>
+      <div class="row">
+        <button data-lang="es">Español</button><button data-lang="en">English</button><button data-lang="th">ไทย</button>
+      </div>
     </div>
+    </details>
   </div>
   </div>
   <div id="help">

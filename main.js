@@ -32,7 +32,7 @@ const MAX_SAMPLES = 1600;
 const ON_QUEST = /OculusBrowser|Quest/i.test(navigator.userAgent);
 const UNDO_BYTES = ON_QUEST ? 300e6 : 800e6;
 const BRICK_BYTES = 512 * 4;
-let uso = null; // lo que más usas: se carga con el panel (ver «Lo que más usas»)
+let uso = null, favRow = null; // lo que más usas: se carga con el panel (ver «Lo que más usas»)
 const TOOL_KEYS = ['add', 'remove', 'smooth', 'flatten', 'inflate', 'paint', 'move', 'grab', 'pinch', 'crease'];
 const LAYER_COLORS = ['#cfc6bb', '#8fb8de', '#e0a07a', '#9ccf8f', '#c9a0dc', '#e6d27a', '#7ac9c2', '#e08a9a'];
 const PALETTE = [
@@ -2761,6 +2761,7 @@ function renderLayers() {
 
 let hudMsg = '', hudMsgUntil = 0;
 function updateHud() {
+  if (favRow) paintFavRow();
   const el = $('tool');
   const tool = activeTool();
   el.textContent = label(tool) + (state.invert ? ' ' + t('(invertido)') : '');
@@ -2781,6 +2782,7 @@ function updateHud() {
   $('textMode').hidden = !active.text;
   $('textMode').textContent = t(active.remesh ? 'A vóxel' : 'A quads');
   $('textWrite').classList.toggle('on', text.writing);
+  if (text.writing || active.text) $('foldText').open = true;
   $('shapeMode').hidden = !active.shape;
   $('shapeMode').textContent = t(active.remesh ? 'A vóxel' : 'A forma');
   $('shapeReset').hidden = !active.shape || !active.remesh;
@@ -4174,11 +4176,24 @@ const FAV = {
   wire: { label: () => 'Malla', go: () => choose('wire'), on: () => state.wire },
   floor: { label: () => 'Suelo', go: () => choose('floor'), on: () => state.floor },
   text: { label: () => 'Texto', go: () => { noteUse('text'); openText(); } },
-  shapes: { label: () => 'Formas', go: () => { noteUse('shapes'); panelTab[0] = 'shapes'; panelPage = 'main'; drawPanel(); } },
+  shapes: { label: () => 'Formas', go: () => { noteUse('shapes'); panelTab[0] = 'shapes'; panelPage = 'main'; drawPanel(); macShow('shapeBox'); } },
   traer: { label: () => 'Traer aquí', go: () => { noteUse('traer'); placeWorkspace(true); } },
   ...Object.fromEntries([['pincel', 'Pincel ▸'], ['material', 'Material ▸'], ['bg', 'Fondo ▸'], ['sellos', 'Sellos ▸'], ['anim', 'Animar ▸'], ['refs', 'Importar ▸']]
-    .map(([k, l]) => ['page:' + k, { label: () => l, go: () => (k === 'refs' ? openRefPage() : ((panelPage = k), drawPanel())) }])),
+    .map(([k, l]) => ['page:' + k, { label: () => l, go: () => {
+      if (!renderer.xr.isPresenting) { noteUse('page:' + k); return macShow(MAC_PAGE[k]); }
+      if (k === 'refs') openRefPage();
+      else { panelPage = k; drawPanel(); }
+    } }])),
 };
+// Lo que en las gafas es una página, en el Mac es un trozo del menú: se abre y se lleva a la vista.
+const MAC_PAGE = { pincel: 'foldPincel', material: 'material', bg: 'bgRow', sellos: 'btnStamps', anim: 'foldAnim', refs: 'btnImport' };
+function macShow(id) {
+  const el = $(id);
+  if (!el) return;
+  for (let d = el; d; d = d.parentElement) if (d.tagName === 'DETAILS') d.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (id === 'btnStamps') choose('shape:more');
+}
 uso = (() => { try { return JSON.parse(localStorage.getItem('plastilinaUso')) || {}; } catch { return {}; } })();
 const FAV_N = 10, FAV_DEFAULT = ['add', 'remove', 'smooth', 'move', 'grab', 'flatten', 'inflate', 'paint', 'sym', 'page:material'];
 const favorites = (() => {
@@ -4187,6 +4202,31 @@ const favorites = (() => {
   for (const k of FAV_DEFAULT) if (out.length < FAV_N && !out.includes(k)) out.push(k);
   return out;
 })();
+// En el Mac, los mismos favoritos arriba del todo; lo demás va plegado y la app recuerda qué dejaste abierto.
+function buildFavRow() {
+  favRow = favorites.map((k) => {
+    const b = document.createElement('button');
+    b.textContent = t(FAV[k].label());
+    b.onclick = () => { FAV[k].go(); updateHud(); };
+    $('favRow').append(b);
+    return [k, b];
+  });
+  let open = {};
+  try { open = JSON.parse(localStorage.getItem('plastilinaAbiertos')) || {}; } catch {}
+  document.querySelectorAll('details.fold').forEach((d) => {
+    d.open = !!open[d.id];
+    d.addEventListener('toggle', () => {
+      open[d.id] = d.open;
+      try { localStorage.setItem('plastilinaAbiertos', JSON.stringify(open)); } catch {}
+    });
+  });
+}
+function paintFavRow() {
+  for (const [k, b] of favRow) {
+    b.textContent = t(FAV[k].label());
+    b.classList.toggle('on', !!FAV[k].on?.());
+  }
+}
 function noteUse(id) {
   id = id === 'voxel' ? 'remesh' : id;
   if (!uso || !FAV[id]) return;
@@ -6043,5 +6083,7 @@ if (!SPECTATOR) {
   document.addEventListener('input', (e) => { if (e.target.type === 'range') sfx.play('dial', { semi: (e.target.value - e.target.min) / (e.target.max - e.target.min) * 12 - 4 }); });
 }
 
+buildFavRow();
+updateHud();
 window.__miMedium = { setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
