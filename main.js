@@ -718,6 +718,19 @@ function deleteLayer(L, ask = true) {
   sfx.play('poof');
 }
 
+// Con varias capas elegidas (los círculos de color), «Borrar» se las lleva todas de una vez.
+const deleteTargets = () => (mergePick.size > 1 ? layers.filter((L) => mergePick.has(L)) : [active]);
+function deleteLayers(list, ask = true) {
+  if (list.length < 2) return deleteLayer(list[0], ask);
+  if (merge) return mergeBusy();
+  if (list.length >= layers.length) return toast('Deja al menos una capa sin elegir');
+  if (ask && !confirm(t('¿Borrar estas {0} capas? No se puede deshacer.', list.length))) return;
+  for (const L of list) deleteLayer(L, false);
+  toast(t('{0} capas borradas', list.length));
+  updateHud();
+  drawPanel();
+}
+
 // Unir capas: se eligen tocando su círculo de color. Queda la de más resolución, para no perder detalle,
 // y las demás se guardan por si se deshace.
 const mergePick = new Set();
@@ -2666,7 +2679,7 @@ $('btnOnion').onclick = () => { anim.onion = !anim.onion; paintOnion(); updateHu
 $('frameFps').oninput = (e) => { anim.fps = +e.target.value; $('frameFpsVal').textContent = anim.fps; live.anim(); };
 $('btnRemeshMac').onclick = () => remeshBlender(active);
 $('layerAdd').onclick = newLayer;
-$('layerDel').onclick = () => deleteLayer(active);
+$('layerDel').onclick = () => deleteLayers(deleteTargets());
 $('layerSphere').onclick = () => resetLayer('sphere');
 $('layerMerge').onclick = () => mergeLayers();
 $('mergeAskNo').onclick = () => closeMergeAsk();
@@ -2750,6 +2763,7 @@ function renderLayers() {
     list.append(row);
   }
   $('layerMerge').hidden = mergePick.size < 2;
+  $('layerDel').textContent = mergePick.size > 1 ? t('Borrar {0}', mergePick.size) : t('Borrar');
   $('layerMerge').textContent = t('Unir {0} capas', mergePick.size);
   $('frameInfo').textContent = t('Fotograma {0} de {1}', frameIndex() + 1, active.frames.length);
   $('btnFramePlay').textContent = t(anim.playing ? 'Pausa' : 'Play');
@@ -4396,8 +4410,9 @@ function buildColorTab() {
   // Quitar pide un segundo toque: dentro de las gafas no hay ventana de confirmar.
   const armed = performance.now() < delLayerUntil;
   W.push({ type: 'button', x: PW - M - 134, y: yl - 26, w: 134, h: 50, label: '+ Capa', size: 22, group: 'lay', onClick: newLayer });
-  W.push({ type: 'button', x: PW - M - 134 - 8 - 134, y: yl - 26, w: 134, h: 50, label: armed ? '¿Seguro?' : '− Capa', size: 22, group: 'lay', active: () => armed, onClick: () => {
-    if (performance.now() < delLayerUntil) { delLayerUntil = 0; deleteLayer(active, false); }
+  const many = mergePick.size > 1;
+  W.push({ type: 'button', x: PW - M - 134 - 8 - 134, y: yl - 26, w: 134, h: 50, label: armed ? '¿Seguro?' : many ? t('− {0} capas', mergePick.size) : '− Capa', size: 22, group: 'lay', active: () => armed, onClick: () => {
+    if (performance.now() < delLayerUntil) { delLayerUntil = 0; deleteLayers(deleteTargets(), false); }
     else {
       delLayerUntil = performance.now() + 3000;
       setTimeout(() => panel3d.visible && drawPanel(), 3050);
