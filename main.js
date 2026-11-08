@@ -162,7 +162,7 @@ function setSymBallHot(on) {
 }
 
 // Suelo: una rejilla muy tenue a la altura del suelo real. No es parte de la obra ni se exporta.
-const floorU = { uCell: { value: 0.1 }, uRadius: { value: 1.6 } };
+const floorU = { uCell: { value: 0.1 }, uRadius: { value: 1.6 }, uStrong: { value: 1 } };
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2),
   new THREE.ShaderMaterial({
@@ -175,7 +175,7 @@ const floor = new THREE.Mesh(
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader: `
-      uniform float uCell, uRadius;
+      uniform float uCell, uRadius, uStrong;
       varying vec2 vP; varying vec2 vC;
       float lines(vec2 p) {
         vec2 fw = fwidth(p);
@@ -185,8 +185,10 @@ const floor = new THREE.Mesh(
       void main() {
         float a = max(lines(vP / uCell) * 0.1, lines(vP / (uCell * 4.0)) * 0.22);
         a *= 1.0 - smoothstep(uRadius * 0.3, uRadius, length(vC));
+        a *= uStrong;
         if (a < 0.003) discard;
-        gl_FragColor = vec4(1.0, 1.0, 1.0, a);
+        // En las gafas, más marcado y algo oscuro: se ve igual sobre un fondo claro (al sol, en el agua...).
+        gl_FragColor = vec4(mix(vec3(1.0), vec3(0.12, 0.11, 0.1), step(1.5, uStrong) * 0.55), min(a, 0.85));
       }`,
   }),
 );
@@ -196,6 +198,7 @@ scene.add(floor);
 function placeFloor(inXR) {
   floorU.uCell.value = inXR ? 0.25 : 0.1;
   floorU.uRadius.value = inXR ? 4.5 : 1.6;
+  floorU.uStrong.value = inXR ? 3 : 1;
   floor.position.set(0, inXR ? 0 : -0.35, 0);
 }
 placeFloor(false);
@@ -2762,9 +2765,9 @@ function renderLayers() {
     row.append(dot, name, res, eye);
     list.append(row);
   }
-  $('layerMerge').hidden = mergePick.size < 2;
+  $('layerMerge').disabled = mergePick.size < 2;
   $('layerDel').textContent = mergePick.size > 1 ? t('Borrar {0}', mergePick.size) : t('Borrar');
-  $('layerMerge').textContent = t('Unir {0} capas', mergePick.size);
+  $('layerMerge').textContent = mergePick.size > 1 ? t('Unir {0}', mergePick.size) : t('Unir');
   $('frameInfo').textContent = t('Fotograma {0} de {1}', frameIndex() + 1, active.frames.length);
   $('btnFramePlay').textContent = t(anim.playing ? 'Pausa' : 'Play');
   $('btnFramePlay').classList.toggle('on', anim.playing);
@@ -4235,6 +4238,7 @@ const FAV = {
   floor: { label: () => 'Suelo', go: () => choose('floor'), on: () => state.floor },
   text: { label: () => 'Texto', go: () => { noteUse('text'); openText(); } },
   shapes: { label: () => 'Formas', go: () => { noteUse('shapes'); panelTab[0] = 'shapes'; panelPage = 'main'; drawPanel(); macShow('shapeBox'); } },
+  escala: { label: () => 'Tamaño normal', go: () => { noteUse('escala'); resetScale(); } },
   traer: { label: () => 'Traer aquí', go: () => { noteUse('traer'); placeWorkspace(true); } },
   ...Object.fromEntries([['pincel', 'Pincel ▸'], ['material', 'Material ▸'], ['bg', 'Fondo ▸'], ['sellos', 'Sellos ▸'], ['anim', 'Animar ▸'], ['refs', 'Importar ▸']]
     .map(([k, l]) => ['page:' + k, { label: () => l, go: () => {
@@ -4315,7 +4319,9 @@ function buildBrushTab() {
     type: 'button', x: M + (i % 5) * (fw + 8), y: 300 + Math.floor(i / 5) * 68, w: fw, h: 58, size: 22, group: 'fav',
     label: FAV[k].label(), active: () => FAV[k].on?.() || false, onClick: FAV[k].go,
   }));
-  W.push({ type: 'button', x: M, y: 450, w: IW, h: 64, label: 'Todo ▸', size: 28, onClick: () => { panelPage = 'todo'; drawPanel(); } });
+  const tw2 = (IW - 10) / 2;
+  W.push({ type: 'button', x: M, y: 450, w: tw2, h: 64, label: 'Todo ▸', size: 28, onClick: () => { panelPage = 'todo'; drawPanel(); } });
+  W.push({ type: 'button', x: M + tw2 + 10, y: 450, w: tw2, h: 64, label: 'Tamaño normal', size: 26, onClick: () => { noteUse('escala'); resetScale(); } });
   if (state.lathe) {
     W.push({ type: 'slider', x: M, y: 606, w: IW, h: 28, label: 'Velocidad del torno', get: () => state.latheSpeed / 1.5, set: (v) => (state.latheSpeed = Math.max(0.05, v * 1.5)), text: () => Math.round(state.latheSpeed * 60) + ' rpm' });
   } else if (tut?.active) {
@@ -4419,7 +4425,9 @@ function buildColorTab() {
     }
     drawPanel();
   } });
-  W.push({ type: 'button', x: PW - M - 2 * 134 - 16 - 150, y: yl - 26, w: 150, h: 50, label: 'Animar ▸', size: 22, group: 'lay', onClick: () => { panelPage = 'anim'; drawPanel(); } });
+  // Con varias elegidas, al lado de borrarlas está unirlas.
+  if (mergePick.size > 1) W.push({ type: 'button', x: PW - M - 2 * 134 - 16 - 150, y: yl - 26, w: 150, h: 50, label: t('Unir {0}', mergePick.size), size: 22, group: 'lay', active: () => true, onClick: mergeLayers });
+  else W.push({ type: 'button', x: PW - M - 2 * 134 - 16 - 150, y: yl - 26, w: 150, h: 50, label: 'Animar ▸', size: 22, group: 'lay', onClick: () => { panelPage = 'anim'; drawPanel(); } });
   const first = layerFirst();
   layers.slice(first, first + LAYER_ROWS).forEach((L, i) => {
     const y = yl + 36 + i * 60;
@@ -4435,7 +4443,7 @@ function buildColorTab() {
   W.push({ type: 'button', x: M + 84, y: yb, w: 76, h: 50, label: '▼', size: 24, plain: true, group: 'scroll', onClick: () => scrollLayers(1) });
   W.push({ type: 'label', x: M + 172, y: yb + 25, size: 22, text: `${first + 1}–${Math.min(first + LAYER_ROWS, layers.length)} / ${layers.length}` });
   if (mergePick.size > 1) W.push({ type: 'button', x: PW - M - 240, y: yb, w: 240, h: 50, label: t('Unir {0} capas', mergePick.size), plain: true, size: 24, active: () => true, onClick: mergeLayers });
-  else W.push({ type: 'label', x: PW - M - 300, y: yb + 25, size: 20, max: 300, text: 'Toca los círculos para unir' });
+  else W.push({ type: 'label', x: PW - M - 330, y: yb + 25, size: 20, max: 330, text: 'Toca los círculos para unir o borrar' });
   W.push(panelBlock(632, 60, CERA.red));
   W.push({ type: 'label', x: M, y: 666, head: true, text: t('OBRA: {0}', obraName()) + (obraDirty() ? ' •' : ''), size: 24, max: IW - 190 });
   W.push({ type: 'button', x: PW - M - 170, y: 642, w: 170, h: 46, label: 'Guardar', size: 22, active: () => obraDirty(), onClick: () => saveObra() });
@@ -4773,6 +4781,36 @@ function pickFlower(h) {
 // Espacio de trabajo: grande, a tu alrededor y delante de ti. Mientras no empiezas a esculpir te
 // sigue con la vista (suave); en cuanto tocas algo se queda quieto para no marear.
 const WS = { scale: 1.3, dist: 0.6, drop: 0.25 };
+// Cuánto se puede acercar o alejar el modelo. Antes iba de ×0,05 a ×8 y era fácil perderse: con el modelo
+// diminuto los trazos salían enormes (y pesaban), y muy de cerca se veían los vóxeles.
+const SCALE_MIN = 0.3, SCALE_MAX = 4;
+const scaleUI = { last: 0, notch: true, hinted: false };
+// Al cambiar el tamaño: cuánto es (en un cartel), un toque al pasar por el tamaño normal y, muy de
+// cerca, un aviso de que la resolución se va a notar.
+function scaleFeel(gpL, gpR) {
+  const s = model.scale.x;
+  if (Math.abs(s - scaleUI.last) < 0.004) return;
+  scaleUI.last = s;
+  const notch = Math.abs(s - WS.scale) < 1e-6;
+  if (notch && !scaleUI.notch) {
+    gpL?.hapticActuators?.[0]?.pulse?.(0.4, 25);
+    gpR?.hapticActuators?.[0]?.pulse?.(0.4, 25);
+    sfx.play('thock', { vol: 0.6 });
+  }
+  scaleUI.notch = notch;
+  toast(notch ? t('Tamaño normal') : t('Tamaño ×{0}', (s / WS.scale).toLocaleString(getLang(), { maximumFractionDigits: 1 })), 1200);
+  if (s / WS.scale > 2 && !scaleUI.hinted && active.grid.res < 256) {
+    scaleUI.hinted = true;
+    setTimeout(() => toast('Muy de cerca se ven los vóxeles: + Res da más detalle', 3500), 1300);
+  }
+}
+function resetScale() {
+  model.scale.setScalar(renderer.xr.isPresenting ? WS.scale : 1);
+  if (renderer.xr.isPresenting) placeWorkspace(true);
+  scaleUI.notch = true;
+  model.updateMatrixWorld();
+  toast('Tamaño normal');
+}
 const wsHead = new THREE.Vector3(), wsDir = new THREE.Vector3(), wsPos = new THREE.Vector3(), wsQ = new THREE.Quaternion();
 const wsUp = new THREE.Vector3(0, 1, 0);
 function placeWorkspace(snap, dt = 0) {
@@ -4861,14 +4899,15 @@ function xrFrame(dt) {
     const stick = (mode === 'grabL' ? gpL : gpR).axes[3] || 0;
     if (Math.abs(stick) > 0.2) {
       // Se escala alrededor de la mano que agarra.
-      const f = THREE.MathUtils.clamp(Math.exp(-stick * dt * 1.5), 0.05 / model.scale.x, 8 / model.scale.x);
+      const f = THREE.MathUtils.clamp(Math.exp(-stick * dt * 1.5), SCALE_MIN / model.scale.x, SCALE_MAX / model.scale.x);
       grabOffset.premultiply(tmpM.makeScale(f, f, f));
     }
     tmpM.multiplyMatrices(c.matrixWorld, grabOffset).decompose(model.position, model.quaternion, model.scale);
   } else if (mode === 'scale') {
     vA.setFromMatrixPosition(left.matrixWorld);
     vB.setFromMatrixPosition(right.matrixWorld);
-    const s = THREE.MathUtils.clamp((scale0.s * vA.distanceTo(vB)) / scale0.d, 0.05, 8);
+    let s = THREE.MathUtils.clamp((scale0.s * vA.distanceTo(vB)) / scale0.d, SCALE_MIN, SCALE_MAX);
+    if (Math.abs(s / WS.scale - 1) < 0.06) s = WS.scale; // una muesca en el tamaño normal
     model.scale.setScalar(s);
     // La línea entre las dos manos es como un eje que agarras: lo que gira ella, gira el modelo.
     scale0.turn.setFromUnitVectors(scale0.dir, vT0.subVectors(vB, vA).normalize());
@@ -4877,6 +4916,7 @@ function xrFrame(dt) {
     model.position.copy(scale0.pos).sub(scale0.mid).multiplyScalar(s / scale0.s).applyQuaternion(scale0.turn).add(midNow);
   }
   model.updateMatrixWorld();
+  if (mode !== 'none') scaleFeel(gpL, gpR);
 
   // Mando izquierdo: clic stick = panel · stick ←/→ = deshacer/rehacer · stick ↑/↓ = fuerza
   //                  gatillo = suavizar · X (mantener) = invertir · Y = deshacer
