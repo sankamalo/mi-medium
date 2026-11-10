@@ -1565,7 +1565,7 @@ function syncCursorCopies() {
 // Al volver a una herramienta normal, el tamaño y el borde vuelven a como estaban.
 const CLAY_TOOLS = {
   'tool:palillo': { tool: 'remove', radius: 0.008, edge: 'even' },
-  'tool:cuter': { tool: 'remove', radius: 0.03, edge: 'hard' },
+  'tool:cuter': { tool: 'remove', radius: 0.03, edge: 'hard', stab: 0.6 }, // con el pulso firme: cortes rectos y limpios
   'tool:cuchara': { tool: 'remove', radius: 0.045, edge: 'soft' },
   'tool:dedo': { tool: 'smooth', radius: 0.03, edge: 'even' },
   'tool:rodillo': { tool: 'flatten', radius: 0.07, edge: 'even' },
@@ -1821,7 +1821,7 @@ function choose(id) {
       break;
     case 'tool:palillo': case 'tool:cuter': case 'tool:cuchara': case 'tool:dedo': case 'tool:rodillo': case 'tool:espatula':
       leaveClayTool();
-      clayBefore = { radius: state.radius, edge: state.edge };
+      clayBefore = { radius: state.radius, edge: state.edge, stab: state.stab };
       clayTool = id;
       Object.assign(state, CLAY_TOOLS[id]);
       toast(t(LABELS[id]), 1200);
@@ -2322,9 +2322,33 @@ function setColor(hex) {
 // ---------- Remesh en el casco: malla nueva de quads + horneado del detalle ----------
 // La malla nueva sale de la propia rejilla (sin Blender) y el detalle de alta resolución se
 // hornea en un mapa de normales y otro de color. Va por tramos: la escena no se congela.
+let remeshOkUntil = 0;
+// Segundos de remesh por cada 100.000 polígonos de la capa: lo medido la última vez en este aparato.
+function remeshRate() {
+  let r = 0;
+  try { r = +localStorage.getItem('plastilinaRemeshRate'); } catch {}
+  return r > 0 ? r : ON_QUEST ? 8 : 2;
+}
+// Avisar solo al llegar a un límite, una vez por escalón: nada de avisos mientras todo va bien.
+const LOAD_STEPS = ON_QUEST ? [[1.2e6, 700], [2e6, 1100]] : [[5e6, 2500], [8e6, 4000]];
+let loadStep = 0;
+setInterval(() => {
+  if (merge || sculpting || SPECTATOR) return;
+  const { quads, mb } = sceneLoad();
+  const step = LOAD_STEPS.filter(([q, m]) => quads > q || mb > m).length;
+  if (step > loadStep) toast(step === 1 ? 'Vas llegando al límite de las gafas: une capas, oculta las que no uses o baja la resolución (− Res)' : 'Casi al límite: guarda la obra ahora y aligera antes de seguir', 8000);
+  loadStep = step;
+}, 5000);
 async function remeshLayer(L) {
   if (L.frames.length > 1) return toast('Las capas con fotogramas no se pueden hacer remesh');
   if (L.busy) return toast('Ya está haciendo remesh…');
+  // Una capa grande tarda: se dice cuánto (aprendido de la última vez) y hace falta pulsar otra vez.
+  const big = L.chunks.reduce((a, ch) => a + (ch ? ch.quads.length / 4 : 0), 0), secs = Math.round((big / 1e5) * remeshRate());
+  if (secs >= 8 && performance.now() > remeshOkUntil) {
+    remeshOkUntil = performance.now() + 8000;
+    return toast(t('Esta capa es grande: el remesh tardará unos {0} s. Pulsa Remesh otra vez para hacerlo.', secs), 8000);
+  }
+  remeshOkUntil = 0;
   const hi = L.merged();
   if (!hi.quads.length) return toast('La capa está vacía');
   L.busy = true;
@@ -2337,6 +2361,7 @@ async function remeshLayer(L) {
     const low = await remeshSDF(L.grid, meshArea(hi.positions, hi.quads), state.quads, prog);
     if (stale()) throw new Error('stale');
     await bakeRemesh(L, low, ver);
+    if (big > 2e4) try { localStorage.setItem('plastilinaRemeshRate', String((performance.now() - t0) / 1000 / (big / 1e5))); } catch {}
     toast(t('{0}: {1} quads + detalle horneado ({2}px) en {3} s', L.name, (low.quads.length / 4).toLocaleString(), state.bakeSize, ((performance.now() - t0) / 1000).toFixed(1)), 5000);
   } catch (e) {
     if (e.message === 'stale') toast('Has esculpido durante el remesh: vuelve a lanzarlo');
@@ -4032,8 +4057,10 @@ barGroup.visible = false;
 scene.add(barGroup);
 const barWant = new THREE.Vector3(), barQuat = new THREE.Quaternion();
 let barTime = 0, barPlaced = false, barPct = -1, barTitle = '';
+let barT0 = 0;
 function mergeBarShow(on) {
   barPct = -1;
+  if (on) barT0 = performance.now();
   barGroup.visible = on && renderer.xr.isPresenting;
   $('mergeBar').hidden = !on || renderer.xr.isPresenting;
   barPlaced = false;
@@ -4060,7 +4087,9 @@ function mergeBarPaint(p, dt) {
   const pct = Math.floor(p * 100);
   if (barPct === pct) return;
   barPct = pct;
-  const label = t(merge?.title || barTitle) + ' · ' + pct + '%';
+  // A partir de un poco de avance se sabe cuánto queda; solo se dice si no es cosa de un momento.
+  const spent = (performance.now() - barT0) / 1000, left = p > 0.06 && spent > 1 ? Math.ceil((spent * (1 - p)) / p) : 0;
+  const label = t(merge?.title || barTitle) + ' · ' + pct + '%' + (left >= 3 ? ' · ' + t('quedan unos {0} s', left) : '');
   $('mergeBarText').textContent = label;
   $('mergeBarFill').style.width = pct + '%';
   if (!inXR) return;
@@ -4654,39 +4683,39 @@ function buildExportPage() {
   return W;
 }
 // Página de animación: la tira de fotogramas de la capa activa y los mandos para reproducir.
+// Animación, en sencillo: a la izquierda Play y la velocidad; a la derecha los fotogramas en una lista,
+// como las capas. Cada fotograma es una copia de la capa que se retoca.
+const FRAME_ROWS = 7;
 function buildAnimPage() {
   const W = [];
-  const M = 32, IW = PW - 2 * M, cols = 8, gap = 8, cw = (IW - (cols - 1) * gap) / cols;
+  const M = 32, IW = PW - 2 * M;
   const n = active.frames.length, i = frameIndex();
-  W.push(panelBlock(8, 800, CERA.paper));
+  W.push(panelBlock(8, 684, CERA.paper));
   pageHead(W, 'Animación');
-  W.push({ type: 'label', x: M, y: 128, size: 28, max: IW, text: active.name + '  ·  ' + t('Fotograma {0} de {1}', i + 1, n) });
-  // Dos filas de la tira; si hay más, se mueve siguiendo al fotograma actual.
-  const first = Math.max(0, Math.min(n - cols * 2, i - cols));
-  for (let k = first; k < Math.min(n, first + cols * 2); k++) {
-    const c = k - first;
-    W.push({ type: 'button', x: M + (c % cols) * (cw + gap), y: 152 + Math.floor(c / cols) * 76, w: cw, h: 68, size: 26, group: 'strip', label: String(k + 1),
+  W.push({ type: 'label', x: M, y: 122, size: 26, max: IW, text: active.name + '  ·  ' + t('Fotograma {0} de {1}', i + 1, n) });
+  const bw = (IW - 2 * 10) / 3;
+  W.push({ type: 'button', x: M, y: 150, w: bw, h: 110, size: 72, label: '◂', group: 'tr', onClick: () => stepFrame(-1) });
+  W.push({ type: 'button', x: M + bw + 10, y: 150, w: bw, h: 110, size: 36, label: anim.playing ? 'Pausa' : 'Play', group: 'tr', active: () => anim.playing, onClick: () => setPlaying(!anim.playing) });
+  W.push({ type: 'button', x: M + 2 * (bw + 10), y: 150, w: bw, h: 110, size: 72, label: '▸', group: 'tr', onClick: () => stepFrame(1) });
+  W.push({ type: 'slider', x: M, y: 330, w: IW, h: 30, label: 'Velocidad',
+    get: () => (anim.fps - 2) / 22, set: (v) => { anim.fps = Math.round(2 + v * 22); live.anim(); }, text: () => t('{0} por segundo', anim.fps) });
+  W.push({ type: 'button', x: M, y: 392, w: IW, h: 62, size: 26, label: 'Ver el de antes y el de después', active: () => anim.onion,
+    onClick: () => { anim.onion = !anim.onion; paintOnion(); drawPanel(); } });
+  ['1. Pulsa «+ Fotograma»: es una copia de lo que ves.', '2. Cambia algo: mueve, añade, quita.', '3. Repite y dale a Play.']
+    .forEach((text, k) => W.push({ type: 'label', x: M, y: 510 + k * 44, size: 24, max: IW, text }));
+  if (anim.mb > 200) W.push({ type: 'label', x: M, y: 656, size: 20, max: IW, text: t('La animación ocupa ≈ {0} MB', anim.mb) });
+  // Los fotogramas, en lista. Sigue al que estás viendo.
+  W.push(panelBlock(816, 684, CERA.blue));
+  W.push({ type: 'label', x: M, y: 860, head: true, size: 30, text: 'FOTOGRAMAS' });
+  const hw = 170;
+  W.push({ type: 'button', x: PW - M - hw, y: 834, w: hw, h: 54, size: 22, label: 'Borrar', group: 'fr', onClick: deleteFrame });
+  W.push({ type: 'button', x: PW - M - 2 * hw - 8 - 60, y: 834, w: hw + 60, h: 54, size: 22, label: '+ Fotograma', group: 'fr', active: () => true, onClick: () => addFrame(true) });
+  const first = Math.max(0, Math.min(n - FRAME_ROWS, i - 3));
+  for (let k = first; k < Math.min(n, first + FRAME_ROWS); k++) {
+    W.push({ type: 'button', x: M, y: 908 + (k - first) * 70, w: IW, h: 60, size: 26, plain: true, dot: active.color, label: t('Fotograma {0}', k + 1),
       active: () => frameIndex() === k, onClick: () => { if (anim.playing) setPlaying(false); goToFrame(active, active.frames[k]); frameToast(); } });
   }
-  const yT = 322, bw = (IW - 2 * 10) / 3;
-  W.push({ type: 'button', x: M, y: yT, w: bw, h: 84, size: 72, label: '◂', group: 'tr', onClick: () => stepFrame(-1) });
-  W.push({ type: 'button', x: M + bw + 10, y: yT, w: bw, h: 84, size: 30, label: anim.playing ? 'Pausa' : 'Play', group: 'tr', active: () => anim.playing, onClick: () => setPlaying(!anim.playing) });
-  W.push({ type: 'button', x: M + 2 * (bw + 10), y: yT, w: bw, h: 84, size: 72, label: '▸', group: 'tr', onClick: () => stepFrame(1) });
-  const yA = yT + 96;
-  [['+ Copia', () => addFrame(true)], ['+ Vacío', () => addFrame(false)], ['Borrar', deleteFrame]].forEach(([l, f], k) =>
-    W.push({ type: 'button', x: M + k * (bw + 10), y: yA, w: bw, h: 68, size: 26, label: l, group: 'fr', onClick: f }));
-  W.push({ type: 'slider', x: M, y: yA + 124, w: IW, h: 30, label: 'Velocidad (fotogramas por segundo)',
-    get: () => (anim.fps - 2) / 22, set: (v) => { anim.fps = Math.round(2 + v * 22); live.anim(); }, text: () => String(anim.fps) });
-  W.push({ type: 'button', x: M, y: yA + 176, w: IW, h: 62, size: 26, label: 'Piel de cebolla', active: () => anim.onion,
-    onClick: () => { anim.onion = !anim.onion; paintOnion(); drawPanel(); } });
-  W.push({ type: 'label', x: M, y: yA + 262, size: 22, max: IW, text: t('Rojo = antes · Azul = después') + (anim.mb ? '  ·  ≈ ' + anim.mb + ' MB' : '') });
-  // Cada capa con su bucle.
-  W.push(panelBlock(816, 92 + Math.min(layers.length, 6) * 62, CERA.ink));
-  W.push({ type: 'label', x: M, y: 856, head: true, size: 26, text: 'CAPAS' });
-  W.push({ type: 'label', x: M, y: 1380, size: 22, max: IW, text: 'Stick derecho ←/→: cambia de fotograma' });
-  W.push({ type: 'label', x: M, y: 1416, size: 22, max: IW, text: 'Al final, → crea una copia · B = play' });
-  layers.slice(-6).forEach((L, k) => W.push({ type: 'button', x: M, y: 876 + k * 62, w: IW, h: 52, size: 22, plain: true, dot: L.color,
-    label: L.name + '  ·  ' + t('{0} fot.', L.frames.length), active: () => L === active, onClick: () => { setActive(L); anim.frame = frameIndex(L); showFrames(); drawPanel(); } }));
+  W.push({ type: 'label', x: M, y: 1420, size: 20, max: IW, text: 'Stick derecho ←/→ cambia de fotograma · B = Play' });
   return W;
 }
 function openRefPage() { panelPage = 'refs'; drawPanel(); refreshMacRefs(); }

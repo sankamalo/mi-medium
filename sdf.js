@@ -650,7 +650,9 @@ export class SDFGrid {
                   case 'inflate': case 'deflate': {
                     // Empuja la superficie hacia fuera (o dentro) y la relaja un poco: queda redonda.
                     let wp = puff(dist / r);
-                    if (tex && wp > 0) wp *= 0.5 + 0.5 * texAt(px, py, pz);
+                    // Con textura: el dibujo manda de verdad (antes solo la mitad) y no se alisa, que lo emborronaba.
+                    const textured = tex && wp > 0;
+                    if (textured) wp *= 0.12 + 0.88 * texAt(px, py, pz);
                     if (wp > 0) {
                       const X = x - lo[0], Y = y - lo[1], Z = z - lo[2];
                       const j = X + sx * (Y + sy * Z);
@@ -658,7 +660,7 @@ export class SDFGrid {
                       const n0 = X > 0 ? src[j - 1] : s0, n1 = X < sx - 1 ? src[j + 1] : s0, n2 = Y > 0 ? src[j - sx] : s0,
                         n3 = Y < sy - 1 ? src[j + sx] : s0, n4 = Z > 0 ? src[j - sx * sy] : s0, n5 = Z < sz - 1 ? src[j + sx * sy] : s0;
                       const avg = (n0 + n1 + n2 + n3 + n4 + n5) / 6;
-                      d += (op === 'inflate' ? -1 : 1) * wp * k * h * 0.35 + (avg - d) * Math.min(1, wp * k * 0.12);
+                      d += (op === 'inflate' ? -1 : 1) * wp * k * h * 0.35 + (textured ? 0 : (avg - d) * Math.min(1, wp * k * 0.12));
                       // La superficie crece desde la que ya hay: fuera de ella el barro no puede aparecer suelto.
                       if (op === 'inflate') {
                         if (s0 > 0) d = Math.max(d, Math.min(s0, Math.min(n0, n1, n2, n3, n4, n5) + h * 0.25));

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>La Plastilina · Visor</title>
+  <meta name="theme-color" content="#FFF8EA" />
+  <link rel="icon" href="icon-192.png" />
+  <style>
+    @font-face { font-family: Kanit; src: url('vendor/fonts/Kanit-600-latin.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #FFF8EA; color: #2B2733; font: 600 16px/1.3 Kanit, system-ui, sans-serif;
+      -webkit-user-select: none; user-select: none; touch-action: none; }
+    canvas { display: block; }
+    #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; justify-content: center; padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); }
+    button, label.btn { font: inherit; color: #2B2733; background: #fff; border: 3px solid #2B2733; border-radius: 18px; padding: 12px 18px;
+      box-shadow: 0 4px 0 #2B2733; cursor: pointer; }
+    button.on, label.btn.main { background: #FFDF85; }
+    #name { position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center; font-size: 20px; pointer-events: none; }
+    #hint { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 32px; pointer-events: none; font-size: 20px; }
+    input, #hint[hidden] { display: none; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="name">La Plastilina</div>
+  <div id="hint">Abre un modelo (.glb) hecho con La Plastilina.<br>Con un dedo lo giras; con dos, lo acercas.</div>
+  <div id="bar">
+    <label class="btn main">Abrir modelo<input id="file" type="file" accept=".glb,model/gltf-binary" /></label>
+    <button id="spin" class="on">Girar solo</button>
+  </div>
+  <script type="module">
+    // Visor para el móvil: abre un .glb exportado desde La Plastilina y lo enseña para girarlo con el dedo.
+    // Todo pasa en el teléfono: el modelo no se sube a ningún sitio.
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    document.body.prepend(renderer.domElement);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xfff8ea);
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.01, 100);
+    // A la distancia a la que el modelo cabe entero, también con el teléfono de pie.
+    const frame = () => {
+      const half = Math.min(Math.tan(THREE.MathUtils.degToRad(20)), Math.tan(THREE.MathUtils.degToRad(20)) * camera.aspect);
+      camera.position.setLength(1.05 / half);
+    };
+    camera.position.set(0, 0.4, 2.6);
+    frame();
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xd9c9b8, 1.5));
+    const key = new THREE.DirectionalLight(0xffffff, 2);
+    key.position.set(2, 3, 2.5);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0x93adf4, 0.8);
+    rim.position.set(-3, 1, -2);
+    scene.add(rim);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 2.2;
+
+    let model = null;
+    const $ = (id) => document.getElementById(id);
+    async function show(buffer, name) {
+      const gltf = await new GLTFLoader().parseAsync(buffer, '');
+      if (model) scene.remove(model);
+      model = gltf.scene;
+      // Centrado y siempre del mismo tamaño en pantalla, mida lo que mida.
+      const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+      const k = 1.5 / (Math.max(size.x, size.y, size.z) || 1);
+      model.scale.setScalar(k);
+      model.position.copy(c).multiplyScalar(-k);
+      scene.add(model);
+      controls.target.set(0, 0, 0);
+      camera.position.set(0, 0.4, 2.6);
+      frame();
+      $('hint').hidden = true;
+      $('name').textContent = name.replace(/\.glb$/i, '');
+    }
+    const open = async (file) => {
+      if (!file) return;
+      try { await show(await file.arrayBuffer(), file.name); }
+      catch (e) { $('hint').hidden = false; $('hint').textContent = 'No he podido abrir ese archivo. Tiene que ser un .glb.'; }
+    };
+    $('file').onchange = (e) => open(e.target.files[0]);
+    addEventListener('dragover', (e) => e.preventDefault());
+    addEventListener('drop', (e) => { e.preventDefault(); open(e.dataTransfer.files[0]); });
+    // Si se abre con ?m=archivo.glb (del mismo sitio), lo carga solo.
+    const m = new URLSearchParams(location.search).get('m');
+    if (m && /^[\w./-]+\.glb$/.test(m) && !m.includes('..')) fetch(m).then((r) => r.arrayBuffer()).then((b) => show(b, m.split('/').pop())).catch(() => {});
+    $('spin').onclick = () => {
+      controls.autoRotate = !controls.autoRotate;
+      $('spin').classList.toggle('on', controls.autoRotate);
+    };
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      frame();
+    });
+    renderer.setAnimationLoop(() => {
+      controls.update();
+      renderer.render(scene, camera);
+    });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  </script>
+</body>
+</html>
