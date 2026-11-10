@@ -668,7 +668,8 @@ export class SDFGrid {
                   }
                   case 'grab': {
                     // Cada punto toma el barro de donde venía: x - w·delta (caída alrededor de a).
-                    const wg = falloff(Math.hypot(px - a[0], py - a[1], pz - a[2]) / r);
+                    // Con meseta: el centro del pincel viaja entero con la mano (un tentáculo grueso, no un pincho).
+                    const wg = puff(Math.hypot(px - a[0], py - a[1], pz - a[2]) / r);
                     if (wg > 0) {
                       const fx = x - lo[0] - (wg * gdx) / h, fy = y - lo[1] - (wg * gdy) / h, fz = z - lo[2] - (wg * gdz) / h;
                       d = srcAt(fx, fy, fz);

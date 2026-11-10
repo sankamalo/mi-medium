@@ -17,32 +17,32 @@
     @font-face { font-family: Mali; src: url('vendor/fonts/Mali-thai.woff2') format('woff2'); font-weight: 700; font-display: swap; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; }
     /* La caja de ceras. Cada bloque un color de fondo; dentro, todos los botones iguales.
        El amarillo es siempre «esto está puesto». */
-    :root { --ink: #141210; --paper: #FFF8E3; --white: #FFFFFF; --red: #E3242B; --blue: #1B4FD8; --yellow: #FFD21F;
-      --bg: #1d2026; --fg: var(--paper); --mute: #cfc9b8; --soft: #3a352e; --btn: 500 12.5px/1.15 Kanit, 'Noto Sans Thai', system-ui, sans-serif; }
+    :root { --ink: #2B2733; --paper: #FFF8EA; --white: #FFFFFF; --red: #F2958B; --blue: #93ADF4; --yellow: #FFDF85; --hover: #FFF1C4;
+      --bg: #1d2026; --fg: var(--paper); --mute: #cfc9b8; --soft: #4a4553; --btn: 500 12.5px/1.15 Kanit, 'Noto Sans Thai', system-ui, sans-serif; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
       font: 700 13px/1.35 Mali, 'Noto Sans Thai', system-ui, -apple-system, sans-serif; user-select: none; }
     #app canvas { display: block; }
     #hud { position: fixed; top: 12px; left: 12px; width: 348px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin;
-      background: var(--ink); border: 6px solid var(--ink); display: flex; flex-direction: column; gap: 6px; z-index: 2; }
-    .blk { padding: 12px; color: var(--fg); }
+      background: var(--ink); border: 6px solid var(--ink); border-radius: 24px; display: flex; flex-direction: column; gap: 6px; z-index: 2; }
+    .blk { padding: 12px; color: var(--fg); border-radius: 18px; }
     .blk.ink { background: var(--ink); --fg: var(--paper); --mute: #cfc9b8; }
-    .blk.blue { background: var(--blue); --fg: var(--white); --mute: var(--white); }
-    .blk.red { background: var(--red); --fg: var(--white); --mute: var(--white); }
+    .blk.blue { background: var(--blue); --fg: var(--ink); --mute: var(--soft); }
+    .blk.red { background: var(--red); --fg: var(--ink); --mute: var(--soft); }
     .blk.paper { background: var(--paper); --fg: var(--ink); --mute: #4d483f; }
     #hud h1 { margin: 0 0 8px; font: 600 26px/1 Kanit, 'Noto Sans Thai', sans-serif; color: var(--yellow); }
     #tool { font: 600 30px/1.1 Kanit, 'Noto Sans Thai', sans-serif; }
     #info { color: var(--mute); margin: 2px 0 8px; font-size: 12px; }
     label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--fg); }
-    input[type=range] { appearance: none; -webkit-appearance: none; width: 150px; height: 14px; margin: 4px 0; background: var(--white); border: 3px solid var(--ink); cursor: pointer; }
-    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 24px; background: var(--yellow); border: 3px solid var(--ink); }
-    input[type=range]::-moz-range-thumb { width: 12px; height: 20px; border-radius: 0; background: var(--yellow); border: 3px solid var(--ink); }
+    input[type=range] { appearance: none; -webkit-appearance: none; width: 150px; height: 14px; margin: 4px 0; background: var(--white); border: 2px solid var(--ink); border-radius: 9px; cursor: pointer; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--yellow); border: 2px solid var(--ink); }
+    input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--yellow); border: 2px solid var(--ink); }
     .row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
-    button { flex: 1 1 auto; padding: 8px 8px; border: 3px solid var(--ink); border-radius: 0; background: var(--white); color: var(--soft);
-      box-shadow: 3px 3px 0 var(--ink); font: var(--btn); text-transform: uppercase; cursor: pointer; }
-    button:hover { background: #ffe98a; }
+    button { flex: 1 1 auto; padding: 8px 8px; border: 2px solid var(--ink); border-radius: 12px; background: var(--white); color: var(--soft);
+      box-shadow: 0 3px 0 var(--ink); font: var(--btn); text-transform: uppercase; cursor: pointer; }
+    button:hover { background: var(--hover); }
     button:focus-visible { outline: 3px solid var(--white); outline-offset: 1px; }
-    button.primary, button.on { background: var(--yellow); box-shadow: none; transform: translate(3px, 3px); }
+    button.primary, button.on { background: var(--yellow); box-shadow: none; transform: translateY(3px); }
     button:disabled { opacity: 0.45; cursor: default; }
     .blk.ink button { box-shadow: none; }
     .blk.ink button.on, .blk.ink button.primary { transform: none; outline: 3px solid var(--white); outline-offset: -6px; }
@@ -56,8 +56,8 @@
     input.wide { width: 100%; }
     #layerList { display: flex; flex-direction: column; gap: 5px; max-height: 190px; overflow-y: auto; }
     .layer, .obra { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; color: var(--ink);
-      background: var(--white); border: 3px solid var(--ink); }
-    .layer:hover, .obra:hover { background: #ffe98a; }
+      background: var(--white); border: 2px solid var(--ink); border-radius: 12px; }
+    .layer:hover, .obra:hover { background: var(--hover); }
     .layer.active, .obra.active { background: var(--yellow); }
     .dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--ink); flex: 0 0 auto; }
     .dot.pick { outline: 4px solid var(--red); outline-offset: 1px; }
@@ -75,8 +75,8 @@
     #favRow button { flex: 1 1 18%; padding: 8px 2px; font-size: 11px; }
     #material summary { cursor: pointer; font: 600 15px/1.1 Kanit, 'Noto Sans Thai', sans-serif; padding: 4px 0; }
     .opts { flex-wrap: nowrap; gap: 5px; }
-    .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 10.5px; box-shadow: 2px 2px 0 var(--ink); }
-    .opts button.on { box-shadow: none; transform: translate(2px, 2px); }
+    .opts button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 10.5px; box-shadow: 0 2px 0 var(--ink); }
+    .opts button.on { box-shadow: none; transform: translateY(2px); }
     label.check { justify-content: flex-start; gap: 8px; }
     #spec { display: none; position: fixed; top: 12px; right: 12px; width: 300px; padding: 12px 14px;
       background: var(--ink); border: 6px solid var(--ink); }
@@ -243,7 +243,7 @@
     <div class="row"><button id="shapeMode" hidden>A vóxel</button><button id="shapeReset" hidden>Como al principio</button><button id="shapeExtrude" hidden title="Coge una cara roja y tira de ella">Extruir</button></div>
     <details class="fold" id="foldText"><summary>Texto 3D</summary>
     <div class="row"><button id="textWrite" title="Escribe con Añadir, en mayúsculas y con las letras separadas">Escribir</button><button id="textMake" class="primary">Convertir en texto</button></div>
-    <input id="textInput" maxlength="40" placeholder="O teclea aquí" style="width: 100%; font: inherit; padding: 6px; border: 3px solid var(--ink); box-sizing: border-box; margin-top: 6px" />
+    <input id="textInput" maxlength="40" placeholder="O teclea aquí" style="width: 100%; font: inherit; padding: 6px; border: 2px solid var(--ink); border-radius: 12px; box-sizing: border-box; margin-top: 6px" />
     <div class="row"><button id="textMode" hidden>A vóxel</button></div>
     </details>
   </div>

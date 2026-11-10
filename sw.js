@@ -1,6 +1,6 @@
 // Modo sin internet: guarda la app en las gafas la primera vez y luego la sirve desde ahí.
 // Se usa la copia guardada al instante y se actualiza por detrás cuando hay conexión.
-const CACHE = 'mi-medium-v55';
+const CACHE = 'mi-medium-v56';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   './fbx.js', './vendor/addons/loaders/RGBELoader.js',

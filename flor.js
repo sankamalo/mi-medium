@@ -4,10 +4,11 @@
 import * as THREE from 'three';
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
 
-const INK = 0x141210;
+const INK = 0x2b2733;
 const COLORS = {
-  red: 0xe3242b, blue: 0x1b4fd8, yellow: 0xffd21f, green: 0x12a54a, paper: 0xfff8e3,
-  white: 0xffffff, pink: 0xff7ab8, hand: 0xffc62e,
+  // En pastel, a juego con el panel.
+  red: 0xf2958b, blue: 0x93adf4, yellow: 0xffdf85, green: 0x9ad8ae, paper: 0xfff8ea,
+  white: 0xffffff, pink: 0xf7b3d2, hand: 0xffd27a,
 };
 const DEG = Math.PI / 180;
 const RIG_ORDER = 990; // mando y mano se pintan después de la flor, encima de ella
@@ -552,7 +553,7 @@ async function loadIcon(p, size) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   const flat = new Flat();
-  const hex = INK_ON.has(p.color) ? INK : COLORS.white;
+  const hex = INK; // sobre pastel, el icono siempre en tinta
   for (const path of new SVGLoader().parse(await res.text()).paths) {
     if (path.userData?.style?.fill === 'none') continue;
     for (const shape of SVGLoader.createShapes(path)) flat.shape(shape, hex);
@@ -997,9 +998,12 @@ export class Flower {
       g.clearRect(0, 0, W, H);
       g.font = '600 84px Kanit, "Noto Sans Thai", system-ui, sans-serif';
       const tw = Math.min(W - 24, g.measureText(text).width + 56);
-      g.fillStyle = '#141210';
-      g.fillRect((W - tw) / 2, 6, tw, H - 12);
-      g.fillStyle = '#ffd21f';
+      g.fillStyle = '#2b2733';
+      g.beginPath();
+      if (g.roundRect) g.roundRect((W - tw) / 2, 6, tw, H - 12, (H - 12) / 2);
+      else g.rect((W - tw) / 2, 6, tw, H - 12);
+      g.fill();
+      g.fillStyle = '#ffdf85';
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillText(text, W / 2, H / 2 + 4, W - 60);

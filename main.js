@@ -3384,6 +3384,8 @@ async function startXR(mode) {
     const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor'] });
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
+    // 72 imágenes por segundo: da más tiempo a cada una (14 ms en vez de 11) y va más estable que a 90.
+    try { if (session.supportedFrameRates?.includes(72)) await session.updateTargetFrameRate(72); } catch {}
     bg.ar = bg.arSession = mode === 'immersive-ar';
     applyBg();
     model.position.set(0, 1.1, -0.6);
@@ -4469,35 +4471,34 @@ function buildObraTab() {
   W.push({ type: 'label', x: M, y: 662, size: 20, max: IW, text: 'Abrir otra guarda antes la actual' });
   return W;
 }
+// Técnico, por grupos: la malla, lo que se ve, los archivos y los ajustes.
 function buildTechTab() {
   const W = [];
   const M = 32, IW = PW - 2 * M;
   W.push(panelBlock(8, 684, CERA.ink));
-  const yb = 66;
+  const row = (y, title, items, group) => {
+    W.push({ type: 'label', x: M, y, head: true, text: title, size: 24 });
+    const bw = (IW - (items.length - 1) * 8) / items.length;
+    items.forEach(([l, on, go], i) => W.push({ type: 'button', x: M + i * (bw + 8), y: y + 20, w: bw, h: 58, label: l, size: 24, group, active: on || (() => false), onClick: go }));
+  };
+  const page = (p) => () => { panelPage = p; drawPanel(); };
+  row(40, 'Malla', [['− Res', null, () => choose('resDown')], ['+ Res', null, () => choose('resUp')], active.remesh ? ['A vóxel', null, () => choose('voxel')] : ['Remesh', null, () => choose('remesh')], ['Ver malla', () => state.wire, () => choose('wire')]], 'tech1');
   W.push({
-    type: 'slider', x: M, y: yb, w: IW, h: 26, label: 'Quads del remesh',
+    type: 'slider', x: M, y: 176, w: IW, h: 26, label: 'Quads del remesh',
     get: () => (state.quads - 1000) / 59000, set: (t) => (state.quads = Math.round((1000 + t * 59000) / 1000) * 1000),
     text: () => state.quads.toLocaleString(),
   });
-  const bw = (IW - 3 * 8) / 4;
-  [['− Res', 'resDown'], ['+ Res', 'resUp'], ['Simetría', 'sym'], ['Malla', 'wire'], ['Suelo', 'floor'], active.remesh ? ['A vóxel', 'voxel'] : ['Remesh', 'remesh'], ['A Blender', 'export'], ['Importar ▸', 'refs']]
-    .forEach(([l, id], i) => W.push({ type: 'button', x: M + (i % 4) * (bw + 8), y: yb + 44 + Math.floor(i / 4) * 66, w: bw, h: 58, label: l, size: 24, group: 'tech',
-      active: () => (id === 'sym' && symOn()) || (id === 'wire' && state.wire) || (id === 'floor' && state.floor), onClick: () => (id === 'refs' ? openRefPage() : choose(id)) }));
+  row(236, 'Vista', [['Simetría', () => symOn(), () => choose('sym')], ['Suelo', () => state.floor, () => choose('floor')], ['Material ▸', null, page('material')], ['Fondo ▸', null, page('bg')]], 'tech2');
+  row(346, 'Archivos', [['Importar ▸', null, openRefPage], ['A Blender', null, () => choose('export')], ['Exportar ▸', null, () => { exportBase(); panelPage = 'export'; drawPanel(); }]], 'tech3');
+  row(456, 'Ajustes', [['Sonido ▸', null, page('sonido')], ['Llamada ▸', null, page('llamada')], ['Tutorial', null, startTutorial]], 'tech4');
   // Idiomas: siempre en español y siempre abajo del todo, para encontrarlo en cualquier idioma.
-  const yi = yb + 210;
-  W.push({ type: 'label', x: M, y: yi, head: true, text: 'Idiomas', size: 24 });
+  W.push({ type: 'label', x: M, y: 566, head: true, text: 'Idiomas', size: 24 });
   const lw = (IW - 2 * 8) / 3;
   [['es', 'Español'], ['en', 'English'], ['th', 'ไทย']].forEach(([l, name], i) => W.push({
-    type: 'button', x: M + i * (lw + 8), y: yi + 20, w: lw, h: 56, label: name, plain: true, size: 30,
+    type: 'button', x: M + i * (lw + 8), y: 586, w: lw, h: 56, label: name, plain: true, size: 30,
     active: () => getLang() === l, onClick: () => changeLang(l),
   }));
-  W.push({ type: 'label', x: M, y: yi + 120, size: 20, wrap: IW,
-    text: 'Apunta con el mando derecho · gatillo = pulsar · clic stick izq. = cerrar' });
-  W.push({ type: 'label', x: M, y: yi + 176, size: 20, wrap: IW,
-    text: 'Tira de una esquina amarilla con el mando derecho para dejar el panel donde quieras.' });
-  const pw = (IW - 10) / 2;
-  W.push({ type: 'button', x: M, y: yi + 250, w: pw, h: 58, label: 'Sonido ▸', size: 24, group: 'tech2', onClick: () => { panelPage = 'sonido'; drawPanel(); } });
-  W.push({ type: 'button', x: M + pw + 10, y: yi + 250, w: pw, h: 58, label: 'Llamada ▸', size: 24, group: 'tech2', onClick: () => { panelPage = 'llamada'; drawPanel(); } });
+  W.push({ type: 'label', x: M, y: 668, size: 18, max: IW, text: 'Gatillo derecho = pulsar · clic stick izq. = cerrar · esquinas amarillas = mover el panel' });
   return W;
 }
 function buildSoundPage() {
@@ -5712,6 +5713,7 @@ if (FORCE_EMIT) setTimeout(() => live.structure(), 500);
 const clock = new THREE.Clock();
 let poseT = 0;
 renderer.setAnimationLoop(() => {
+  const frameT0 = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
   updateLathe(dt);
   updateAnim(dt);
@@ -5753,11 +5755,14 @@ renderer.setAnimationLoop(() => {
   // Re-mallado con presupuesto de tiempo: la capa activa primero, el resto después.
   // En el casco cada imagen tiene unos 13 ms: el remallado no puede comérselos todos.
   const inXR = renderer.xr.isPresenting;
+  // En las gafas, lo que ya ha gastado el pincel en esta imagen se descuenta: entre los dos no pasan de
+  // unos 9 ms, que es lo que deja libre una imagen a 72 Hz. Así no hay tirones al esculpir.
+  const spent = performance.now() - frameT0;
   if (active.dirty.size) {
-    active.flush(inXR ? 9 : 30);
+    active.flush(inXR ? Math.max(2.5, 9 - spent) : 30);
     if (active.frames.length > 1) paintOnion();
   }
-  for (const L of layers) if (L !== active && L.dirty.size) L.flush(inXR ? 3 : 8);
+  if (!inXR || performance.now() - frameT0 < 10) for (const L of layers) if (L !== active && L.dirty.size) { L.flush(inXR ? 2 : 8); if (inXR) break; }
   for (const L of layers) if (L.frames.length > 1 && L.flushHidden(inXR ? 3 : 8)) {
     if (L === active) paintOnion();
     break;

@@ -11,8 +11,15 @@ import { t } from './i18n.js';
 //   tab: label, color, active(), onClick()
 //   label: text, size, head (letra de botón), max (encoge para caber), wrap (ancho: corta en líneas)
 
-// La caja de ceras: los bloques van en azul, rojo, papel y negro; el amarillo es siempre «esto está puesto».
-export const CERA = { soft: '#3a352e', red: '#E3242B', blue: '#1B4FD8', yellow: '#FFD21F', ink: '#141210', paper: '#FFF8E3', white: '#FFFFFF' };
+// La caja de ceras, en pastel: los bloques van en azul, coral, papel y tinta; el amarillo mantequilla es
+// siempre «esto está puesto». Todo con las esquinas redondas y la tinta suave en vez de negro.
+export const CERA = { soft: '#4a4553', red: '#F2958B', blue: '#93ADF4', yellow: '#FFDF85', ink: '#2B2733', paper: '#FFF8EA', white: '#FFFFFF', hover: '#FFF1C4' };
+// Rectángulo de esquinas redondas (r puede ser una lista, una por esquina).
+const box = (g, x, y, w, h, r) => {
+  g.beginPath();
+  if (g.roundRect) g.roundRect(x, y, w, h, r);
+  else g.rect(x, y, w, h);
+};
 
 export class CanvasPanel {
   constructor(w, h, build) {
@@ -75,7 +82,8 @@ export class CanvasPanel {
     const blocks = this.widgets.filter((w) => w.type === 'block');
     const bottom = blocks.reduce((b, w) => Math.max(b, w.y + w.h), 0);
     g.fillStyle = CERA.ink;
-    g.fillRect(0, 0, this.w, bottom + 8);
+    box(g, 0, 0, this.w, bottom + 8, 34);
+    g.fill();
     // Los botones de una misma fila llevan todos la misma letra: la que le quepa al texto más largo.
     const sizes = {};
     this.widgets.forEach((w) => {
@@ -87,8 +95,9 @@ export class CanvasPanel {
       const hov = i === this.hover;
       if (w.type === 'block') {
         g.fillStyle = w.color;
-        g.fillRect(w.x, w.y, w.w, w.h);
-        text = w.color === CERA.paper ? CERA.ink : CERA.white;
+        box(g, w.x, w.y, w.w, w.h, 26);
+        g.fill();
+        text = w.color === CERA.ink ? CERA.white : CERA.ink;
         onInk = w.color === CERA.ink;
       } else if (w.type === 'label') {
         const font = w.head ? kanitHead : mali;
@@ -107,18 +116,19 @@ export class CanvasPanel {
       } else if (w.type === 'button') {
         const on = w.active?.();
         const str = w.plain ? t(w.label) : t(w.label).toUpperCase();
-        // Sin apretar lleva sombra dura; apretado se hunde sobre ella y se pone amarillo.
-        const d = on ? 4 : 0;
-        if (!on && !onInk) { g.fillStyle = CERA.ink; g.fillRect(w.x + 5, w.y + 5, w.w, w.h); }
-        g.fillStyle = on ? CERA.yellow : hov ? '#ffe98a' : CERA.white;
-        g.fillRect(w.x + d, w.y + d, w.w, w.h);
-        g.lineWidth = 4;
+        // Sin apretar lleva una sombra corta; apretado se hunde sobre ella y se pone amarillo.
+        const d = on ? 3 : 0, rad = Math.min(18, w.h / 2);
+        if (!on && !onInk) { g.fillStyle = CERA.ink; box(g, w.x + 1, w.y + 4, w.w, w.h, rad); g.fill(); }
+        g.fillStyle = on ? CERA.yellow : hov ? CERA.hover : CERA.white;
+        box(g, w.x + 1.5, w.y + d + 1.5, w.w - 3, w.h - 3, rad);
+        g.fill();
+        g.lineWidth = 3;
         g.strokeStyle = onInk && on ? CERA.white : CERA.ink;
-        g.strokeRect(w.x + d + 2, w.y + d + 2, w.w - 4, w.h - 4);
+        g.stroke();
         if (w.dot) {
           g.fillStyle = w.dot;
           g.beginPath();
-          g.arc(w.x + d + 28, w.y + d + w.h / 2, 12, 0, Math.PI * 2);
+          g.arc(w.x + 28, w.y + d + w.h / 2, 12, 0, Math.PI * 2);
           g.fill();
           g.lineWidth = 3;
           g.stroke();
@@ -127,25 +137,28 @@ export class CanvasPanel {
         const room = w.w - 12 - (w.dot ? 50 : 0);
         g.font = kanit(w.group ? sizes[w.group] : fitSize(g, kanit, str, w.size || 26, room));
         g.textAlign = w.dot ? 'left' : 'center';
-        g.fillText(str, (w.dot ? w.x + 50 : w.x + w.w / 2) + d, w.y + d + w.h / 2 + 1);
+        g.fillText(str, w.dot ? w.x + 50 : w.x + w.w / 2, w.y + d + w.h / 2 + 1);
       } else if (w.type === 'tab') {
         // Pestaña: la puesta lleva el color de su bloque y se une a él; las otras, blancas con su color al lado.
         const on = w.active?.();
-        g.fillStyle = on ? w.color : hov ? '#ffe98a' : CERA.white;
-        g.fillRect(w.x, on ? w.y : w.y + 6, w.w, on ? w.h : w.h - 8);
-        if (!on) { g.fillStyle = w.color; g.fillRect(w.x + 12, w.y + 20, 24, w.h - 36); }
-        g.fillStyle = on && w.color !== CERA.paper ? CERA.white : CERA.ink;
+        g.fillStyle = on ? w.color : hov ? CERA.hover : CERA.white;
+        if (on) box(g, w.x, w.y, w.w, w.h + 26, [22, 22, 0, 0]);
+        else box(g, w.x, w.y + 6, w.w, w.h - 10, 18);
+        g.fill();
+        if (!on) { g.fillStyle = w.color; g.beginPath(); g.arc(w.x + 26, w.y + w.h / 2 + 1, 11, 0, Math.PI * 2); g.fill(); }
+        g.fillStyle = on && w.color === CERA.ink ? CERA.white : CERA.ink;
         const room = w.w - (on ? 24 : 64);
         g.font = kanitHead(fitSize(g, kanitHead, t(w.label), 28, room));
         g.textAlign = on ? 'center' : 'left';
         g.fillText(t(w.label), on ? w.x + w.w / 2 : w.x + 48, w.y + w.h / 2 + 2);
       } else if (w.type === 'thumb') {
         const on = w.active?.();
-        g.fillStyle = on ? CERA.yellow : hov ? '#ffe98a' : CERA.white;
-        g.fillRect(w.x, w.y, w.w, w.h);
-        g.lineWidth = 4;
+        g.fillStyle = on ? CERA.yellow : hov ? CERA.hover : CERA.white;
+        box(g, w.x + 1.5, w.y + 1.5, w.w - 3, w.h - 3, 14);
+        g.fill();
+        g.lineWidth = 3;
         g.strokeStyle = CERA.ink;
-        g.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
+        g.stroke();
         if (w.img) g.drawImage(w.img, w.x + 8, w.y + 8, w.w - 16, w.h - 16);
       } else if (w.type === 'swatch') {
         const on = w.active?.();
@@ -169,16 +182,22 @@ export class CanvasPanel {
         g.textAlign = 'right';
         g.fillText(t(w.text?.() ?? ''), w.x + w.w, w.y - 20);
         const inner = w.w - 26;
+        // Una píldora: lo recorrido en tinta (amarillo sobre tinta) y un pomo redondo.
         g.fillStyle = CERA.white;
-        g.fillRect(w.x, w.y, w.w, w.h);
+        box(g, w.x + 1.5, w.y + 1.5, w.w - 3, w.h - 3, w.h / 2);
+        g.fill();
         g.fillStyle = onInk ? CERA.yellow : CERA.ink;
-        g.fillRect(w.x, w.y, 13 + inner * v, w.h);
-        g.lineWidth = 4;
+        box(g, w.x + 1.5, w.y + 1.5, 26 + inner * v - 3, w.h - 3, w.h / 2);
+        g.fill();
+        g.lineWidth = 3;
         g.strokeStyle = CERA.ink;
-        g.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
-        g.fillStyle = hov || this.drag === w ? '#ffe98a' : CERA.yellow;
-        g.fillRect(w.x + inner * v, w.y - 7, 26, w.h + 14);
-        g.strokeRect(w.x + inner * v + 2, w.y - 5, 22, w.h + 10);
+        box(g, w.x + 1.5, w.y + 1.5, w.w - 3, w.h - 3, w.h / 2);
+        g.stroke();
+        g.fillStyle = hov || this.drag === w ? CERA.hover : CERA.yellow;
+        g.beginPath();
+        g.arc(w.x + 13 + inner * v, w.y + w.h / 2, w.h / 2 + 7, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
       }
     });
   }
