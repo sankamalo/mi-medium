@@ -501,7 +501,8 @@ export class SDFGrid {
     const { n, h, o, band, nb, bricks, colors, fill } = this;
     const shape = (tool === 'add' || tool === 'remove') && opts?.shape && opts.shape !== 'sphere' ? opts.shape : null;
     const tex = opts?.texture ? TEXTURES[opts.texture] : null;
-    const period = Math.max(r * 0.7, 6 * h);
+    // El dibujo va con el pincel: más pequeño con un pincel pequeño (y caben más), más grande con uno grande.
+    const period = Math.max(r * 0.5, 4 * h);
     const amp = tex ? Math.min(r * 0.22, band * 0.7) : 0;
     const F = opts?.frame, T = opts?.shift;
     const texAt = (px, py, pz) => {
@@ -568,7 +569,7 @@ export class SDFGrid {
     let srcC = null;
     if (op === 'smooth' || op === 'inflate' || op === 'deflate' || op === 'grab' || op === 'pinch' || op === 'crease') {
       src = new Float32Array(sx * sy * sz);
-      if (op === 'grab') srcC = new Uint8Array(sx * sy * sz * 4);
+      if (op === 'grab' || op === 'inflate') srcC = new Uint8Array(sx * sy * sz * 4);
       this.copyRegion(lo[0], lo[1], lo[2], sx, sy, sz, src, srcC);
     }
     // Lectura trilineal de la copia (en vóxeles relativos a lo).
@@ -664,6 +665,17 @@ export class SDFGrid {
                       // La superficie crece desde la que ya hay: fuera de ella el barro no puede aparecer suelto.
                       if (op === 'inflate') {
                         if (s0 > 0) d = Math.max(d, Math.min(s0, Math.min(n0, n1, n2, n3, n4, n5) + h * 0.25));
+                        // Lo que crece sale del color de lo que tiene al lado, no del color base de la capa.
+                        if (d < band && !(cb && cb[li * 4 + 3])) {
+                          const Zs = sx * sy;
+                          const c = X > 0 && srcC[(j - 1) * 4 + 3] ? j - 1 : X < sx - 1 && srcC[(j + 1) * 4 + 3] ? j + 1
+                            : Y > 0 && srcC[(j - sx) * 4 + 3] ? j - sx : Y < sy - 1 && srcC[(j + sx) * 4 + 3] ? j + sx
+                            : Z > 0 && srcC[(j - Zs) * 4 + 3] ? j - Zs : Z < sz - 1 && srcC[(j + Zs) * 4 + 3] ? j + Zs : -1;
+                          if (c >= 0) {
+                            if (!cb) cb = colors[bi] = new Uint8Array(B3 * 4);
+                            cb[li * 4] = srcC[c * 4]; cb[li * 4 + 1] = srcC[c * 4 + 1]; cb[li * 4 + 2] = srcC[c * 4 + 2]; cb[li * 4 + 3] = 255;
+                          }
+                        }
                       } else if (s0 < 0) d = Math.min(d, Math.max(s0, Math.max(n0, n1, n2, n3, n4, n5) - h * 0.25));
                     }
                     break;

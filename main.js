@@ -4811,9 +4811,9 @@ function pickFlower(h) {
 // Espacio de trabajo: grande, a tu alrededor y delante de ti. Mientras no empiezas a esculpir te
 // sigue con la vista (suave); en cuanto tocas algo se queda quieto para no marear.
 const WS = { scale: 1.3, dist: 0.6, drop: 0.25 };
-// Cuánto se puede acercar o alejar el modelo. Antes iba de ×0,05 a ×8 y era fácil perderse: con el modelo
-// diminuto los trazos salían enormes (y pesaban), y muy de cerca se veían los vóxeles.
-const SCALE_MIN = 0.3, SCALE_MAX = 4;
+// Cuánto se puede acercar o alejar el modelo. Se puede hacer muy pequeño (para trabajar en grande dentro de
+// él); el cartel del tamaño y la muesca del tamaño normal evitan perderse.
+const SCALE_MIN = 0.08, SCALE_MAX = 4;
 const scaleUI = { last: 0, notch: true, hinted: false };
 // Al cambiar el tamaño: cuánto es (en un cartel), un toque al pasar por el tamaño normal y, muy de
 // cerca, un aviso de que la resolución se va a notar.
