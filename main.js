@@ -2937,7 +2937,29 @@ function dragSlider(i, x, y) {
 const menuCenter = { x: 0, y: 0 };
 const MENU_PX = 420;
 
+// En el ordenador, el menú es la misma flor de las gafas, delante de la cámara y bajo el ratón.
+let menuFlower = false;
+const deskRay = new THREE.Raycaster(), deskTipV = new THREE.Vector3(), deskAt = new THREE.Vector3();
+const DESK_D = 0.6;
+function deskTip(x, y) {
+  deskRay.setFromCamera(new THREE.Vector2((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1), camera);
+  return deskTipV.copy(deskRay.ray.origin).addScaledVector(deskRay.ray.direction, DESK_D);
+}
 function openMenu(x, y, mode) {
+  if (!renderer.xr.isPresenting) {
+    // Que quepa entera (con los pétalos de dentro) aunque la abras en un borde.
+    const half = DESK_D * Math.tan((camera.fov * Math.PI) / 360), s = (half * 0.8) / 0.36;
+    const m = (0.36 * s) / half; // margen en unidades de pantalla (-1..1)
+    const nx = Math.max(-1 + m / camera.aspect, Math.min(1 - m / camera.aspect, (x / innerWidth) * 2 - 1));
+    const ny = Math.max(-1 + m, Math.min(1 - m, (y / innerHeight) * 2 - 1));
+    deskAt.copy(deskTip(((nx + 1) / 2) * innerWidth, ((ny + 1) / 2) * innerHeight));
+    flower.group.scale.setScalar(s);
+    flower.open(deskAt, camera.position, optionOn, deskTip(x, y), state.color);
+    sfx.play('open');
+    menuFlower = radialOpen = true;
+    radialMode = mode;
+    return;
+  }
   menuCenter.x = Math.max(MENU_PX / 2, Math.min(innerWidth - MENU_PX / 2, x));
   menuCenter.y = Math.max(MENU_PX / 2, Math.min(innerHeight - MENU_PX / 2, y));
   const el = radial.canvas;
@@ -2953,6 +2975,15 @@ function openMenu(x, y, mode) {
 }
 function closeMenu(pick) {
   if (!radialOpen) return;
+  if (menuFlower) {
+    menuFlower = radialOpen = false;
+    sfx.play('close');
+    const h = flower.highlight, done = h === flower.done;
+    flower.close();
+    flower.group.scale.setScalar(1);
+    if (pick && !done) pickFlower(h);
+    return;
+  }
   const h = radial.highlight;
   if (pick && h) sfx.play('thock');
   radial.canvas.style.display = 'none';
@@ -2963,6 +2994,15 @@ function closeMenu(pick) {
 }
 // buttons: botones del ratón pulsados (para arrastrar los arcos de Tamaño / Estabilizar).
 function hoverMenu(x, y, buttons = 0) {
+  if (menuFlower) {
+    if (flower.hoverRay(camera.position, deskTip(x, y)) && flower.highlight) {
+      const id = flower.highlight;
+      let note = 0;
+      for (let i = 0; i < id.length; i++) note = (note * 31 + id.charCodeAt(i)) % 997;
+      sfx.play('tick', { semi: PENTATONIC[note % 5] + (note % 2) * 12 - 3 });
+    }
+    return;
+  }
   const dx = x - menuCenter.x, dy = y - menuCenter.y;
   const k = radial.size / MENU_PX;
   if (!buttons) radialDrag = -1;
@@ -3197,7 +3237,7 @@ function setMouse(e) {
 if (!SPECTATOR) {
   // Fase de captura en el contenedor: decidimos antes que OrbitControls si el clic esculpe o gira.
   $('app').addEventListener('pointerdown', (e) => {
-    if (radialOpen) { closeMenu(false); e.stopPropagation(); return; }
+    if (radialOpen) { closeMenu(menuFlower); e.stopPropagation(); return; }
     if (renderer.xr.isPresenting) return;
     setMouse(e);
     // En Mac, Ctrl+clic llega como clic derecho: aquí significa "esculpir invertido".
@@ -3281,7 +3321,7 @@ addEventListener('pointermove', (e) => {
   if (!renderer.xr.isPresenting && !SPECTATOR) setModifiers(e);
   mouse.inside = e.target === renderer.domElement;
   if (radialOpen && radialMode === 'hold') hoverMenu(e.clientX, e.clientY, e.buttons);
-  if (radialOpen && radialMode === 'click' && (e.target === radial.canvas || radialDrag >= 0)) hoverMenu(e.clientX, e.clientY, e.buttons);
+  if (radialOpen && radialMode === 'click' && (menuFlower || e.target === radial.canvas || radialDrag >= 0)) hoverMenu(e.clientX, e.clientY, e.buttons);
 });
 addEventListener('contextmenu', (e) => e.preventDefault());
 // Rueda con Mover: escala la capa que tienes cogida, o la que está bajo el ratón (sin clic).
@@ -3322,7 +3362,7 @@ addEventListener('pointerup', (e) => {
   // Dial con clic derecho: suelta sobre una herramienta para elegirla.
   // Si lo sueltas sin moverte, se queda abierto para elegir con un clic.
   if (e.button === 2 && radialOpen && radialMode === 'hold') {
-    if (radial.highlight) closeMenu(true);
+    if (menuFlower ? flower.highlight && flower.highlight !== flower.done : radial.highlight) closeMenu(true);
     else radialMode = 'click';
   }
   if (sculpting) {
@@ -5757,7 +5797,15 @@ renderer.setAnimationLoop(() => {
     }
   } else {
     controls.update();
-    if (radialOpen && radial.tick()) radial.draw(state, infoText());
+    if (menuFlower) {
+      flower.update(dt);
+      // Un rato encima: se pone, y la flor sigue abierta para cambiar de idea (como en las gafas).
+      if (flower.fired) {
+        pickFlower(flower.fired);
+        flower.fired = null;
+        flower.refresh();
+      }
+    } else if (radialOpen && radial.tick()) radial.draw(state, infoText());
     brushObj = camera;
     if (moveOp.L && moveOp.mode !== 'wheel') dragMoveDesktop();
     const airOk = state.tool === 'add' && !state.invert && !state.smoothHold;
