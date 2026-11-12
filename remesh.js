@@ -740,6 +740,32 @@ function fixTopology(quads, nv, P) {
       break;
     }
   }
+  // Dos caras que comparten las dos aristas de un vértice están dobladas una sobre otra (en Blender
+  // salen caras repetidas y agujeros): se funden en una sin ese vértice.
+  // Pocas veces pasa: cada arreglo cambia las aristas y se vuelve a mirar desde el principio.
+  for (let guard = 0; guard < 500; guard++) {
+    const he = new Map();
+    keep.forEach((f, i) => { for (let k = 0; k < f.length; k++) he.set(f[k] * nv + f[(k + 1) % f.length], i); });
+    let changed = false;
+    for (let i = 0; i < keep.length; i++) {
+      const f1 = keep[i];
+      for (let k = 0; k < f1.length; k++) {
+        const a = f1[(k - 1 + f1.length) % f1.length], v = f1[k], b = f1[(k + 1) % f1.length];
+        const j = he.get(b * nv + v);
+        if (j === undefined || j === i || he.get(v * nv + a) !== j || !keep[j].length) continue;
+        // Cada cara empezando justo después de v: p1 va de b hasta a, p2 vuelve de a hasta b.
+        const rot = (f) => { const q = f.indexOf(v); return f.slice(q + 1).concat(f.slice(0, q)); };
+        const p1 = rot(f1), p2 = rot(keep[j]);
+        const m = p1.concat(p2.slice(1, -1));
+        keep[i] = new Set(m).size === m.length && m.length >= 3 && m.length <= 4 ? m : [];
+        keep[j] = [];
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+    if (!changed) break;
+  }
   quads.length = 0;
   for (const f of keep) if (f.length) quads.push(f[0], f[1], f[2], f[3] ?? f[2]);
 }
@@ -952,7 +978,9 @@ export async function bakeMesh(grid, low, base, S, onProgress) {
   for (let f = 0; f < nq; f++) {
     const c = chartOf[f];
     const a = vtx(Q[f * 4], c), b = vtx(Q[f * 4 + 1], c), cc = vtx(Q[f * 4 + 2], c), d = vtx(Q[f * 4 + 3], c);
-    index.push(a, b, cc, a, cc, d);
+    index.push(a, b, cc);
+    // Los triángulos llegan con el último vértice repetido: su segunda mitad sería una cara vacía.
+    if (Q[f * 4 + 2] !== Q[f * 4 + 3]) index.push(a, cc, d);
   }
   const pos = new Float32Array(outP), nor = new Float32Array(outN), uv = new Float32Array(outUV);
   const idx = new Uint32Array(index);

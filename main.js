@@ -2488,6 +2488,19 @@ function exportObjects() {
     .filter((o) => o.mesh.quads.length);
 }
 
+// Triángulos para el GLB sin caras vacías, y qué caras eran quads ("4") o triángulos ("3"):
+// Blender lo lee para soldar y volver a los quads de verdad (blender_autorecarga.py, convertir_fbx.py).
+function glbTris(q) {
+  const t = [];
+  let caras = '';
+  for (let i = 0; i < q.length; i += 4) {
+    t.push(q[i], q[i + 1], q[i + 2]);
+    if (q[i + 2] === q[i + 3]) caras += '3';
+    else { t.push(q[i], q[i + 2], q[i + 3]); caras += '4'; }
+  }
+  return { index: new Uint32Array(t), caras };
+}
+
 // GLB: una pieza por capa. Las capas horneadas llevan UVs, mapa de color y mapa de normales;
 // el resto, color por vértice.
 async function buildGLB(objects) {
@@ -2515,11 +2528,12 @@ async function buildGLB(objects) {
       geo.setAttribute('position', new THREE.BufferAttribute(o.mesh.positions, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(o.mesh.normals, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(srgbToLinear(o.mesh.colors), 3));
-      geo.setIndex(new THREE.BufferAttribute(quadsToTris(o.mesh.quads), 1));
+      geo.setIndex(new THREE.BufferAttribute(glbTris(o.mesh.quads).index, 1));
       mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: state.look.rough });
     }
     const m = new THREE.Mesh(geo, mat);
     m.name = o.name;
+    m.userData.caras = glbTris(o.mesh.quads).caras;
     root.add(m);
   }
   const glb = await new GLTFExporter().parseAsync(root, { binary: true });
