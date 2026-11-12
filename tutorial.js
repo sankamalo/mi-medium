@@ -1,4 +1,4 @@
-// Tutorial como juego: una lista de pasos que se cumplen haciéndolos de verdad. Nunca arranca solo,
+// Recorrido del mando: una lista de pasos que se cumplen haciéndolos de verdad. Nunca arranca solo,
 // se abre desde el menú. Aquí solo van la marcha de los pasos y la tarjeta; lo demás lo pone main.js.
 import { CERA, kanit, mali, wrapLines } from './panel.js';
 import { t } from './i18n.js';
@@ -35,6 +35,7 @@ export class Tutorial {
   go(i) {
     this.index = i;
     this.count = 0;
+    this.time = 0;
     this.step.setup?.();
     this.draw();
     this.onChange();
@@ -53,11 +54,14 @@ export class Tutorial {
     if (this.active && this.step.on?.[type]?.(data, this)) this.next();
   }
   // Cada fotograma, para lo que se comprueba mirando (la herramienta puesta, por ejemplo).
-  tick() {
-    if (this.active && this.step.check?.()) this.next();
+  // Si un paso no sale en unos segundos, pasa solo: el recorrido entero dura como mucho un minuto.
+  tick(dt = 0) {
+    if (!this.active) return;
+    this.time += dt;
+    if (this.step.check?.() || (this.step.max && this.time > this.step.max)) this.next();
   }
 
-  draw(final = t('¡Tomate terminado! Ya sabes jugar.')) {
+  draw(final = t('¡Listo! Ya sabes lo básico. A modelar.')) {
     const g = this.canvas.getContext('2d');
     const n = this.steps.length, done = this.finished;
     g.fillStyle = CERA.ink;
@@ -70,7 +74,7 @@ export class Tutorial {
     g.textAlign = 'left';
     g.fillStyle = CERA.white;
     g.font = kanit(34);
-    g.fillText(t('TU PRIMER TOMATE'), 32, 44);
+    g.fillText(t('RECORRIDO DEL MANDO'), 32, 44);
     // Un puntito por paso; los hechos, amarillos.
     for (let i = 0; i < n; i++) {
       const x = CARD_W - 34 - (n - 1 - i) * 30;

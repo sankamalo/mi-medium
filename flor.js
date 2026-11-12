@@ -467,7 +467,8 @@ export function createControllerRig(handedness) {
     poseThumb(hand, thumb, elbow);
   }
   update(null);
-  return { group, update };
+  // Piezas del mando, para el recorrido (se iluminan una a una).
+  return { group, update, parts: { trigger: ctl.trigger, squeeze: ctl.squeeze, a: ctl.a, b: ctl.b, stick: ctl.stick } };
 }
 
 // ---------- La flor ----------

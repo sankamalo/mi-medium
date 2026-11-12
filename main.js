@@ -4413,7 +4413,7 @@ function buildBrushTab() {
   } else if (tut?.active) {
     const bw = (IW - 10) / 2;
     W.push({ type: 'button', x: M, y: 576, w: bw, h: 54, label: 'Saltar paso', size: 24, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
-    W.push({ type: 'button', x: M + bw + 10, y: 576, w: bw, h: 54, label: 'Salir del tutorial', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
+    W.push({ type: 'button', x: M + bw + 10, y: 576, w: bw, h: 54, label: 'Salir del recorrido', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
   } else W.push({ type: 'label', x: M, y: 600, size: 20, wrap: IW, text: 'Estos botones se ordenan solos con lo que más usas, cada vez que abres la app.' });
   return W;
 }
@@ -4460,8 +4460,8 @@ function buildAllPage() {
   } else if (tut?.active) {
     const bw = (IW - 10) / 2;
     W.push({ type: 'button', x: M, y: 556, w: bw, h: 54, label: 'Saltar paso', size: 24, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
-    W.push({ type: 'button', x: M + bw + 10, y: 556, w: bw, h: 54, label: 'Salir del tutorial', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
-  } else W.push({ type: 'button', x: M, y: 556, w: IW, h: 54, label: '▶ Jugar tutorial', size: 28, onClick: startTutorial });
+    W.push({ type: 'button', x: M + bw + 10, y: 556, w: bw, h: 54, label: 'Salir del recorrido', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
+  } else W.push({ type: 'button', x: M, y: 556, w: IW, h: 54, label: '▶ Recorrido del mando', size: 28, onClick: startTutorial });
   W.push({ type: 'label', x: M, y: 634, size: 22, text: 'Resolución' });
   const rw = (IW - (RES_STEPS.length - 1) * 6) / RES_STEPS.length;
   RES_STEPS.forEach((n, i) => W.push({
@@ -6137,36 +6137,85 @@ changeLang(getLang());
 exportUi();
 bgUi();
 setBg(bg.id);
-// ---------- Tutorial: tu primer tomate ----------
-// Nunca arranca solo: se abre con «Jugar tutorial». Empieza en una obra nueva y guarda antes la tuya.
+// ---------- Recorrido del mando (un minuto) ----------
+// Nunca arranca solo: se abre con «Recorrido del mando». Cada paso ilumina un botón del mando de
+// plastilina, dice para qué sirve y espera a que lo pruebes (o pasa solo a los 9 s).
 const strokeOf = (tool) => ({ stroke: (e) => e.tool === tool && e.touched && e.time > 0.3 });
+const tourMark = { color: null, layers: 0 };
 tut = new Tutorial([
-  { text: 'Mantén el gatillo y pasa la punta por la bola para añadirle barro.',
-    mac: 'Mantén el clic izquierdo y pasa por la bola para añadirle barro.', setup: () => choose('add'), on: strokeOf('add') },
-  { text: 'Clic en el stick derecho: se abre la flor. Deja la punta sobre Inflar.',
-    mac: 'Clic derecho: se abre el dial de herramientas. Elige Inflar.', check: () => state.tool === 'inflate' },
-  { text: 'Aprieta el gatillo sobre la bola y hazla gorda como un tomate.',
-    mac: 'Mantén el clic sobre la bola y hazla gorda como un tomate.', on: strokeOf('inflate') },
-  { text: 'Abre la flor otra vez y deja la punta sobre Pintar.',
-    mac: 'Abre el dial otra vez y elige Pintar.', check: () => state.tool === 'paint' },
-  { text: 'Píntalo de rojo con el gatillo.',
-    mac: 'Píntalo de rojo pasando por encima.', setup: () => setColor('#e04f4f'), on: strokeOf('paint') },
-  { text: '¿Te has pasado? Pulsa Y en el mando izquierdo para deshacer.',
-    mac: '¿Te has pasado? Pulsa Cmd+Z para deshacer.', on: { undo: () => true } },
-  { text: 'Empuja el stick izquierdo a la derecha y lo recuperas.',
-    mac: 'Pulsa Cmd+Mayús+Z y lo recuperas.', on: { redo: () => true } },
-  { text: 'Mantén un botón lateral del mando: mueve y gira tu tomate.',
-    mac: 'Arrastra fuera del tomate para darle la vuelta.', on: { turn: (dt, T) => (T.count += dt) >= 0.8 } },
+  { part: ['right', 'trigger', 'GATILLO'], max: 9,
+    text: 'Gatillo derecho: dibuja. Mantenlo y pasa la punta por la bola.',
+    mac: 'Clic izquierdo: dibuja. Mantenlo y pasa por la bola.', setup: () => choose('add'), on: strokeOf('add') },
+  { part: ['left', 'a', 'X'], max: 9,
+    text: 'Botón X (mano izquierda): mantenlo mientras dibujas y borras.',
+    mac: 'Mantén Ctrl mientras dibujas y borras.', on: { stroke: (e) => e.touched && state.invert } },
+  { part: ['left', 'stick', 'STICK ←'], max: 9,
+    text: 'Stick izquierdo hacia la izquierda: deshace lo último.',
+    mac: 'Cmd+Z: deshace lo último.', on: { undo: () => true } },
+  { part: ['right', 'squeeze', 'AGARRAR'], max: 9,
+    text: 'Botón lateral: agarra la bola, muévela y gírala.',
+    mac: 'Arrastra fuera de la bola para girarla.', on: { turn: (dt, T) => (T.count += dt) >= 0.6 } },
+  { part: ['right', 'stick', 'CLIC'], max: 9,
+    text: 'Clic en el stick derecho: sale la flor. Deja la punta sobre Mover.',
+    mac: 'Barra espaciadora: sale la flor. Pasa por Mover y suelta.', check: () => state.tool === 'move' },
+  { part: ['right', 'stick', 'CLIC'], max: 9,
+    text: 'Abre la flor otra vez y elige un color en la rueda.',
+    mac: 'Abre la flor otra vez y elige un color en la rueda.',
+    setup: () => { tourMark.color = state.color; }, check: () => state.color !== tourMark.color },
+  { part: ['left', 'stick', 'CLIC'], max: 9,
+    text: 'Clic en el stick izquierdo: el panel. Apunta y pulsa «+ Capa» para una capa nueva.',
+    mac: 'En el panel de la izquierda, pulsa «+ Capa» para una capa nueva.',
+    setup: () => { tourMark.layers = layers.length; }, check: () => layers.length > tourMark.layers },
 ], {
   isXR: () => renderer.xr.isPresenting,
-  onChange: tutShow,
+  onChange: () => { tutShow(); tourHighlight(); },
   onStep: (i) => sfx.step(i),
   onDone: () => {
     sfx.party();
     tutBurst();
-    setTimeout(() => { if (tut.finished) tut.stop(); }, 8000);
+    setTimeout(() => { if (tut.finished) tut.stop(); }, 6000);
   },
 });
+// El botón del paso brilla en amarillo y lleva su nombre encima, en el mando que tienes en la mano.
+const tourHalo = new THREE.Mesh(new THREE.SphereGeometry(0.015, 20, 14),
+  new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.85, depthTest: false, toneMapped: false }));
+tourHalo.renderOrder = 1001;
+const tourLabelCanvas = document.createElement('canvas');
+tourLabelCanvas.width = 256; tourLabelCanvas.height = 96;
+const tourLabelTex = new THREE.CanvasTexture(tourLabelCanvas);
+tourLabelTex.colorSpace = THREE.SRGBColorSpace;
+const tourLabel = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.03),
+  new THREE.MeshBasicMaterial({ map: tourLabelTex, transparent: true, depthTest: false, toneMapped: false }));
+tourLabel.renderOrder = 1002;
+function tourHighlight() {
+  tourHalo.removeFromParent();
+  tourLabel.removeFromParent();
+  const part = tut.active && tut.step.part;
+  if (!part) return;
+  const rig = rigs[part[0]], piece = rig?.parts[part[1]];
+  if (!piece) return;
+  piece.add(tourHalo);
+  rig.group.add(tourLabel);
+  // Encima del mando, un poco hacia el lado del botón.
+  tourLabel.position.set(part[0] === 'left' ? -0.02 : 0.02, 0.065, -0.02);
+  const g = tourLabelCanvas.getContext('2d');
+  g.clearRect(0, 0, 256, 96);
+  g.fillStyle = '#2B2733';
+  g.beginPath(); g.roundRect(4, 4, 248, 88, 40); g.fill();
+  g.fillStyle = '#FFDF85';
+  g.beginPath(); g.roundRect(12, 12, 232, 72, 34); g.fill();
+  g.fillStyle = '#2B2733';
+  g.font = '700 44px Kanit, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(t(part[2]), 128, 50);
+  tourLabelTex.needsUpdate = true;
+}
+function tourFrame() {
+  if (!tourHalo.parent) return;
+  const k = 1 + 0.25 * Math.sin(performance.now() / 160);
+  tourHalo.scale.setScalar(k);
+  tourLabel.lookAt(renderer.xr.getCamera().getWorldPosition(cardHead));
+}
 const tutTex = new THREE.CanvasTexture(tut.canvas);
 tutTex.colorSpace = THREE.SRGBColorSpace;
 tut.onDraw = () => { tutTex.needsUpdate = true; };
@@ -6180,7 +6229,7 @@ tutBox.hidden = true;
 tutBox.appendChild(tut.canvas);
 const tutRow = document.createElement('div');
 tutRow.className = 'row';
-[['Saltar paso', () => tut.next()], ['Salir del tutorial', () => tut.stop()]].forEach(([l, f]) => {
+[['Saltar paso', () => tut.next()], ['Salir del recorrido', () => tut.stop()]].forEach(([l, f]) => {
   const b = document.createElement('button');
   b.textContent = l;
   b.onclick = f;
@@ -6226,7 +6275,8 @@ function tutBurst() {
   burst = { points, vel, life: 1.8 };
 }
 function tutFrame(dt) {
-  tut.tick();
+  tut.tick(dt);
+  tourFrame();
   if (burst) {
     const a = burst.points.geometry.attributes.position;
     for (let i = 0; i < burst.vel.length; i += 3) {
