@@ -905,6 +905,65 @@ function splitAll(P0, Q0) {
 // Remesh de la capa. area: área de la superficie (de la malla de vóxeles); target: quads aproximados.
 // mode 'flow' sigue la forma; 'grid' es la rejilla relajada (más simple, siempre cerrada).
 // Devuelve { positions, normals, quads } (quads con 4 índices, hacia fuera; triángulos con el último repetido).
+// Polos: vértices donde se juntan 6 o más caras (puntos de tensión que se ven al subdividir).
+// Cada uno se parte en dos vértices con un quad nuevo entre medias: le quedan 4 o 5 caras a cada uno.
+function splitPoles(og) {
+  const faces = [];
+  for (let i = 0; i < og.Q.length; i += 4)
+    faces.push(og.Q[i + 2] === og.Q[i + 3] ? [og.Q[i], og.Q[i + 1], og.Q[i + 2]] : [og.Q[i], og.Q[i + 1], og.Q[i + 2], og.Q[i + 3]]);
+  const pts = Array.from(og.P);
+  for (let pass = 0; pass < 3; pass++) {
+    const at = new Map();
+    faces.forEach((f, i) => {
+      for (const u of f) {
+        if (!at.has(u)) at.set(u, []);
+        at.get(u).push(i);
+      }
+    });
+    const touched = new Set();
+    let changed = false;
+    for (const [v, fs] of at) {
+      if (fs.length < 6 || fs.some((i) => touched.has(i))) continue;
+      // Caras en orden alrededor de v: la que llega por p→v va después de la que sale por v→p.
+      const byPrev = new Map();
+      for (const i of fs) { const f = faces[i], k = f.indexOf(v); byPrev.set(f[(k + f.length - 1) % f.length], i); }
+      const ring = [], nbr = [];
+      let i = fs[0];
+      for (let c = 0; c < fs.length; c++) {
+        const f = faces[i], k = f.indexOf(v), next = f[(k + 1) % f.length];
+        ring.push(i);
+        nbr.push(f[(k + f.length - 1) % f.length]);
+        i = byPrev.get(next);
+        if (i === undefined) break;
+      }
+      if (ring.length !== fs.length || i !== fs[0]) continue; // borde o abanico raro
+      const h = Math.floor(ring.length / 2);
+      const a = nbr[0], b = nbr[h], v2 = pts.length / 3;
+      if (a === b) continue;
+      // Cada mitad se va un poco hacia sus caras.
+      const cen = (list) => {
+        const c = [0, 0, 0];
+        let n = 0;
+        for (const j of list) for (const u of faces[j]) if (u !== v) { c[0] += pts[u * 3]; c[1] += pts[u * 3 + 1]; c[2] += pts[u * 3 + 2]; n++; }
+        return c.map((x) => x / n);
+      };
+      const c1 = cen(ring.slice(0, h)), c2 = cen(ring.slice(h));
+      const p0 = [pts[v * 3], pts[v * 3 + 1], pts[v * 3 + 2]];
+      for (let k = 0; k < 3; k++) { pts[v * 3 + k] = p0[k] + (c1[k] - p0[k]) * 0.25; }
+      pts.push(...[0, 1, 2].map((k) => p0[k] + (c2[k] - p0[k]) * 0.25));
+      for (const j of ring.slice(h)) faces[j] = faces[j].map((u) => (u === v ? v2 : u));
+      // El quad nuevo tapa el hueco a→v→b / b→v2→a, girado como sus vecinas.
+      faces.push([v, a, v2, b]);
+      ring.forEach((j) => touched.add(j));
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  const Q = [];
+  for (const f of faces) Q.push(f[0], f[1], f[2], f[3] ?? f[2]);
+  return { P: new Float32Array(pts), Q: Uint32Array.from(Q) };
+}
+
 // Tras abrir los huecos, cada lado tapa su agujero con caras en su propia pared.
 function closeSides(og) {
   const q = Array.from(og.Q);
@@ -922,7 +981,7 @@ function closeSides(og) {
 async function flowAttempt(F, s, tick) {
   const m = await flowMesh(F, s, tick);
   if (!m || !m.Q.length) return null;
-  const og = closeSides(openGaps(F, m.P, m.Q, s));
+  const og = splitPoles(closeSides(openGaps(F, m.P, m.Q, s)));
   const sp = splitAll(og.P, og.Q);
   for (let i = 0, p = [0, 0, 0]; i < sp.P.length; i += 3) {
     p[0] = sp.P[i]; p[1] = sp.P[i + 1]; p[2] = sp.P[i + 2];
@@ -949,7 +1008,7 @@ async function gridAttempt(F, hc, tick) {
     if (used[c] < 0) { used[c] = cp.length / 3; cp.push(m.P[c * 3], m.P[c * 3 + 1], m.P[c * 3 + 2]); }
     q[i] = used[c];
   }
-  const og = closeSides(openGaps(F, new Float32Array(cp), Uint32Array.from(q), hc));
+  const og = splitPoles(closeSides(openGaps(F, new Float32Array(cp), Uint32Array.from(q), hc)));
   const sp = splitAll(og.P, og.Q);
   await relax(F, sp.P, sp.Q, 10, tick, 0.5, 1);
   return sp;
@@ -1005,7 +1064,7 @@ export async function remeshSDF(grid, area, target, onProgress, mode = 'flow', r
   const s0 = 2 * Math.sqrt(area / Math.max(100, target));
   const hc0 = 2 * Math.sqrt((area * 1.4) / Math.max(100, target));
   const tries = [];
-  if (mode === 'flow') for (const k of [1, 0.7, 0.5, 0.35, 0.25]) if (s0 * k >= F.h * 2) tries.push(['flow', s0 * k]);
+  if (mode === 'flow') for (const k of [1, 0.8, 0.65, 0.5, 0.4, 0.3, 0.25]) if (s0 * k >= F.h * 2) tries.push(['flow', s0 * k]);
   for (const k of [1, 0.6, 0.35, 0.2]) tries.push(['grid', Math.max(hc0 * k, F.h * (mode === 'fine' ? 1 : 1.5))]);
   let best = null, bestScore = Infinity, lastGrid = -1;
   for (const [kind, size] of tries) {
