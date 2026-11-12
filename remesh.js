@@ -772,7 +772,9 @@ function fixTopology(quads, nv, P) {
 
 // Remesh que sigue la forma. s = lado de los quads.
 async function flowMesh(F, s, tick) {
-  const base = await netsMesh(F, s / 2.4, tick, 0, 0.2, false);
+  // Muestras finas aunque los quads sean grandes: si no, los surcos estrechos se cierran.
+  const hb = Math.max(F.h, s / 4.8);
+  const base = await netsMesh(F, hb, tick, 0, 0.2, false);
   const nv = base.P.length / 3;
   if (nv < 32) return null;
   const V = Float64Array.from(base.P), N = new Float64Array(nv * 3);
@@ -783,7 +785,7 @@ async function flowMesh(F, s, tick) {
     for (let k = 0; k < 3; k++) N[i * 3 + k] = ok ? g[k] : qn[i * 3 + k];
   }
   const { deg, nbr } = adjacency(nv, base.Q);
-  const levels = buildHierarchy(V, N, deg, nbr, s / 2.4);
+  const levels = buildHierarchy(V, N, deg, nbr, hb);
   await tick(0.25);
   await solveFields(levels, s, tick, 0.25, 0.75);
   const out = extractMesh(levels[0], s);
@@ -798,6 +800,81 @@ async function flowMesh(F, s, tick) {
   }
   await relax(F, out.P, out.Q, 3, tick, 0.8, 1, 0.4);
   return out;
+}
+
+// Donde dos paredes están más cerca que el tamaño de los quads (un surco, dos piezas que casi se
+// tocan), el remesh las cose con caras que cruzan el hueco y vértices compartidos: picos y caras
+// dobladas. Se quitan esas caras (cada lado se queda abierto por su cuenta) y los vértices que
+// unen dos lados se separan en uno por lado.
+function openGaps(F, P0, Q0, s) {
+  const faces = [];
+  for (let i = 0; i < Q0.length; i += 4)
+    faces.push(Q0[i + 2] === Q0[i + 3] ? [Q0[i], Q0[i + 1], Q0[i + 2]] : [Q0[i], Q0[i + 1], Q0[i + 2], Q0[i + 3]]);
+  const lim = Math.min(0.3 * s, 0.9 * F.band);
+  const off = (x, y, z) => Math.abs(F.sample(x, y, z)) > lim;
+  const bad = faces.map((f) => {
+    const n = f.length;
+    let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
+    for (let k = 0; k < n; k++) {
+      const a = f[k] * 3, b = f[(k + 1) % n] * 3;
+      // Una arista que pasa por el aire (su mitad lejos de la plastilina) cruza un hueco.
+      if (off((P0[a] + P0[b]) / 2, (P0[a + 1] + P0[b + 1]) / 2, (P0[a + 2] + P0[b + 2]) / 2)) return true;
+      cx += P0[a] / n; cy += P0[a + 1] / n; cz += P0[a + 2] / n;
+      nx += (P0[a + 1] - P0[b + 1]) * (P0[a + 2] + P0[b + 2]);
+      ny += (P0[a + 2] - P0[b + 2]) * (P0[a] + P0[b]);
+      nz += (P0[a] - P0[b]) * (P0[a + 1] + P0[b + 1]);
+    }
+    if (off(cx, cy, cz)) return true;
+    // Cara dada la vuelta respecto a la superficie de verdad.
+    const g = F.grad(cx, cy, cz);
+    return nx * g[0] + ny * g[1] + nz * g[2] < 0;
+  });
+  const nBad = bad.filter(Boolean).length;
+  if (!nBad || nBad > faces.length * 0.15) return { P: P0, Q: Q0 };
+  const keep = faces.filter((_, i) => !bad[i]);
+  // Abanicos de caras alrededor de cada vértice: si hay más de uno, un vértice por abanico.
+  const pts = Array.from(P0);
+  const at = new Map();
+  keep.forEach((f, i) => { for (const v of f) { if (!at.has(v)) at.set(v, []); at.get(v).push(i); } });
+  const p = [0, 0, 0];
+  for (const [v, fs] of at) {
+    if (fs.length < 2) continue;
+    const parent = new Map(fs.map((i) => [i, i]));
+    const find = (x) => { while (parent.get(x) !== x) x = parent.get(x); return x; };
+    const byEdge = new Map();
+    for (const i of fs) {
+      const f = keep[i], k = f.indexOf(v), n = f.length;
+      for (const o of [f[(k + 1) % n], f[(k + n - 1) % n]]) {
+        if (byEdge.has(o)) { const a = find(byEdge.get(o)), b = find(i); if (a !== b) parent.set(a, b); }
+        else byEdge.set(o, i);
+      }
+    }
+    const fans = new Map();
+    for (const i of fs) { const r = find(i); if (!fans.has(r)) fans.set(r, []); fans.get(r).push(i); }
+    if (fans.size < 2) continue;
+    let first = true;
+    for (const list of fans.values()) {
+      // Cada copia se acerca un poco a su lado y se pega a su pared.
+      let cx = 0, cy = 0, cz = 0, c = 0;
+      for (const i of list) for (const u of keep[i]) if (u !== v) { cx += P0[u * 3]; cy += P0[u * 3 + 1]; cz += P0[u * 3 + 2]; c++; }
+      p[0] = P0[v * 3] + (cx / c - P0[v * 3]) * 0.3;
+      p[1] = P0[v * 3 + 1] + (cy / c - P0[v * 3 + 1]) * 0.3;
+      p[2] = P0[v * 3 + 2] + (cz / c - P0[v * 3 + 2]) * 0.3;
+      snap(F, p, 3);
+      let id = v;
+      if (!first) { id = pts.length / 3; pts.push(0, 0, 0); }
+      pts[id * 3] = p[0]; pts[id * 3 + 1] = p[1]; pts[id * 3 + 2] = p[2];
+      if (!first) for (const i of list) keep[i] = keep[i].map((u) => (u === v ? id : u));
+      first = false;
+    }
+  }
+  // Sin vértices sueltos.
+  const used = new Int32Array(pts.length / 3).fill(-1), P = [], Q = [];
+  for (const f of keep) {
+    const g = f.map((u) => { if (used[u] < 0) { used[u] = P.length / 3; P.push(pts[u * 3], pts[u * 3 + 1], pts[u * 3 + 2]); } return used[u]; });
+    Q.push(g[0], g[1], g[2], g[3] ?? g[2]);
+  }
+  return { P: new Float32Array(P), Q: new Uint32Array(Q) };
 }
 
 // Cada cara partida en quads: un quad en 4 y un triángulo en 3 (punto en el centro y en cada arista).
@@ -838,13 +915,14 @@ export async function remeshSDF(grid, area, target, onProgress, mode = 'flow') {
     const m = await flowMesh(F, s, tick);
     // Si sale muy incompleta (formas raras), mejor la rejilla.
     if (m && m.Q.length / 4 > (area / (s * s)) * 0.5) {
-      const sp = splitAll(m.P, m.Q);
+      const og = openGaps(F, m.P, m.Q, s);
+      const sp = splitAll(og.P, og.Q);
       for (let i = 0, p = [0, 0, 0]; i < sp.P.length; i += 3) {
         p[0] = sp.P[i]; p[1] = sp.P[i + 1]; p[2] = sp.P[i + 2];
         snap(F, p, 3);
         sp.P[i] = p[0]; sp.P[i + 1] = p[1]; sp.P[i + 2] = p[2];
       }
-      await relax(F, sp.P, sp.Q, 2, tick, 0.9, 1, 0.3);
+      await relax(F, sp.P, sp.Q, 4, tick, 0.9, 1, 0.5);
       P = sp.P; Q = sp.Q;
     }
   }
@@ -867,7 +945,8 @@ export async function remeshSDF(grid, area, target, onProgress, mode = 'flow') {
       if (used[c] < 0) { used[c] = cp.length / 3; cp.push(m.P[c * 3], m.P[c * 3 + 1], m.P[c * 3 + 2]); }
       q[i] = used[c];
     }
-    const sp = splitAll(new Float32Array(cp), q);
+    const og = openGaps(F, new Float32Array(cp), Uint32Array.from(q), hc);
+    const sp = splitAll(og.P, og.Q);
     P = sp.P; Q = sp.Q;
     await relax(F, P, Q, 10, tick, 0.5, 1);
   }
