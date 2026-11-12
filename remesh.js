@@ -800,6 +800,30 @@ async function flowMesh(F, s, tick) {
   return out;
 }
 
+// Cada cara partida en quads: un quad en 4 y un triángulo en 3 (punto en el centro y en cada arista).
+function splitAll(P0, Q0) {
+  const nv0 = P0.length / 3, pts = Array.from(P0), edges = new Map(), Q = [];
+  const point = (x, y, z) => { pts.push(x, y, z); return pts.length / 3 - 1; };
+  const mid = (a, b) => {
+    const key = a < b ? a * nv0 + b : b * nv0 + a;
+    let m = edges.get(key);
+    if (m === undefined) {
+      m = point((P0[a * 3] + P0[b * 3]) / 2, (P0[a * 3 + 1] + P0[b * 3 + 1]) / 2, (P0[a * 3 + 2] + P0[b * 3 + 2]) / 2);
+      edges.set(key, m);
+    }
+    return m;
+  };
+  for (let f = 0; f < Q0.length; f += 4) {
+    const q = Q0[f + 2] === Q0[f + 3] ? [Q0[f], Q0[f + 1], Q0[f + 2]] : [Q0[f], Q0[f + 1], Q0[f + 2], Q0[f + 3]];
+    const n = q.length, c = [0, 0, 0];
+    for (const a of q) for (let k = 0; k < 3; k++) c[k] += P0[a * 3 + k] / n;
+    const ci = point(c[0], c[1], c[2]);
+    const m = q.map((a, i) => mid(a, q[(i + 1) % n]));
+    for (let i = 0; i < n; i++) Q.push(q[i], m[i], ci, m[(i + n - 1) % n]);
+  }
+  return { P: new Float32Array(pts), Q: new Uint32Array(Q) };
+}
+
 // Remesh de la capa. area: área de la superficie (de la malla de vóxeles); target: quads aproximados.
 // mode 'flow' sigue la forma; 'grid' es la rejilla relajada (más simple, siempre cerrada).
 // Devuelve { positions, normals, quads } (quads con 4 índices, hacia fuera; triángulos con el último repetido).
@@ -808,16 +832,43 @@ export async function remeshSDF(grid, area, target, onProgress, mode = 'flow') {
   const tick = ticker((f) => onProgress && onProgress('Malla nueva', f));
   let P = null, Q = null;
   if (mode === 'flow') {
-    const s = Math.max(Math.sqrt(area / Math.max(100, target)), F.h * 2);
+    // Malla con el doble de lado y luego cada cara partida (quad en 4, triángulo en 3): sale
+    // todo quads (Blender y el FBX sin triángulos) y con la cantidad pedida.
+    const s = Math.max(2 * Math.sqrt(area / Math.max(100, target)), F.h * 2);
     const m = await flowMesh(F, s, tick);
     // Si sale muy incompleta (formas raras), mejor la rejilla.
-    if (m && m.Q.length / 4 > (area / (s * s)) * 0.5) { P = m.P; Q = m.Q; }
+    if (m && m.Q.length / 4 > (area / (s * s)) * 0.5) {
+      const sp = splitAll(m.P, m.Q);
+      for (let i = 0, p = [0, 0, 0]; i < sp.P.length; i += 3) {
+        p[0] = sp.P[i]; p[1] = sp.P[i + 1]; p[2] = sp.P[i + 2];
+        snap(F, p, 3);
+        sp.P[i] = p[0]; sp.P[i + 1] = p[1]; sp.P[i + 2] = p[2];
+      }
+      await relax(F, sp.P, sp.Q, 2, tick, 0.9, 1, 0.3);
+      P = sp.P; Q = sp.Q;
+    }
   }
   if (!P) {
     // Surface Nets en superficies curvas da ~1,4 quads por celda²: se corrige para acertar con el número pedido.
-    const hc = Math.max(Math.sqrt((area * 1.4) / Math.max(100, target)), F.h * (mode === 'fine' ? 1 : 1.5));
-    const m = await netsMesh(F, hc, tick, 0, 0.5);
-    P = m.P; Q = m.Q;
+    // También a doble lado y partida después: limpia (sin aristas de tres caras) y toda en quads.
+    let hc = Math.max(2 * Math.sqrt((area * 1.4) / Math.max(100, target)), F.h * (mode === 'fine' ? 1 : 1.5));
+    let m, q;
+    // Una pieza pequeña con celdas grandes puede quedarse en nada: se afina hasta que salga.
+    for (;;) {
+      m = await netsMesh(F, hc, tick, 0, 0.5);
+      q = Array.from(m.Q);
+      fixTopology(q, m.P.length / 3, m.P);
+      if (q.length >= 4 * 12 || hc <= F.h) break;
+      hc = Math.max(F.h, hc / 1.4);
+    }
+    const used = new Int32Array(m.P.length / 3).fill(-1), cp = [];
+    for (let i = 0; i < q.length; i++) {
+      const c = q[i];
+      if (used[c] < 0) { used[c] = cp.length / 3; cp.push(m.P[c * 3], m.P[c * 3 + 1], m.P[c * 3 + 2]); }
+      q[i] = used[c];
+    }
+    const sp = splitAll(new Float32Array(cp), q);
+    P = sp.P; Q = sp.Q;
     await relax(F, P, Q, 10, tick, 0.5, 1);
   }
   return { positions: P, normals: quadNormals(P, Q, new Float32Array(P.length)), quads: Q };
