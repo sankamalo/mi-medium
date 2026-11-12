@@ -811,13 +811,14 @@ function openGaps(F, P0, Q0, s) {
   for (let i = 0; i < Q0.length; i += 4)
     faces.push(Q0[i + 2] === Q0[i + 3] ? [Q0[i], Q0[i + 1], Q0[i + 2]] : [Q0[i], Q0[i + 1], Q0[i + 2], Q0[i + 3]]);
   const lim = Math.min(0.3 * s, 0.9 * F.band);
-  const off = (x, y, z) => Math.abs(F.sample(x, y, z)) > lim;
+  // Solo cuenta pasar por el aire (fuera): cruzar por dentro una pieza fina es normal en quads grandes.
+  const off = (x, y, z) => F.sample(x, y, z) > lim;
   const bad = faces.map((f) => {
     const n = f.length;
     let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
     for (let k = 0; k < n; k++) {
       const a = f[k] * 3, b = f[(k + 1) % n] * 3;
-      // Una arista que pasa por el aire (su mitad lejos de la plastilina) cruza un hueco.
+      // Una arista que pasa por el aire (su mitad fuera, lejos de la plastilina) cruza un hueco.
       if (off((P0[a] + P0[b]) / 2, (P0[a + 1] + P0[b + 1]) / 2, (P0[a + 2] + P0[b + 2]) / 2)) return true;
       cx += P0[a] / n; cy += P0[a + 1] / n; cz += P0[a + 2] / n;
       nx += (P0[a + 1] - P0[b + 1]) * (P0[a + 2] + P0[b + 2]);
@@ -904,52 +905,120 @@ function splitAll(P0, Q0) {
 // Remesh de la capa. area: área de la superficie (de la malla de vóxeles); target: quads aproximados.
 // mode 'flow' sigue la forma; 'grid' es la rejilla relajada (más simple, siempre cerrada).
 // Devuelve { positions, normals, quads } (quads con 4 índices, hacia fuera; triángulos con el último repetido).
-export async function remeshSDF(grid, area, target, onProgress, mode = 'flow') {
+// Tras abrir los huecos, cada lado tapa su agujero con caras en su propia pared.
+function closeSides(og) {
+  const q = Array.from(og.Q);
+  fixTopology(q, og.P.length / 3, og.P);
+  const used = new Int32Array(og.P.length / 3).fill(-1), P = [];
+  for (let i = 0; i < q.length; i++) {
+    const c = q[i];
+    if (used[c] < 0) { used[c] = P.length / 3; P.push(og.P[c * 3], og.P[c * 3 + 1], og.P[c * 3 + 2]); }
+    q[i] = used[c];
+  }
+  return { P: new Float32Array(P), Q: Uint32Array.from(q) };
+}
+
+// Remesh siguiendo la forma con quads de lado s (null si no sale).
+async function flowAttempt(F, s, tick) {
+  const m = await flowMesh(F, s, tick);
+  if (!m || !m.Q.length) return null;
+  const og = closeSides(openGaps(F, m.P, m.Q, s));
+  const sp = splitAll(og.P, og.Q);
+  for (let i = 0, p = [0, 0, 0]; i < sp.P.length; i += 3) {
+    p[0] = sp.P[i]; p[1] = sp.P[i + 1]; p[2] = sp.P[i + 2];
+    snap(F, p, 3);
+    sp.P[i] = p[0]; sp.P[i + 1] = p[1]; sp.P[i + 2] = p[2];
+  }
+  await relax(F, sp.P, sp.Q, 4, tick, 0.9, 1, 0.5);
+  return sp;
+}
+
+// Rejilla (Surface Nets) de celda hc, limpia y partida en quads. Siempre sale algo.
+async function gridAttempt(F, hc, tick) {
+  let m, q;
+  for (;;) {
+    m = await netsMesh(F, hc, tick, 0, 0.5);
+    q = Array.from(m.Q);
+    fixTopology(q, m.P.length / 3, m.P);
+    if (q.length >= 4 * 12 || hc <= F.h) break;
+    hc = Math.max(F.h, hc / 1.4);
+  }
+  const used = new Int32Array(m.P.length / 3).fill(-1), cp = [];
+  for (let i = 0; i < q.length; i++) {
+    const c = q[i];
+    if (used[c] < 0) { used[c] = cp.length / 3; cp.push(m.P[c * 3], m.P[c * 3 + 1], m.P[c * 3 + 2]); }
+    q[i] = used[c];
+  }
+  const og = closeSides(openGaps(F, new Float32Array(cp), Uint32Array.from(q), hc));
+  const sp = splitAll(og.P, og.Q);
+  await relax(F, sp.P, sp.Q, 10, tick, 0.5, 1);
+  return sp;
+}
+
+// ¿Está entera? Agujeros, aristas con más de dos caras y trozos de la plastilina que se ha
+// dejado (partes finas o pequeñas): puntos de la malla original lejos de cualquier vértice nuevo.
+function meshFaults(P, Q, ref) {
+  const nv = P.length / 3, ec = new Map();
+  const ek = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (let i = 0; i < Q.length; i += 4) {
+    const n = Q[i + 2] === Q[i + 3] ? 3 : 4;
+    for (let k = 0; k < n; k++) { const e = ek(Q[i + k], Q[i + ((k + 1) % n)]); ec.set(e, (ec.get(e) || 0) + 1); }
+  }
+  let open = 0;
+  for (const c of ec.values()) if (c !== 2) open++;
+  let missing = 0, samples = 0;
+  if (ref && ref.length && Q.length) {
+    const edge = Math.sqrt(meshArea(P, Q) / (Q.length / 4)), cell = edge * 1.8, lim2 = cell * cell;
+    const key = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+    const hash = new Map();
+    for (let i = 0; i < P.length; i += 3) {
+      const k = key(P[i], P[i + 1], P[i + 2]);
+      if (!hash.has(k)) hash.set(k, []);
+      hash.get(k).push(i);
+    }
+    const step = Math.max(1, Math.floor(ref.length / 3 / 40000)) * 3;
+    for (let i = 0; i < ref.length; i += step) {
+      samples++;
+      const x = ref[i], y = ref[i + 1], z = ref[i + 2];
+      const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+      let near = false;
+      for (let dx = -1; dx <= 1 && !near; dx++)
+        for (let dy = -1; dy <= 1 && !near; dy++)
+          for (let dz = -1; dz <= 1 && !near; dz++) {
+            const list = hash.get(`${cx + dx},${cy + dy},${cz + dz}`);
+            if (list) for (const j of list) if ((P[j] - x) ** 2 + (P[j + 1] - y) ** 2 + (P[j + 2] - z) ** 2 < lim2) { near = true; break; }
+          }
+      if (!near) missing++;
+    }
+  }
+  return { open, missing: samples ? missing / samples : 0, bad: open > 0 || (samples && missing / samples > 0.002) };
+}
+
+// Remesh de la capa. area: área de la superficie (de la malla de vóxeles); target: quads aproximados.
+// ref: los vértices de la malla de vóxeles, para comprobar que no se deja nada.
+// Nunca devuelve una malla rota: si sale con agujeros o se deja partes finas, lo repite con quads
+// más pequeños, y al final con la rejilla fina (más quads, pero entera).
+// Devuelve { positions, normals, quads } (quads con 4 índices, hacia fuera; todo quads).
+export async function remeshSDF(grid, area, target, onProgress, mode = 'flow', ref = null) {
   const F = field(grid);
   const tick = ticker((f) => onProgress && onProgress('Malla nueva', f));
-  let P = null, Q = null;
-  if (mode === 'flow') {
-    // Malla con el doble de lado y luego cada cara partida (quad en 4, triángulo en 3): sale
-    // todo quads (Blender y el FBX sin triángulos) y con la cantidad pedida.
-    const s = Math.max(2 * Math.sqrt(area / Math.max(100, target)), F.h * 2);
-    const m = await flowMesh(F, s, tick);
-    // Si sale muy incompleta (formas raras), mejor la rejilla.
-    if (m && m.Q.length / 4 > (area / (s * s)) * 0.5) {
-      const og = openGaps(F, m.P, m.Q, s);
-      const sp = splitAll(og.P, og.Q);
-      for (let i = 0, p = [0, 0, 0]; i < sp.P.length; i += 3) {
-        p[0] = sp.P[i]; p[1] = sp.P[i + 1]; p[2] = sp.P[i + 2];
-        snap(F, p, 3);
-        sp.P[i] = p[0]; sp.P[i + 1] = p[1]; sp.P[i + 2] = p[2];
-      }
-      await relax(F, sp.P, sp.Q, 4, tick, 0.9, 1, 0.5);
-      P = sp.P; Q = sp.Q;
-    }
+  const s0 = 2 * Math.sqrt(area / Math.max(100, target));
+  const hc0 = 2 * Math.sqrt((area * 1.4) / Math.max(100, target));
+  const tries = [];
+  if (mode === 'flow') for (const k of [1, 0.7, 0.5, 0.35, 0.25]) if (s0 * k >= F.h * 2) tries.push(['flow', s0 * k]);
+  for (const k of [1, 0.6, 0.35, 0.2]) tries.push(['grid', Math.max(hc0 * k, F.h * (mode === 'fine' ? 1 : 1.5))]);
+  let best = null, bestScore = Infinity, lastGrid = -1;
+  for (const [kind, size] of tries) {
+    if (kind === 'grid' && size === lastGrid) continue;
+    if (kind === 'grid') lastGrid = size;
+    const m = kind === 'flow' ? await flowAttempt(F, size, tick) : await gridAttempt(F, size, tick);
+    if (!m || !m.Q.length) continue;
+    const f = meshFaults(m.P, m.Q, ref);
+    const score = f.open + f.missing * 1e4;
+    if (score < bestScore) { best = m; bestScore = score; }
+    if (!f.bad) break;
   }
-  if (!P) {
-    // Surface Nets en superficies curvas da ~1,4 quads por celda²: se corrige para acertar con el número pedido.
-    // También a doble lado y partida después: limpia (sin aristas de tres caras) y toda en quads.
-    let hc = Math.max(2 * Math.sqrt((area * 1.4) / Math.max(100, target)), F.h * (mode === 'fine' ? 1 : 1.5));
-    let m, q;
-    // Una pieza pequeña con celdas grandes puede quedarse en nada: se afina hasta que salga.
-    for (;;) {
-      m = await netsMesh(F, hc, tick, 0, 0.5);
-      q = Array.from(m.Q);
-      fixTopology(q, m.P.length / 3, m.P);
-      if (q.length >= 4 * 12 || hc <= F.h) break;
-      hc = Math.max(F.h, hc / 1.4);
-    }
-    const used = new Int32Array(m.P.length / 3).fill(-1), cp = [];
-    for (let i = 0; i < q.length; i++) {
-      const c = q[i];
-      if (used[c] < 0) { used[c] = cp.length / 3; cp.push(m.P[c * 3], m.P[c * 3 + 1], m.P[c * 3 + 2]); }
-      q[i] = used[c];
-    }
-    const og = openGaps(F, new Float32Array(cp), Uint32Array.from(q), hc);
-    const sp = splitAll(og.P, og.Q);
-    P = sp.P; Q = sp.Q;
-    await relax(F, P, Q, 10, tick, 0.5, 1);
-  }
+  const P = best.P, Q = best.Q;
   return { positions: P, normals: quadNormals(P, Q, new Float32Array(P.length)), quads: Q };
 }
 

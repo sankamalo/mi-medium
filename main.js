@@ -2358,11 +2358,12 @@ async function remeshLayer(L) {
   const stale = () => L.version !== ver || !layers.includes(L);
   const prog = (stage, f) => toast(`${L.name} · ${t(stage)}… ${Math.round(f * 100)}%`, 3000);
   try {
-    const low = await remeshSDF(L.grid, meshArea(hi.positions, hi.quads), state.quads, prog);
+    const low = await remeshSDF(L.grid, meshArea(hi.positions, hi.quads), state.quads, prog, 'flow', hi.positions);
     if (stale()) throw new Error('stale');
     await bakeRemesh(L, low, ver);
     if (big > 2e4) try { localStorage.setItem('plastilinaRemeshRate', String((performance.now() - t0) / 1000 / (big / 1e5))); } catch {}
-    toast(t('{0}: {1} quads + detalle horneado ({2}px) en {3} s', L.name, (low.quads.length / 4).toLocaleString(), state.bakeSize, ((performance.now() - t0) / 1000).toFixed(1)), 5000);
+    toast(t('{0}: {1} quads + detalle horneado ({2}px) en {3} s', L.name, (low.quads.length / 4).toLocaleString(), state.bakeSize, ((performance.now() - t0) / 1000).toFixed(1))
+      + (low.quads.length / 4 > state.quads * 1.5 ? ' · ' + t('más quads de los pedidos para no romper las partes finas') : ''), 6000);
   } catch (e) {
     if (e.message === 'stale') toast('Has esculpido durante el remesh: vuelve a lanzarlo');
     else { console.error(e); toast(t('Remesh falló: {0}', e.message)); }
@@ -2452,7 +2453,7 @@ async function exportMeshes() {
       low = { positions: mesh.positions, quads: mesh.quads };
       for (let q = have; q * 2 < want; q *= 4) low = subdivideQuads(L.grid, low.positions, low.quads);
       if (!low.normals) low.normals = mesh.normals;
-    } else low = await remeshSDF(L.grid, area, want, prog, want > (area / (2 * L.grid.h) ** 2) * 0.9 ? 'fine' : 'flow');
+    } else low = await remeshSDF(L.grid, area, want, prog, want > (area / (2 * L.grid.h) ** 2) * 0.9 ? 'fine' : 'flow', mesh.positions);
     const p = low.positions, colors = new Float32Array(p.length), base = L.base;
     for (let i = 0; i < p.length; i += 3) {
       const c = L.grid.sampleColor(p[i], p[i + 1], p[i + 2]) || base;
