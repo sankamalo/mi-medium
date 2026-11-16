@@ -3,7 +3,9 @@
 // (nombres de capas, números…). {0}, {1} = valores que se insertan en la frase.
 
 const LANGS = ['es', 'en', 'th'];
+// Sin idioma elegido: el del navegador (español o tailandés); si es otro, inglés.
 let lang = 'es';
+try { const n = (navigator.language || 'es').slice(0, 2).toLowerCase(); lang = LANGS.includes(n) ? n : 'en'; } catch {}
 try { const s = localStorage.getItem('plastilinaLang'); if (LANGS.includes(s)) lang = s; } catch {}
 
 // español: [inglés, tailandés]
@@ -20,6 +22,18 @@ const D = {
   '{0} por segundo': ['{0} per second', '{0} ต่อวินาที'], 'Ver el de antes y el de después': ['Show the one before and after', 'ดูเฟรมก่อนและหลัง'], '1. Pulsa «+ Fotograma»: es una copia de lo que ves.': ['1. Press “+ Frame”: it copies what you see.', '1. กด “+ เฟรม”: คัดลอกสิ่งที่เห็น'], '2. Cambia algo: mueve, añade, quita.': ['2. Change something: move, add, remove.', '2. เปลี่ยนบางอย่าง: ย้าย เพิ่ม ลบ'], '3. Repite y dale a Play.': ['3. Repeat and press Play.', '3. ทำซ้ำแล้วกด Play'], 'La animación ocupa ≈ {0} MB': ['The animation takes ≈ {0} MB', 'แอนิเมชันใช้ ≈ {0} MB'], 'FOTOGRAMAS': ['FRAMES', 'เฟรม'], '+ Fotograma': ['+ Frame', '+ เฟรม'], 'Fotograma {0}': ['Frame {0}', 'เฟรม {0}'], 'Stick derecho ←/→ cambia de fotograma · B = Play': ['Right stick ←/→ changes frame · B = Play', 'สติ๊กขวา ←/→ เปลี่ยนเฟรม · B = Play'],
   'quedan unos {0} s': ['about {0} s left', 'เหลือประมาณ {0} วินาที'], 'Esta capa es grande: el remesh tardará unos {0} s. Pulsa Remesh otra vez para hacerlo.': ['This layer is big: remesh will take about {0} s. Press Remesh again to do it.', 'เลเยอร์นี้ใหญ่: รีเมชใช้เวลาประมาณ {0} วินาที กดรีเมชอีกครั้งเพื่อทำ'], 'Vas llegando al límite de las gafas: une capas, oculta las que no uses o baja la resolución (− Res)': ['You are reaching the headset’s limit: merge layers, hide unused ones or lower the resolution (− Res)', 'ใกล้ถึงขีดจำกัดของแว่นแล้ว: รวมเลเยอร์ ซ่อนที่ไม่ใช้ หรือลดความละเอียด (− Res)'], 'Casi al límite: guarda la obra ahora y aligera antes de seguir': ['Almost at the limit: save now and lighten the scene before going on', 'เกือบถึงขีดจำกัด: บันทึกตอนนี้และลดขนาดก่อนทำต่อ'],
   'más quads de los pedidos para no romper las partes finas': ['more quads than requested so thin parts don\'t break', 'ควอดมากกว่าที่ขอ เพื่อไม่ให้ส่วนบางๆ เสีย'],
+  "Manos": ["Hands", "มือ"], "Mandos": ["Controllers", "คอนโทรลเลอร์"],
+  "RECORRIDO DE MANOS": ["HANDS TOUR", "ทัวร์การใช้มือ"],
+  "▶ Recorrido de manos": ["▶ Hands tour", "▶ ทัวร์การใช้มือ"],
+  "Manos: junta verde y rojo para dibujar. Mira tu palma izquierda para el panel.": ["Hands: pinch green and red to draw. Look at your left palm for the panel.", "มือ: จีบสีเขียวกับสีแดงเพื่อวาด มองฝ่ามือซ้ายเพื่อเปิดแผง"],
+  "Has elegido mandos: coge los mandos, o cambia a Manos en la pantalla de inicio.": ["You chose controllers: pick them up, or switch to Hands on the start screen.", "คุณเลือกคอนโทรลเลอร์: หยิบคอนโทรลเลอร์ หรือเปลี่ยนเป็นมือที่หน้าเริ่มต้น"],
+  "Mírate las manos: cada dedo tiene un color. El pulgar es el VERDE.": ["Look at your hands: each finger has a color. The thumb is GREEN.", "มองมือของคุณ: แต่ละนิ้วมีสี นิ้วโป้งคือสีเขียว"],
+  "Mano derecha: junta VERDE y ROJO y pasa por la bola. Así dibujas.": ["Right hand: pinch GREEN and RED and sweep through the ball. That's how you draw.", "มือขวา: จีบสีเขียวกับสีแดงแล้วลากผ่านลูกบอล นี่คือการวาด"],
+  "Mano izquierda: mantén VERDE y ROJO juntos mientras dibujas con la derecha. Así borras.": ["Left hand: hold GREEN and RED together while you draw with the right. That's how you erase.", "มือซ้าย: จีบสีเขียวกับสีแดงค้างไว้ขณะวาดด้วยมือขวา นี่คือการลบ"],
+  "Mano izquierda: junta VERDE y AMARILLO. Deshace lo último.": ["Left hand: pinch GREEN and YELLOW. It undoes the last thing.", "มือซ้าย: จีบสีเขียวกับสีเหลือง เพื่อย้อนกลับ"],
+  "Junta VERDE y AZUL: agarras la bola. Muévela y gírala.": ["Pinch GREEN and BLUE: you grab the ball. Move it and turn it.", "จีบสีเขียวกับสีน้ำเงิน: จับลูกบอล แล้วขยับและหมุน"],
+  "Mano izquierda: un toque rápido de VERDE y ROJO saca la flor. Deja la derecha sobre Mover.": ["Left hand: a quick tap of GREEN and RED opens the flower. Rest your right hand over Move.", "มือซ้าย: แตะสีเขียวกับสีแดงเร็ว ๆ เพื่อเปิดดอกไม้ วางมือขวาไว้บน ย้าย"],
+  "Mírate la palma izquierda un momento: sale el panel. Pulsa «+ Capa» con VERDE y ROJO.": ["Look at your left palm for a moment: the panel appears. Press «+ Layer» with GREEN and RED.", "มองฝ่ามือซ้ายสักครู่: แผงจะปรากฏ กด «+ เลเยอร์» ด้วยสีเขียวกับสีแดง"],
   "▶ Recorrido del mando": ["▶ Controller tour", "▶ ทัวร์คอนโทรลเลอร์"],
   "Salir del recorrido": ["Exit tour", "ออกจากทัวร์"],
   "RECORRIDO DEL MANDO": ["CONTROLLER TOUR", "ทัวร์คอนโทรลเลอร์"],

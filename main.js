@@ -21,6 +21,7 @@ import { OPCIONES } from './anadir.js';
 import { Receptor } from './llamada.js';
 import { looksBlack, findSheet, flattenSheet } from './hoja.js';
 import { Tutorial } from './tutorial.js';
+import { HandRig, handGlow } from './manosxr.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
 const DEFAULT_RES = 320;
@@ -3456,12 +3457,25 @@ if (navigator.xr) {
   navigator.xr.isSessionSupported('immersive-ar').then((ok) => (btnAR.disabled = !ok));
   navigator.xr.isSessionSupported('immersive-vr').then((ok) => (btnVR.disabled = !ok));
 }
+// Manos o mandos: se elige en la pantalla de inicio y se recuerda. Con «Manos» los mandos siguen
+// funcionando si los coges; con «Mandos» las manos no hacen nada (para no esculpir sin querer).
+let control = 'hands';
+try { if (localStorage.getItem('plastilinaControl') === 'pads') control = 'pads'; } catch {}
+function setControl(c) {
+  control = c;
+  try { localStorage.setItem('plastilinaControl', c); } catch {}
+  $('ctlHands')?.classList.toggle('on', c === 'hands');
+  $('ctlPads')?.classList.toggle('on', c === 'pads');
+}
+$('ctlHands')?.addEventListener('click', () => setControl('hands'));
+$('ctlPads')?.addEventListener('click', () => setControl('pads'));
+setControl(control);
 btnAR.onclick = () => startXR('immersive-ar');
 btnVR.onclick = () => startXR('immersive-vr');
 
 async function startXR(mode) {
   try {
-    const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor'] });
+    const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor', 'hand-tracking'] });
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
     // 72 imágenes por segundo: da más tiempo a cada una (14 ms en vez de 11) y va más estable que a 90.
@@ -3515,10 +3529,20 @@ const ctrls = [0, 1].map((i) => {
   const tip = new THREE.Mesh(new THREE.SphereGeometry(0.005, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   tip.position.set(0, 0, -0.055);
   c.add(tip);
+  c.userData.tipMesh = tip;
   scene.add(c);
   return c;
 });
 const TIP = new THREE.Vector3(0, 0, -0.055);
+// Modo manos: sin mandos, cada mano hace de mando (ver manosxr.js).
+const handRigs = [0, 1].map((i) => {
+  const hand = renderer.xr.getHand(i);
+  scene.add(hand);
+  const rig = new HandRig(hand, TIP);
+  rig.hide();
+  scene.add(rig.proxy, rig.visual);
+  return rig;
+});
 
 // Mando y mano de plastilina, en el espacio de agarre (ahí está el mando de verdad).
 const rigs = { left: createControllerRig('left'), right: createControllerRig('right') };
@@ -4461,7 +4485,7 @@ function buildAllPage() {
     const bw = (IW - 10) / 2;
     W.push({ type: 'button', x: M, y: 556, w: bw, h: 54, label: 'Saltar paso', size: 24, group: 'tut', onClick: () => { tut.next(); drawPanel(); } });
     W.push({ type: 'button', x: M + bw + 10, y: 556, w: bw, h: 54, label: 'Salir del recorrido', size: 24, group: 'tut', onClick: () => { tut.stop(); drawPanel(); } });
-  } else W.push({ type: 'button', x: M, y: 556, w: IW, h: 54, label: '▶ Recorrido del mando', size: 28, onClick: startTutorial });
+  } else W.push({ type: 'button', x: M, y: 556, w: IW, h: 54, label: xr.hands ? '▶ Recorrido de manos' : '▶ Recorrido del mando', size: 28, onClick: startTutorial });
   W.push({ type: 'label', x: M, y: 634, size: 22, text: 'Resolución' });
   const rw = (IW - (RES_STEPS.length - 1) * 6) / RES_STEPS.length;
   RES_STEPS.forEach((n, i) => W.push({
@@ -4826,6 +4850,7 @@ const tmpM = new THREE.Matrix4(), tmpS = new THREE.Vector3();
 const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vT0 = new THREE.Vector3();
 const scale0 = { d: 1, s: 1, mid: new THREE.Vector3(), pos: new THREE.Vector3(), dir: new THREE.Vector3(), quat: new THREE.Quaternion(), turn: new THREE.Quaternion() };
 const panelRay = new THREE.Raycaster();
+const xrHead = new THREE.Vector3();
 let hudMsgShown = false;
 
 function openFlower(tipW, mode) {
@@ -4929,23 +4954,66 @@ function dialFeel(key, v, base, k) {
 
 function xrFrame(dt) {
   let right = null, left = null;
-  for (const c of ctrls) {
+  const headW = renderer.xr.getCamera().getWorldPosition(xrHead);
+  for (let i = 0; i < ctrls.length; i++) {
+    let c = ctrls[i];
     c.updateMatrixWorld(true);
-    const src = c.userData.src;
-    if (!src || !src.gamepad) continue;
-    const rig = rigs[src.handedness];
-    if (rig) {
-      rig.group.visible = !src.hand; // con las manos desnudas no hay mando que enseñar
-      rig.update(src.gamepad, dt);
+    const src = c.userData.src, hr = handRigs[i];
+    if (src?.hand) {
+      // Manos desnudas: no hay mando que enseñar; la mano hace de mando.
+      c.userData.tipMesh.visible = false;
+      if (rigs[src.handedness]) rigs[src.handedness].group.visible = false;
+      if (control === 'pads') {
+        hr.hide();
+        if (!xr.padsHint) { xr.padsHint = true; toast('Has elegido mandos: coge los mandos, o cambia a Manos en la pantalla de inicio.', 7000); }
+        continue;
+      }
+      if (!hr.update(c, src, headW, dt, bg.ar ? 'tips' : 'full')) continue;
+      c = hr.proxy;
+    } else {
+      hr.hide();
+      c.userData.tipMesh.visible = true;
+      if (!src || !src.gamepad) continue;
+      const rig = rigs[src.handedness];
+      if (rig) {
+        rig.group.visible = true;
+        rig.update(src.gamepad, dt);
+      }
     }
     if (src.handedness === 'left') left = c;
     else right = c;
   }
   xr.left = left;
+  const handL = !!left?.userData.isHand, handR = !!right?.userData.isHand;
+  xr.hands = handL || handR;
+  if (handL && handR && !xr.handsHint) {
+    // La primera vez que alguien entra con las manos, el recorrido sale solo; después, solo un aviso.
+    xr.handsHint = true;
+    let seen = false;
+    try { seen = !!localStorage.getItem('plastilinaTourManos'); localStorage.setItem('plastilinaTourManos', '1'); } catch {}
+    if (!seen && !tut.active) startTutorial();
+    else toast('Manos: junta verde y rojo para dibujar. Mira tu palma izquierda para el panel.', 7000);
+  }
   if (left && hud3d.parent !== left) left.add(hud3d);
-  if (left && !xr.panelPinned && panel3d.parent !== left) panelToHand(left);
+  if (left && !handL && !xr.panelPinned && panel3d.parent !== left) panelToHand(left);
+  // Manos: mirar la palma izquierda un momento saca o guarda el panel, que se queda flotando ahí.
+  if (handL && left.userData.rig.palmFired && !xr.panelDrag) {
+    panel3d.visible = !panel3d.visible;
+    sfx.play(panel3d.visible ? 'open' : 'close', { pan: -0.2 });
+    if (panel3d.visible) {
+      xr.panelPinned = true;
+      scene.add(panel3d);
+      panel3d.position.copy(left.userData.rig.palmPos);
+      panel3d.position.y += PANEL_H / 2 + 0.07;
+      panel3d.rotation.set(0, 0, 0);
+      panel3d.lookAt(headW);
+      panel3d.scale.setScalar(1);
+      drawPanel();
+    }
+  }
   hud3d.visible = !panel3d.visible || xr.panelPinned; // con el panel en la mano, el aviso de herramienta lo taparía
-  if (right && ray.parent !== right) right.add(ray);
+  const rayHost = right?.userData.aim || right;
+  if (rayHost && ray.parent !== rayHost) rayHost.add(ray);
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
   xr.gpR = gpR;
 
@@ -5013,9 +5081,10 @@ function xrFrame(dt) {
       gpL.hapticActuators?.[0]?.pulse?.(0.7, 50);
     }
     xr.dupPrev = lTrigger;
-    const soft = lTrigger && !moveOp.L;
+    const soft = lTrigger && !moveOp.L && !handL; // con manos, el pellizco izquierdo abre la flor
     if (soft !== state.smoothHold) { state.smoothHold = soft; updateHud(); }
-    const inv = !!gpL.buttons[4]?.pressed, Y = !!gpL.buttons[5]?.pressed;
+    // Manos: mantener el pellizco izquierdo invierte la herramienta (Añadir quita…), como el botón X.
+    const inv = !!gpL.buttons[4]?.pressed || (handL && lTrigger && !moveOp.L), Y = !!gpL.buttons[5]?.pressed;
     if (inv !== state.invert) { state.invert = inv; updateHud(); }
     if (Y && !xr.yPrev && !xr.menuOpen) undo();
     xr.yPrev = Y;
@@ -5042,19 +5111,35 @@ function xrFrame(dt) {
 
   cursor.visible = false;
   ray.visible = false;
-  if (!gpR) return;
+  // Pellizco de la mano izquierda (sin mando): un toque corto abre la flor; mantenido, invierte.
+  const lPinch = handL && (gpL.buttons[0].value || 0) > 0.5;
+  if (lPinch && !xr.lPinchPrev) { xr.lPinchT = 0; xr.lPinchUsed = xr.menuOpen || !!moveOp.L; }
+  if (lPinch) {
+    xr.lPinchT += dt;
+    if ((gpR?.buttons[0]?.value || 0) > 0.08) xr.lPinchUsed = true; // se ha usado para invertir, no es un toque
+  }
+  const lTap = !lPinch && !!xr.lPinchPrev && xr.lPinchT < 0.45 && !xr.lPinchUsed;
+  xr.lPinchPrev = lPinch;
+  if (!gpR) {
+    // La mano se ha dejado de ver a media pincelada: se acaba ahí.
+    if (xr.stroking) { endStroke(); xr.stroking = false; rope.visible = false; }
+    return;
+  }
 
   brushObj = right;
   const tipW = right.localToWorld(TIP.clone());
   const tipL = model.worldToLocal(tipW.clone()).toArray();
-  const trig = gpR.buttons[0]?.value || 0;
-  const trigDown = trig > 0.5;
+  let trig = gpR.buttons[0]?.value || 0;
+  let trigDown = trig > 0.5;
   const ax = gpR.axes[2] || 0, ay = gpR.axes[3] || 0;
 
   // Panel izquierdo abierto: el mando derecho apunta con un rayo.
   if (panel3d.visible && !xr.stroking) {
-    panelRay.ray.origin.setFromMatrixPosition(right.matrixWorld);
-    panelRay.ray.direction.set(0, 0, -1).transformDirection(right.matrixWorld);
+    const aim = right.userData.aim || right;
+    panelRay.ray.origin.setFromMatrixPosition(aim.matrixWorld);
+    panelRay.ray.direction.set(0, 0, -1).transformDirection(aim.matrixWorld);
+    // Con la mano también se toca: el pellizco pegado al panel pulsa justo debajo, sin rayo.
+    ray.material.visible = !(handR && !xr.panelDrag && touchRay(tipW));
     // Tirando de una esquina: el panel va con el mando y se queda donde lo sueltes.
     if (xr.panelDrag) {
       if (trigDown) {
@@ -5062,6 +5147,7 @@ function xrFrame(dt) {
         // Joystick adelante / atrás: más grande / más pequeño.
         if (Math.abs(ay) > 0.2) panel3d.scale.setScalar(THREE.MathUtils.clamp(panel3d.scale.x * Math.exp(-ay * dt * 1.2), 0.4, 2.5));
         xr.trigPrev = true;
+        xr.trigLock = true;
         return;
       }
       xr.panelDrag = null;
@@ -5080,12 +5166,14 @@ function xrFrame(dt) {
       sfx.play('grab', { pan: -0.2 });
       gpR.hapticActuators?.[0]?.pulse?.(0.5, 30);
       xr.trigPrev = true;
+      xr.trigLock = true;
       return;
     }
     if (gripHit) {
       ray.visible = true;
       ray.scale.z = panelRay.ray.origin.distanceTo(gripHit.getWorldPosition(vT0));
       xr.trigPrev = trigDown;
+      if (trigDown) xr.trigLock = true; // lo que se pulsa en el panel no acaba esculpiendo
       return;
     }
     const wheelHit = wheelPanel.visible && panelRay.intersectObject(wheelPanel, false)[0];
@@ -5095,6 +5183,7 @@ function xrFrame(dt) {
       wheelPointer(wheelHit.uv, trigDown);
       if (panel.pointer(null, null, trigDown)) drawPanel();
       xr.trigPrev = trigDown;
+      if (trigDown) xr.trigLock = true; // lo que se pulsa en el panel no acaba esculpiendo
       return;
     }
     if (xr.wheelHex) wheelPointer({ x: 0.5, y: 0.5 }, false);
@@ -5110,6 +5199,7 @@ function xrFrame(dt) {
         xr.layerFlick = 0.2;
       }
       xr.trigPrev = trigDown;
+      if (trigDown) xr.trigLock = true; // lo que se pulsa en el panel no acaba esculpiendo
       return;
     }
     if (panel.pointer(null, null, trigDown)) drawPanel();
@@ -5125,8 +5215,10 @@ function xrFrame(dt) {
   if (!xr.menuOpen) {
     if (rStick && !xr.rStickPrev) openFlower(tipW, 'toggle');
     else if (ab && !xr.menuPrev) openFlower(tipW, 'hold');
+    else if (lTap && !moveOp.L) openFlower(tipW, 'toggle');
   }
   if (xr.menuOpen) {
+    if (trigDown) xr.trigLock = true; // el pellizco que elige en la flor no esculpe al cerrarse
     // Manda lo último que se ha movido: el stick o una de las dos puntas. Una mano quieta nunca le
     // quita el sitio a la otra, y lo elegido con el stick se queda aunque lo sueltes.
     const eye = renderer.xr.getCamera().getWorldPosition(vA);
@@ -5176,6 +5268,12 @@ function xrFrame(dt) {
   xr.rStickPrev = rStick;
   xr.menuPrev = ab;
   xr.trigPrev = trigDown;
+  // Un gatillo o pellizco que venía de pulsar un menú no esculpe hasta que se suelta.
+  if (xr.trigLock) {
+    if (trig < 0.08) xr.trigLock = false;
+    trig = 0;
+    trigDown = false;
+  }
 
   // Animando, stick derecho ←/→ = fotograma anterior/siguiente; al final crea una copia.
   if (animating() && !state.lathe && !moveOp.L && !gR) {
@@ -5257,6 +5355,23 @@ function xrFrame(dt) {
     xr.stroking = false;
     rope.visible = false;
   }
+}
+
+// Manos: si el pellizco está pegado a un panel, el «rayo» sale recto hacia él desde el dedo.
+function touchRay(tipW) {
+  for (const p of [wheelPanel, panel3d]) {
+    if (!p.visible) continue;
+    const nrm = p.getWorldDirection(vA);
+    const d = vB.copy(tipW).sub(p.getWorldPosition(vT0)).dot(nrm);
+    if (d < -0.015 || d > 0.05) continue;
+    const o0 = panelRay.ray.origin.clone(), d0 = panelRay.ray.direction.clone();
+    panelRay.ray.origin.copy(tipW).addScaledVector(nrm, 0.1 - d);
+    panelRay.ray.direction.copy(nrm).negate();
+    if (panelRay.intersectObject(p, false)[0]) return true;
+    panelRay.ray.origin.copy(o0);
+    panelRay.ray.direction.copy(d0);
+  }
+  return false;
 }
 
 // Gatillo con Mover: agarra la capa que toca el cursor y la lleva con la mano (posición y giro).
@@ -6140,6 +6255,7 @@ setBg(bg.id);
 // ---------- Recorrido del mando (un minuto) ----------
 // Nunca arranca solo: se abre con «Recorrido del mando». Cada paso ilumina un botón del mando de
 // plastilina, dice para qué sirve y espera a que lo pruebes (o pasa solo a los 9 s).
+const FINGERS_ALL = ['thumb', 'index-finger', 'middle-finger', 'ring-finger', 'pinky-finger'];
 const strokeOf = (tool) => ({ stroke: (e) => e.tool === tool && e.touched && e.time > 0.3 });
 const tourMark = { color: null, layers: 0 };
 tut = new Tutorial([
@@ -6176,6 +6292,29 @@ tut = new Tutorial([
     setTimeout(() => { if (tut.finished) tut.stop(); }, 6000);
   },
 });
+// Recorrido de manos: los gestos se explican por el color de cada dedo (pulgar verde, índice rojo,
+// corazón azul, anular amarillo). Los dedos del paso laten. Sale solo la primera vez que entras con manos.
+const padSteps = tut.steps;
+const TI = ['thumb', 'index-finger'], TM = ['thumb', 'middle-finger'], TR = ['thumb', 'ring-finger'];
+const handSteps = [
+  { glow: { left: ['thumb'], right: ['thumb'] }, max: 7,
+    text: 'Mírate las manos: cada dedo tiene un color. El pulgar es el VERDE.',
+    check: () => (tut.time > 3.5 && xr.hands) },
+  { glow: { right: TI }, max: 10,
+    text: 'Mano derecha: junta VERDE y ROJO y pasa por la bola. Así dibujas.', setup: () => choose('add'), on: strokeOf('add') },
+  { glow: { left: TI, right: TI }, max: 10,
+    text: 'Mano izquierda: mantén VERDE y ROJO juntos mientras dibujas con la derecha. Así borras.',
+    on: { stroke: (e) => e.touched && state.invert } },
+  { glow: { left: TR }, max: 9,
+    text: 'Mano izquierda: junta VERDE y AMARILLO. Deshace lo último.', on: { undo: () => true } },
+  { glow: { left: TM, right: TM }, max: 9,
+    text: 'Junta VERDE y AZUL: agarras la bola. Muévela y gírala.', on: { turn: (dt, T) => (T.count += dt) >= 0.6 } },
+  { glow: { left: TI }, max: 10,
+    text: 'Mano izquierda: un toque rápido de VERDE y ROJO saca la flor. Deja la derecha sobre Mover.', check: () => state.tool === 'move' },
+  { glow: { left: FINGERS_ALL }, max: 12,
+    text: 'Mírate la palma izquierda un momento: sale el panel. Pulsa «+ Capa» con VERDE y ROJO.',
+    setup: () => { choose('add'); tourMark.layers = layers.length; }, check: () => layers.length > tourMark.layers },
+];
 // El botón del paso brilla en amarillo y lleva su nombre encima, en el mando que tienes en la mano.
 const tourHalo = new THREE.Mesh(new THREE.SphereGeometry(0.015, 20, 14),
   new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.85, depthTest: false, toneMapped: false }));
@@ -6190,6 +6329,9 @@ tourLabel.renderOrder = 1002;
 function tourHighlight() {
   tourHalo.removeFromParent();
   tourLabel.removeFromParent();
+  const glow = (tut.active && tut.step.glow) || {};
+  handGlow.left = glow.left || null;
+  handGlow.right = glow.right || null;
   const part = tut.active && tut.step.part;
   if (!part) return;
   const rig = rigs[part[0]], piece = rig?.parts[part[1]];
@@ -6249,9 +6391,13 @@ async function startTutorial() {
   state.lathe = false;
   if (renderer.xr.isPresenting) {
     placeWorkspace(true);
-    if (!xr.panelPinned) panel3d.visible = false;
+    if (!xr.panelPinned || xr.hands) panel3d.visible = false;
     xr.cardSnap = true;
   }
+  // Con las manos en las gafas, el recorrido de manos; si no, el del mando.
+  const hands = renderer.xr.isPresenting && xr.hands;
+  tut.steps = hands ? handSteps : padSteps;
+  tut.title = hands ? 'RECORRIDO DE MANOS' : 'RECORRIDO DEL MANDO';
   tut.start();
 }
 // La tarjeta flota encima de lo que estás haciendo y te sigue sin prisa; el confeti es de plastilina.

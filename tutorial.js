@@ -74,7 +74,7 @@ export class Tutorial {
     g.textAlign = 'left';
     g.fillStyle = CERA.white;
     g.font = kanit(34);
-    g.fillText(t('RECORRIDO DEL MANDO'), 32, 44);
+    g.fillText(t(this.title || 'RECORRIDO DEL MANDO'), 32, 44);
     // Un puntito por paso; los hechos, amarillos.
     for (let i = 0; i < n; i++) {
       const x = CARD_W - 34 - (n - 1 - i) * 30;
