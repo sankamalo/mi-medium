@@ -1,8 +1,13 @@
-// Modo manos (gafas, sin mandos): cada mano hace de «mando virtual».
-//   pulgar + índice  = gatillo (esculpir, pulsar)      → buttons[0]   (en la izquierda: toque = flor, mantener = invertir)
-//   pulgar + corazón = agarre (mover / escalar modelo) → buttons[1]
-//   pulgar + anular (izquierda) = deshacer             → buttons[5]
-//   palma izquierda hacia la cara un momento = panel
+// Modo manos (gafas, sin mandos): cada mano hace de «mando virtual». Un dedo, una cosa:
+//   DERECHA   pulgar + índice (o + anular) = dibujar / pulsar → buttons[0]
+//             pulgar + corazón             = agarrar          → buttons[1]
+//   IZQUIERDA pulgar + índice   = deshacer                    → buttons[5]
+//             pulgar + corazón  = agarrar (las dos = zoom)    → buttons[1]
+//             pulgar + anular   = la flor                     → this.pinch === 'ring'
+//             pulgar + meñique  = el panel                    → this.pinch === 'pinky'
+// Las gafas se quedan con «palma hacia la cara + pulgar e índice» (su menú): no se puede quitar
+// desde una web. Por eso, con la palma hacia ti, ese pellizco no hace nada aquí (this.guard) y
+// para dibujar en esa postura está pulgar + anular.
 // main.js usa el «proxy» de cada mano igual que usaba el mando: su punta (TIP) cae en el
 // punto del pellizco y gira con la muñeca.
 import * as THREE from 'three';
@@ -12,8 +17,8 @@ const CHAINS = FINGERS.map((f) => f === 'thumb'
   ? ['wrist', 'thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip']
   : ['wrist', f + '-metacarpal', f + '-phalanx-proximal', f + '-phalanx-intermediate', f + '-phalanx-distal', f + '-tip']);
 // Distancia pulgar–dedo (m) para empezar y para soltar un pellizco.
-const ON = { index: 0.02, middle: 0.022, ring: 0.022 }, OFF = { index: 0.035, middle: 0.04, ring: 0.04 };
-const TIPS = { index: 'index-finger-tip', middle: 'middle-finger-tip', ring: 'ring-finger-tip' };
+const ON = { index: 0.02, middle: 0.022, ring: 0.022, pinky: 0.024 }, OFF = { index: 0.035, middle: 0.04, ring: 0.04, pinky: 0.042 };
+const TIPS = { index: 'index-finger-tip', middle: 'middle-finger-tip', ring: 'ring-finger-tip', pinky: 'pinky-finger-tip' };
 const UP = new THREE.Vector3(0, 1, 0);
 const a = new THREE.Vector3(), b = new THREE.Vector3(), n = new THREE.Vector3(), q = new THREE.Quaternion();
 
@@ -22,6 +27,7 @@ const CLAY = new THREE.MeshStandardMaterial({ color: 0xe8b796, roughness: 0.85, 
 export const FINGER_COLORS = { thumb: 0x9ad8ae, 'index-finger': 0xf2958b, 'middle-finger': 0x93adf4, 'ring-finger': 0xffdf85, 'pinky-finger': 0xf7b3d2 };
 const FINGER_MAT = {};
 for (const f in FINGER_COLORS) FINGER_MAT[f] = new THREE.MeshStandardMaterial({ color: FINGER_COLORS[f], roughness: 0.78, emissive: FINGER_COLORS[f], emissiveIntensity: 0.3 });
+const OFF_MAT = new THREE.MeshStandardMaterial({ color: 0x6d6876, roughness: 0.9 });
 const fingerOf = (name) => FINGERS.find((f) => name.startsWith(f) && !name.endsWith('metacarpal'));
 // El recorrido marca aquí los dedos que tocan en cada paso: { left: ['thumb', 'index-finger'], right: [...] }.
 export const handGlow = { left: null, right: null };
@@ -41,8 +47,8 @@ export class HandRig {
     this.pinch = null;
     this.tracked = false;
     this.palmPos = new THREE.Vector3();
-    this.palmT = 0;
-    this.palmArmed = true;
+    this.indexTip = new THREE.Vector3();
+    this.guard = false;
     // Mano de plastilina: bolitas en las articulaciones y palitos entre ellas.
     this.visual = new THREE.Group();
     this.visual.visible = false;
@@ -100,60 +106,65 @@ export class HandRig {
       this.pinch = best;
     }
     const B = this.gp.buttons, left = src.handedness === 'left';
-    const set = (i, v) => { B[i].value = v; B[i].pressed = v > 0.5; };
-    set(0, this.pinch === 'index' ? THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(d.index, 0.03, 0.01, 0.55, 1), 0.55, 1) : 0);
-    set(1, this.pinch === 'middle' ? 1 : 0);
-    set(5, left && this.pinch === 'ring' ? 1 : 0);
-
-    // El proxy: gira con la muñeca y su punta está entre el pulgar y el índice.
-    wrist.getWorldQuaternion(this.proxy.quaternion);
-    a.addVectors(thumb.position, index.position).multiplyScalar(0.5);
-    this.proxy.position.copy(a).sub(b.copy(this.tipOffset).applyQuaternion(this.proxy.quaternion));
-    this.proxy.updateMatrixWorld(true);
-    this.proxy.userData.src = { handedness: src.handedness, hand: src.hand, gamepad: this.gp };
-    this.proxy.userData.aim = c.visible ? c : this.proxy; // para apuntar de lejos, el rayo de la mano
-
-    // Palma hacia la cara (se usa en la izquierda para sacar el panel).
+    // ¿Palma hacia la cara? Ahí el pellizco de índice es de las gafas (abre su menú): aquí no cuenta.
     a.subVectors(kI.position, wrist.position);
     b.subVectors(kP.position, wrist.position);
     n.crossVectors(a, b).normalize();
     if (left) n.negate();
     this.palmPos.addVectors(kI.position, kP.position).multiplyScalar(0.5).lerp(wrist.position, 0.4);
     const facing = n.dot(a.subVectors(head, this.palmPos).normalize());
-    this.palmFired = false;
-    if (facing > 0.75 && !this.pinch) {
-      this.palmT += dt;
-      if (this.palmArmed && this.palmT > 0.45) { this.palmArmed = false; this.palmFired = true; }
-    } else {
-      this.palmT = 0;
-      if (facing < 0.4) this.palmArmed = true;
-    }
+    this.guard = facing > (this.guard ? 0.45 : 0.6);
+    this.blocked = this.guard && this.pinch === 'index';
+    this.indexTip.copy(index.position);
+    const set = (i, v) => { B[i].value = v; B[i].pressed = v > 0.5; };
+    const draw = !left && !this.blocked && (this.pinch === 'index' || this.pinch === 'ring');
+    const dd = this.pinch === 'ring' ? d.ring : d.index;
+    set(0, draw ? THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dd, 0.03, 0.01, 0.55, 1), 0.55, 1) : 0);
+    set(1, this.pinch === 'middle' ? 1 : 0);
+    set(5, left && this.pinch === 'index' && !this.blocked ? 1 : 0);
 
-    // Dibujo de la mano. show: 'full' = mano entera de plastilina · 'tips' = solo dedales de color
-    // en las yemas (en realidad mixta ya ves tus manos de verdad) · false = nada.
+    // El proxy: gira con la muñeca y su punta está entre el pulgar y el índice.
+    wrist.getWorldQuaternion(this.proxy.quaternion);
+    const other = this.pinch === 'ring' && !left && j['ring-finger-tip']?.visible ? j['ring-finger-tip'] : index;
+    a.addVectors(thumb.position, other.position).multiplyScalar(0.5);
+    this.proxy.position.copy(a).sub(b.copy(this.tipOffset).applyQuaternion(this.proxy.quaternion));
+    this.proxy.updateMatrixWorld(true);
+    this.proxy.userData.src = { handedness: src.handedness, hand: src.hand, gamepad: this.gp };
+    this.proxy.userData.aim = c.visible ? c : this.proxy; // para apuntar de lejos, el rayo de la mano
+
+    // Dibujo de la mano. show: 'full' = mano entera de plastilina · 'tips' = un dedal de color que
+    // cubre la punta de cada dedo (en realidad mixta ya ves tus manos de verdad) · false = nada.
+    // Con la palma hacia ti, el pulgar y el índice se apagan: ese pellizco es de las gafas.
     this.visual.visible = !!show;
     if (show) {
       const glow = handGlow[src.handedness], beat = 1.45 + 0.35 * Math.sin(performance.now() / 150);
       for (const [name, m] of this.balls) {
         const jt = j[name], tip = name.endsWith('-tip');
-        m.visible = !!jt?.visible && (show === 'full' || tip);
+        const fin = fingerOf(name), distal = name.endsWith('phalanx-distal');
+        m.visible = !!jt?.visible && (show === 'full' || tip || distal);
         if (!m.visible) continue;
         m.position.copy(jt.position);
         let r = name === 'wrist' ? 0.016 : Math.min(jt.jointRadius || 0.008, 0.011);
-        if (tip && glow?.includes(fingerOf(name))) r *= beat;
+        if (show === 'tips') r = Math.max(r, 0.0085) * 1.12; // dedal: tapa la yema de verdad
+        if (tip && glow?.includes(fin)) r *= beat;
         m.scale.setScalar(r);
+        if (fin) m.material = this.guard && (fin === 'thumb' || fin === 'index-finger') ? OFF_MAT : FINGER_MAT[fin];
       }
       for (const [from, to, s] of this.sticks) {
         const p0 = j[from], p1 = j[to];
-        s.visible = show === 'full' && !!(p0?.visible && p1?.visible);
+        const last = to.endsWith('-tip');
+        s.visible = (show === 'full' || last) && !!(p0?.visible && p1?.visible);
         if (!s.visible) continue;
         a.subVectors(p1.position, p0.position);
         const len = a.length();
         if (len < 1e-5) { s.visible = false; continue; }
         s.position.copy(p0.position).addScaledVector(a, 0.5);
         s.quaternion.copy(q.setFromUnitVectors(UP, a.divideScalar(len)));
-        const r = Math.min(p1.jointRadius || 0.008, 0.011) * 0.92;
+        let r = Math.min(p1.jointRadius || 0.008, 0.011) * 0.92;
+        if (show === 'tips') r = Math.max(r, 0.0085) * 1.12;
         s.scale.set(r, len, r);
+        const fin = fingerOf(from);
+        if (fin) s.material = this.guard && (fin === 'thumb' || fin === 'index-finger') ? OFF_MAT : FINGER_MAT[fin];
       }
     }
     return true;

@@ -24,7 +24,10 @@ import { Tutorial } from './tutorial.js';
 import { HandRig, handGlow } from './manosxr.js';
 
 const RES_STEPS = [64, 96, 128, 192, 256, 320, 384, 512];
-const DEFAULT_RES = 320;
+// Con manos (lo que usa la gente que llega nueva) la primera bola es ligera: se puede jugar al instante.
+let handsFirst = true;
+try { handsFirst = localStorage.getItem('plastilinaControl') !== 'pads'; } catch {}
+const DEFAULT_RES = handsFirst ? 192 : 320;
 const CHUNK = 32;
 const B_PAD = 8; // margen al comparar trozos de malla entre fotogramas
 // Hasta dónde puede crecer el espacio de una capa, en muestras por lado (unos 6 m a resolución 320).
@@ -4992,25 +4995,38 @@ function xrFrame(dt) {
     let seen = false;
     try { seen = !!localStorage.getItem('plastilinaTourManos'); localStorage.setItem('plastilinaTourManos', '1'); } catch {}
     if (!seen && !tut.active) startTutorial();
-    else toast('Manos: junta verde y rojo para dibujar. Mira tu palma izquierda para el panel.', 7000);
+    else toast('Manos: derecha, verde y rojo dibuja. Izquierda: rojo deshace, azul agarra, amarillo la flor, rosa el panel.', 9000);
   }
   if (left && hud3d.parent !== left) left.add(hud3d);
   if (left && !handL && !xr.panelPinned && panel3d.parent !== left) panelToHand(left);
-  // Manos: mirar la palma izquierda un momento saca o guarda el panel, que se queda flotando ahí.
-  if (handL && left.userData.rig.palmFired && !xr.panelDrag) {
+  // Manos: pulgar + meñique de la izquierda saca o guarda el panel, flotando delante de ti.
+  const lPanel = handL && left.userData.rig.pinch === 'pinky';
+  if (lPanel && !xr.lPanelPrev && !xr.panelDrag) {
     panel3d.visible = !panel3d.visible;
     sfx.play(panel3d.visible ? 'open' : 'close', { pan: -0.2 });
     if (panel3d.visible) {
       xr.panelPinned = true;
       scene.add(panel3d);
-      panel3d.position.copy(left.userData.rig.palmPos);
-      panel3d.position.y += PANEL_H / 2 + 0.07;
+      const fwd = renderer.xr.getCamera().getWorldDirection(vB);
+      fwd.y = 0;
+      fwd.normalize();
+      // A un brazo de distancia, un poco a la izquierda y por debajo de los ojos: se toca con el dedo.
+      panel3d.position.copy(headW).addScaledVector(fwd, 0.42).addScaledVector(vT0.set(fwd.z, 0, -fwd.x), 0.1);
+      panel3d.position.y -= 0.14;
       panel3d.rotation.set(0, 0, 0);
       panel3d.lookAt(headW);
-      panel3d.scale.setScalar(1);
+      panel3d.scale.setScalar(0.85);
       drawPanel();
     }
   }
+  xr.lPanelPrev = lPanel;
+  // Palma hacia la cara + pulgar e índice es el gesto de las gafas para su menú: aquí no hace nada, y se avisa.
+  const blocked = (handR && right.userData.rig.blocked) || (handL && left.userData.rig.blocked);
+  if (blocked && !xr.blockedPrev && performance.now() > (xr.blockT || 0)) {
+    xr.blockT = performance.now() + 8000;
+    toast('Con la palma hacia ti, ese gesto abre el menú de las gafas. Gira la mano, o dibuja con verde y amarillo.', 7000);
+  }
+  xr.blockedPrev = blocked;
   hud3d.visible = !panel3d.visible || xr.panelPinned; // con el panel en la mano, el aviso de herramienta lo taparía
   const rayHost = right?.userData.aim || right;
   if (rayHost && ray.parent !== rayHost) rayHost.add(ray);
@@ -5111,15 +5127,10 @@ function xrFrame(dt) {
 
   cursor.visible = false;
   ray.visible = false;
-  // Pellizco de la mano izquierda (sin mando): un toque corto abre la flor; mantenido, invierte.
-  const lPinch = handL && (gpL.buttons[0].value || 0) > 0.5;
-  if (lPinch && !xr.lPinchPrev) { xr.lPinchT = 0; xr.lPinchUsed = xr.menuOpen || !!moveOp.L; }
-  if (lPinch) {
-    xr.lPinchT += dt;
-    if ((gpR?.buttons[0]?.value || 0) > 0.08) xr.lPinchUsed = true; // se ha usado para invertir, no es un toque
-  }
-  const lTap = !lPinch && !!xr.lPinchPrev && xr.lPinchT < 0.45 && !xr.lPinchUsed;
-  xr.lPinchPrev = lPinch;
+  // Mano izquierda (sin mando): pulgar + anular abre y cierra la flor.
+  const lFlower = handL && left.userData.rig.pinch === 'ring';
+  const lTap = lFlower && !xr.lFlowerPrev;
+  xr.lFlowerPrev = lFlower;
   if (!gpR) {
     // La mano se ha dejado de ver a media pincelada: se acaba ahí.
     if (xr.stroking) { endStroke(); xr.stroking = false; rope.visible = false; }
@@ -5139,7 +5150,17 @@ function xrFrame(dt) {
     panelRay.ray.origin.setFromMatrixPosition(aim.matrixWorld);
     panelRay.ray.direction.set(0, 0, -1).transformDirection(aim.matrixWorld);
     // Con la mano también se toca: el pellizco pegado al panel pulsa justo debajo, sin rayo.
-    ray.material.visible = !(handR && !xr.panelDrag && touchRay(tipW));
+    // Con las manos el panel se toca: el dedo índice (de cualquier mano) pulsa al llegar a él, sin rayo
+    // ni pellizco. De lejos sigue el rayo con el pellizco de la derecha.
+    const poke = xr.hands && !xr.panelDrag ? pokePanel(handR ? right.userData.rig : null, handL ? left.userData.rig : null) : null;
+    ray.material.visible = !poke;
+    if (poke) {
+      xr.pokeDown = poke.d < (xr.pokeDown ? 0.02 : 0.006);
+      if (xr.pokeDown && !xr.pokePrev) sfx.play('clic', { pan: -0.1 });
+      xr.pokePrev = xr.pokeDown;
+      trigDown = xr.pokeDown;
+      xr.trigLock = true; // un dedo en el panel no esculpe
+    } else xr.pokeDown = xr.pokePrev = false;
     // Tirando de una esquina: el panel va con el mando y se queda donde lo sueltes.
     if (xr.panelDrag) {
       if (trigDown) {
@@ -5158,7 +5179,7 @@ function xrFrame(dt) {
     const gripHit = panelGrips.find((g) => panelRay.ray.distanceToPoint(g.getWorldPosition(vT0)) < 0.012 * panel3d.scale.x);
     const near = panelGrips.find((g) => tipW.distanceTo(g.getWorldPosition(vT0)) < 0.03);
     panelGrips.forEach((g) => g.scale.setScalar(g === gripHit || g === near ? 1.6 : 1));
-    if ((gripHit || near) && trigDown && !xr.trigPrev) {
+    if ((gripHit || near) && trigDown && !xr.trigPrev && !poke) {
       xr.panelPinned = true;
       scene.attach(panel3d);
       panel3d.updateMatrixWorld();
@@ -5258,7 +5279,7 @@ function xrFrame(dt) {
     xr.lTrigPrev = lTrig;
     xr.lXPrev = lX;
     xr.lYPrev = lY;
-    if (xr.menuMode === 'hold' ? !ab || pressed : pressed || (ab && !xr.menuPrev) || (rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true)) closeFlower(true);
+    if (xr.menuMode === 'hold' ? !ab || pressed : pressed || (lTap && !xr.menuOpenedFrame) || (ab && !xr.menuPrev) || (rStick && !xr.rStickPrev && xr.menuOpenedFrame !== true)) closeFlower(true);
     xr.menuOpenedFrame = false;
     xr.rStickPrev = rStick;
     xr.menuPrev = ab;
@@ -5358,6 +5379,26 @@ function xrFrame(dt) {
 }
 
 // Manos: si el pellizco está pegado a un panel, el «rayo» sale recto hacia él desde el dedo.
+// El índice de una mano cerca del panel: el rayo pasa a salir del dedo, recto contra el panel.
+// d = lo que le falta al dedo para tocarlo (negativo si lo atraviesa).
+function pokePanel(...handsIn) {
+  for (const rig of handsIn) {
+    if (!rig?.tracked) continue;
+    for (const p of [wheelPanel, panel3d]) {
+      if (!p.visible) continue;
+      const nrm = p.getWorldDirection(vA);
+      const d = vB.copy(rig.indexTip).sub(p.getWorldPosition(vT0)).dot(nrm);
+      if (d < -0.04 || d > 0.07) continue;
+      const o0 = panelRay.ray.origin.clone(), d0 = panelRay.ray.direction.clone();
+      panelRay.ray.origin.copy(rig.indexTip).addScaledVector(nrm, 0.1 - d);
+      panelRay.ray.direction.copy(nrm).negate();
+      if (panelRay.intersectObject(p, false)[0]) return { d };
+      panelRay.ray.origin.copy(o0);
+      panelRay.ray.direction.copy(d0);
+    }
+  }
+  return null;
+}
 function touchRay(tipW) {
   for (const p of [wheelPanel, panel3d]) {
     if (!p.visible) continue;
@@ -6295,24 +6336,21 @@ tut = new Tutorial([
 // Recorrido de manos: los gestos se explican por el color de cada dedo (pulgar verde, índice rojo,
 // corazón azul, anular amarillo). Los dedos del paso laten. Sale solo la primera vez que entras con manos.
 const padSteps = tut.steps;
-const TI = ['thumb', 'index-finger'], TM = ['thumb', 'middle-finger'], TR = ['thumb', 'ring-finger'];
+const TI = ['thumb', 'index-finger'], TM = ['thumb', 'middle-finger'], TR = ['thumb', 'ring-finger'], TP = ['thumb', 'pinky-finger'];
 const handSteps = [
   { glow: { left: ['thumb'], right: ['thumb'] }, max: 7,
     text: 'Mírate las manos: cada dedo tiene un color. El pulgar es el VERDE.',
     check: () => (tut.time > 3.5 && xr.hands) },
   { glow: { right: TI }, max: 10,
     text: 'Mano derecha: junta VERDE y ROJO y pasa por la bola. Así dibujas.', setup: () => choose('add'), on: strokeOf('add') },
-  { glow: { left: TI, right: TI }, max: 10,
-    text: 'Mano izquierda: mantén VERDE y ROJO juntos mientras dibujas con la derecha. Así borras.',
-    on: { stroke: (e) => e.touched && state.invert } },
-  { glow: { left: TR }, max: 9,
-    text: 'Mano izquierda: junta VERDE y AMARILLO. Deshace lo último.', on: { undo: () => true } },
-  { glow: { left: TM, right: TM }, max: 9,
-    text: 'Junta VERDE y AZUL: agarras la bola. Muévela y gírala.', on: { turn: (dt, T) => (T.count += dt) >= 0.6 } },
-  { glow: { left: TI }, max: 10,
-    text: 'Mano izquierda: un toque rápido de VERDE y ROJO saca la flor. Deja la derecha sobre Mover.', check: () => state.tool === 'move' },
-  { glow: { left: FINGERS_ALL }, max: 12,
-    text: 'Mírate la palma izquierda un momento: sale el panel. Pulsa «+ Capa» con VERDE y ROJO.',
+  { glow: { left: TI }, max: 9,
+    text: 'Mano izquierda: junta VERDE y ROJO. Deshace lo último.', on: { undo: () => true } },
+  { glow: { left: TM, right: TM }, max: 10,
+    text: 'Junta VERDE y AZUL: agarras la bola. Con las dos manos a la vez, la haces grande o pequeña.', on: { turn: (dt, T) => (T.count += dt) >= 0.6 } },
+  { glow: { left: TR }, max: 10,
+    text: 'Mano izquierda: junta VERDE y AMARILLO: sale la flor. Deja la derecha sobre Mover.', check: () => state.tool === 'move' },
+  { glow: { left: TP }, max: 12,
+    text: 'Mano izquierda: junta VERDE y ROSA: sale el panel. Toca «+ Capa» con el dedo.',
     setup: () => { choose('add'); tourMark.layers = layers.length; }, check: () => layers.length > tourMark.layers },
 ];
 // El botón del paso brilla en amarillo y lleva su nombre encima, en el mando que tienes en la mano.
