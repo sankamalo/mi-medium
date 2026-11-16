@@ -19,6 +19,7 @@ const CHAINS = FINGERS.map((f) => f === 'thumb'
 // Distancia pulgar–dedo (m) para empezar y para soltar un pellizco.
 const ON = { index: 0.02, middle: 0.022, ring: 0.022, pinky: 0.024 }, OFF = { index: 0.035, middle: 0.04, ring: 0.04, pinky: 0.042 };
 const TIPS = { index: 'index-finger-tip', middle: 'middle-finger-tip', ring: 'ring-finger-tip', pinky: 'pinky-finger-tip' };
+const RIVALS = { index: ['middle', 'ring', 'pinky'], middle: ['index', 'ring', 'pinky'], ring: ['index', 'middle'], pinky: ['index', 'middle'] };
 const UP = new THREE.Vector3(0, 1, 0);
 const a = new THREE.Vector3(), b = new THREE.Vector3(), n = new THREE.Vector3(), q = new THREE.Quaternion();
 
@@ -30,6 +31,8 @@ for (const f in FINGER_COLORS) FINGER_MAT[f] = new THREE.MeshStandardMaterial({ 
 // Las puntas de los dedos se pintan siempre por delante de la escultura: nunca pierdes de vista con qué tocas.
 const TOP_MAT = {};
 for (const f in FINGER_COLORS) { TOP_MAT[f] = FINGER_MAT[f].clone(); TOP_MAT[f].depthTest = false; }
+const CLAY_TOP = CLAY.clone();
+CLAY_TOP.depthTest = false;
 const OFF_MAT = new THREE.MeshStandardMaterial({ color: 0x6d6876, roughness: 0.9, depthTest: false });
 const fingerOf = (name) => FINGERS.find((f) => name.startsWith(f) && !name.endsWith('metacarpal'));
 // El recorrido marca aquí los dedos que tocan en cada paso: { left: ['thumb', 'index-finger'], right: [...] }.
@@ -51,12 +54,20 @@ export class HandRig {
     this.tracked = false;
     this.palmPos = new THREE.Vector3();
     this.indexTip = new THREE.Vector3();
+    this.wristPos = new THREE.Vector3();
+    this.backDir = new THREE.Vector3();
+    this.facing = 0;
     this.guard = false;
     // Mano de plastilina: bolitas en las articulaciones y palitos entre ellas.
     this.visual = new THREE.Group();
     this.visual.visible = false;
     this.balls = new Map();
     this.sticks = [];
+    this.link = new THREE.Mesh(STICK, new THREE.MeshBasicMaterial({ color: 0xffd23f, depthTest: false, toneMapped: false }));
+    this.link.renderOrder = 999;
+    this.link.frustumCulled = false;
+    this.link.visible = false;
+    this.visual.add(this.link);
     for (const chain of CHAINS) {
       chain.forEach((name, i) => {
         if (!this.balls.has(name)) {
@@ -88,7 +99,7 @@ export class HandRig {
 
   // c = el objeto del rayo de esa mano (renderer.xr.getController); src = su XRInputSource.
   // Devuelve false si la mano no se ve bien en este fotograma.
-  update(c, src, head, dt, show) {
+  update(c, src, head, dt, show, onTop = false) {
     const j = this.hand.joints;
     const wrist = j['wrist'], thumb = j['thumb-tip'], index = j['index-finger-tip'];
     const kI = j['index-finger-phalanx-proximal'], kP = j['pinky-finger-phalanx-proximal'];
@@ -119,18 +130,17 @@ export class HandRig {
       if (this.offN >= 4) { this.pinch = null; this.offN = 0; this.onN = 0; }
     }
     if (!this.pinch) {
-      let best = null, second = 1;
-      for (const k in TIPS) {
-        if (!best || d[k] < d[best]) { if (best) second = Math.min(second, d[best]); best = k; }
-        else second = Math.min(second, d[k]);
-      }
-      // También sin suavizar: ningún otro dedo puede estar casi igual de cerca en este mismo fotograma.
-      let rawSecond = 1;
-      for (const k in TIPS) if (k !== best) rawSecond = Math.min(rawSecond, rawD[k]);
+      let best = null;
+      for (const k in TIPS) if (!best || d[k] < d[best]) best = k;
+      // Los rivales de cada dedo: el anular y el meñique van siempre juntos, así que entre ellos no
+      // se exige distancia (gana el más cercano); sí frente al índice y al corazón.
+      let second = 1, rawSecond = 1;
+      for (const k of RIVALS[best]) { second = Math.min(second, d[k]); rawSecond = Math.min(rawSecond, rawD[k]); }
       const ok = d[best] < ON[best] && second - d[best] > 0.007 && rawD[best] < ON[best] && rawSecond - rawD[best] > 0.005;
       if (ok && this.cand === best) this.onN = (this.onN || 0) + 1;
       else { this.cand = ok ? best : null; this.onN = ok ? 1 : 0; }
-      if (this.onN >= 3) { this.pinch = best; this.onN = 0; this.offN = 0; }
+      // Abrir un menú por error molesta más que un trazo: anular y meñique aguantan un poco más.
+      if (this.onN >= (best === 'ring' || best === 'pinky' ? 5 : 3)) { this.pinch = best; this.onN = 0; this.offN = 0; }
     }
     const B = this.gp.buttons, left = src.handedness === 'left';
     // ¿Palma hacia la cara? Ahí el pellizco de índice es de las gafas (abre su menú): aquí no cuenta.
@@ -148,7 +158,15 @@ export class HandRig {
     const dd = this.pinch === 'ring' ? d.ring : d.index;
     set(0, draw ? THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dd, 0.03, 0.01, 0.55, 1), 0.55, 1) : 0);
     set(1, this.pinch === 'middle' ? 1 : 0);
-    set(5, left && this.pinch === 'index' && !this.blocked ? 1 : 0);
+    // Toques de pulgar + índice de la izquierda (deshacer; dos seguidos, rehacer): se miran sin el
+    // filtro lento de arriba, para que dos toques rápidos cuenten como dos.
+    const iNear = rawD.index < 0.017 && Math.min(rawD.middle, rawD.ring, rawD.pinky) - rawD.index > 0.004;
+    if (this.tap) { this.tapN = rawD.index > 0.028 ? (this.tapN || 0) + 1 : 0; if (this.tapN >= 2) { this.tap = false; this.tapN = 0; } }
+    else { this.tapN = iNear && !this.guard ? (this.tapN || 0) + 1 : 0; if (this.tapN >= 2) { this.tap = true; this.tapN = 0; } }
+    set(5, left && this.tap ? 1 : 0);
+    this.facing = facing;
+    this.wristPos.copy(wrist.position);
+    this.backDir.copy(n).negate(); // hacia fuera del dorso de la mano
 
     // El proxy: gira con la muñeca y su punta está entre el pulgar y el índice.
     wrist.getWorldQuaternion(this.proxy.quaternion);
@@ -167,7 +185,14 @@ export class HandRig {
     // Con la palma hacia ti, el pulgar y el índice se apagan: ese pellizco es de las gafas.
     this.visual.visible = !!show;
     if (show) {
-      const glow = handGlow[src.handedness], beat = 1.45 + 0.35 * Math.sin(performance.now() / 150);
+      // En el recorrido: los dedos del paso laten grandes y los demás se apagan, para que no haya duda.
+      const touring = !!(handGlow.left || handGlow.right);
+      const glow = handGlow[src.handedness], beat = 1.7 + 0.45 * Math.sin(performance.now() / 150);
+      const matOf = (fin, top) => {
+        if (touring && !glow?.includes(fin)) return OFF_MAT;
+        if (this.guard && (fin === 'thumb' || fin === 'index-finger')) return OFF_MAT;
+        return (top || onTop ? TOP_MAT : FINGER_MAT)[fin];
+      };
       for (const [name, m] of this.balls) {
         const jt = j[name], tip = name.endsWith('-tip');
         const fin = fingerOf(name), distal = name.endsWith('phalanx-distal');
@@ -179,10 +204,10 @@ export class HandRig {
         if (tip && glow?.includes(fin)) r *= beat;
         m.scale.setScalar(r);
         if (fin) {
-          const top = tip || distal, off = this.guard && (fin === 'thumb' || fin === 'index-finger');
-          m.renderOrder = top ? 998 : 0;
-          m.material = top ? (off ? OFF_MAT : TOP_MAT[fin]) : FINGER_MAT[fin];
-        }
+          const top = tip || distal;
+          m.renderOrder = top ? 998 : onTop ? 997 : 0;
+          m.material = matOf(fin, top);
+        } else { m.renderOrder = onTop ? 996 : 0; m.material = onTop ? CLAY_TOP : CLAY; }
       }
       for (const [from, to, s] of this.sticks) {
         const p0 = j[from], p1 = j[to];
@@ -199,10 +224,23 @@ export class HandRig {
         s.scale.set(r, len, r);
         const fin = fingerOf(from);
         if (fin) {
-          const off = this.guard && (fin === 'thumb' || fin === 'index-finger');
-          s.renderOrder = last ? 998 : 0;
-          s.material = last ? (off ? OFF_MAT : TOP_MAT[fin]) : FINGER_MAT[fin];
-        }
+          s.renderOrder = last ? 998 : onTop ? 997 : 0;
+          s.material = matOf(fin, last);
+        } else { s.renderOrder = onTop ? 996 : 0; s.material = onTop ? CLAY_TOP : CLAY; }
+      }
+    }
+    // «Junta estos dos»: una barrita amarilla entre las dos puntas que laten.
+    const glow2 = show && handGlow[src.handedness];
+    const p0 = glow2?.length === 2 && j[glow2[0] + '-tip'], p1 = glow2?.length === 2 && j[glow2[1] + '-tip'];
+    this.link.visible = !!(p0?.visible && p1?.visible);
+    if (this.link.visible) {
+      a.subVectors(p1.position, p0.position);
+      const len = a.length();
+      if (len < 0.012) this.link.visible = false;
+      else {
+        this.link.position.copy(p0.position).addScaledVector(a, 0.5);
+        this.link.quaternion.copy(q.setFromUnitVectors(UP, a.divideScalar(len)));
+        this.link.scale.set(0.0022, len, 0.0022);
       }
     }
     return true;

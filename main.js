@@ -4982,7 +4982,9 @@ function xrFrame(dt) {
         if (!xr.padsHint) { xr.padsHint = true; toast('Has elegido mandos: coge los mandos, o cambia a Manos en la pantalla de inicio.', 7000); }
         continue;
       }
-      if (!hr.update(c, src, headW, dt, bg.ar ? 'tips' : 'full')) continue;
+      // Con un menú abierto (panel o flor) se ve la mano entera y siempre por encima: hay que ver qué tocas.
+      const menus = panel3d.visible || xr.menuOpen;
+      if (!hr.update(c, src, headW, dt, bg.ar && !menus ? 'tips' : 'full', menus)) continue;
       c = hr.proxy;
     } else {
       hr.hide();
@@ -4998,6 +5000,7 @@ function xrFrame(dt) {
     else right = c;
   }
   xr.left = left;
+  xr.right = right;
   const handL = !!left?.userData.isHand, handR = !!right?.userData.isHand;
   xr.hands = handL || handR;
   if (handL && handR && !xr.handsHint) {
@@ -5012,25 +5015,9 @@ function xrFrame(dt) {
   if (left && !handL && !xr.panelPinned && panel3d.parent !== left) panelToHand(left);
   // Manos: pulgar + meñique de la izquierda saca o guarda el panel, flotando delante de ti.
   const lPanel = handL && left.userData.rig.pinch === 'pinky';
-  if (lPanel && !xr.lPanelPrev && !xr.panelDrag) {
-    panel3d.visible = !panel3d.visible;
-    sfx.play(panel3d.visible ? 'open' : 'close', { pan: -0.2 });
-    if (panel3d.visible) {
-      xr.panelPinned = true;
-      scene.add(panel3d);
-      const fwd = renderer.xr.getCamera().getWorldDirection(vB);
-      fwd.y = 0;
-      fwd.normalize();
-      // A un brazo de distancia, un poco a la izquierda y por debajo de los ojos: se toca con el dedo.
-      panel3d.position.copy(headW).addScaledVector(fwd, 0.42).addScaledVector(vT0.set(fwd.z, 0, -fwd.x), 0.1);
-      panel3d.position.y -= 0.14;
-      panel3d.rotation.set(0, 0, 0);
-      panel3d.lookAt(headW);
-      panel3d.scale.setScalar(0.85);
-      drawPanel();
-    }
-  }
+  if (lPanel && !xr.lPanelPrev && !xr.panelDrag) handPanelToggle(headW);
   xr.lPanelPrev = lPanel;
+  watchFrame(handL ? left.userData.rig : null, handR ? right.userData.rig : null, headW);
   // Palma hacia la cara + pulgar e índice es el gesto de las gafas para su menú: aquí no hace nada, y se avisa.
   const blocked = (handR && right.userData.rig.blocked) || (handL && left.userData.rig.blocked);
   if (blocked && !xr.blockedPrev && performance.now() > (xr.blockT || 0)) {
@@ -5118,11 +5105,13 @@ function xrFrame(dt) {
     const inv = !!gpL.buttons[4]?.pressed || handInv, Y = !!gpL.buttons[5]?.pressed;
     if (inv !== state.invert) { state.invert = inv; updateHud(); }
     if (handL) {
-      // Manos: un toque deshace; dos toques seguidos rehacen. El deshacer espera un instante por si llega el segundo.
+      // Manos: un toque deshace al momento. Un segundo toque enseguida lo convierte en rehacer:
+      // devuelve lo que acaba de deshacer y rehace un paso más.
+      xr.undoWait = Math.max(0, (xr.undoWait || 0) - dt);
       if (Y && !xr.yPrev && !xr.menuOpen) {
-        if (xr.undoWait > 0) { xr.undoWait = 0; redo(); }
-        else xr.undoWait = 0.38;
-      } else if (xr.undoWait > 0 && (xr.undoWait -= dt) <= 0) undo();
+        if (xr.undoWait > 0) { xr.undoWait = 0; redo(); redo(); toast('Rehacer', 1200); }
+        else { xr.undoWait = 0.6; undo(); }
+      }
     } else if (Y && !xr.yPrev && !xr.menuOpen) undo();
     xr.yPrev = Y;
     const lStick = !!gpL.buttons[3]?.pressed;
@@ -5150,7 +5139,8 @@ function xrFrame(dt) {
   ray.visible = false;
   // Mano izquierda (sin mando): pulgar + anular abre y cierra la flor.
   const lFlower = handL && left.userData.rig.pinch === 'ring';
-  const lTap = lFlower && !xr.lFlowerPrev;
+  const lTap = (lFlower && !xr.lFlowerPrev) || !!xr.watchFlower;
+  xr.watchFlower = false;
   xr.lFlowerPrev = lFlower;
   if (!gpR) {
     // La mano se ha dejado de ver a media pincelada: se acaba ahí.
@@ -5400,6 +5390,85 @@ function xrFrame(dt) {
 }
 
 // Manos: si el pellizco está pegado a un panel, el «rayo» sale recto hacia él desde el dedo.
+// Manos: saca o guarda el panel, flotando delante de ti.
+function handPanelToggle(headW) {
+  panel3d.visible = !panel3d.visible;
+  sfx.play(panel3d.visible ? 'open' : 'close', { pan: -0.2 });
+  if (!panel3d.visible) return;
+  xr.panelPinned = true;
+  scene.add(panel3d);
+  const fwd = renderer.xr.getCamera().getWorldDirection(vB);
+  fwd.y = 0;
+  fwd.normalize();
+  // A un brazo de distancia, un poco a la izquierda y por debajo de los ojos: se toca con el dedo.
+  panel3d.position.copy(headW).addScaledVector(fwd, 0.42).addScaledVector(vT0.set(fwd.z, 0, -fwd.x), 0.1);
+  panel3d.position.y -= 0.14;
+  panel3d.rotation.set(0, 0, 0);
+  panel3d.lookAt(headW);
+  panel3d.scale.setScalar(0.85);
+  drawPanel();
+}
+
+// El reloj: mira el dorso de tu muñeca izquierda, como para ver la hora, y sale un botón de cuatro
+// trozos que se toca con el índice de la derecha. Tocar es lo que mejor siguen las gafas, así que
+// aquí está también lo que con pellizcos puede fallar.
+const WATCH = [['tour', '▶ Recorrido'], ['panel', 'Panel'], ['flower', 'Flor'], ['redo', 'Rehacer']];
+const watchCanvas = document.createElement('canvas');
+watchCanvas.width = watchCanvas.height = 384;
+const watchTex = new THREE.CanvasTexture(watchCanvas);
+watchTex.colorSpace = THREE.SRGBColorSpace;
+const WATCH_SIZE = 0.084;
+const watch = new THREE.Mesh(new THREE.PlaneGeometry(WATCH_SIZE, WATCH_SIZE),
+  new THREE.MeshBasicMaterial({ map: watchTex, transparent: true, depthTest: false, toneMapped: false }));
+watch.renderOrder = 995;
+watch.visible = false;
+scene.add(watch);
+let watchHot = -2, watchArmed = true;
+function watchDraw(hot) {
+  const g = watchCanvas.getContext('2d');
+  g.clearRect(0, 0, 384, 384);
+  WATCH.forEach(([id, name], i) => {
+    const x = (i % 2) * 192 + 6, y = Math.floor(i / 2) * 192 + 6;
+    g.fillStyle = '#2B2733';
+    g.beginPath(); g.roundRect(x, y, 180, 180, 44); g.fill();
+    g.fillStyle = i === hot ? '#FFDF85' : ['#F2958B', '#93ADF4', '#9AD8AE', '#FFF8EA'][i];
+    g.beginPath(); g.roundRect(x + 8, y + 8, 164, 164, 38); g.fill();
+    g.fillStyle = '#2B2733';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const label = id === 'tour' && tut?.active ? t('Salir') : t(name);
+    let size = 40;
+    g.font = `700 ${size}px Kanit, sans-serif`;
+    while (g.measureText(label).width > 150 && size > 20) g.font = `700 ${(size -= 2)}px Kanit, sans-serif`;
+    g.fillText(label, x + 90, y + 92);
+  });
+  watchTex.needsUpdate = true;
+}
+function watchFrame(L, R, headW) {
+  // Se ve con el dorso de la mano hacia la cara y sin pellizcar.
+  const show = !!L && L.tracked && L.facing < (watch.visible ? -0.2 : -0.45) && !L.pinch;
+  if (show !== watch.visible) { watch.visible = show; watchHot = -2; }
+  if (!show) return;
+  watch.position.copy(L.wristPos).addScaledVector(L.backDir, 0.045);
+  watch.lookAt(headW);
+  watch.updateMatrixWorld(true);
+  let hot = -1;
+  if (R?.tracked) {
+    const p = watch.worldToLocal(vT0.copy(R.indexTip)), h = WATCH_SIZE / 2;
+    if (Math.abs(p.z) < 0.022 && Math.abs(p.x) < h && Math.abs(p.y) < h) hot = (p.x > 0 ? 1 : 0) + (p.y < 0 ? 2 : 0);
+    else if (Math.abs(p.z) > 0.05 || Math.abs(p.x) > h + 0.03 || Math.abs(p.y) > h + 0.03) watchArmed = true;
+  }
+  if (hot !== watchHot) { watchHot = hot; watchDraw(hot); }
+  if (hot < 0 || !watchArmed) return;
+  watchArmed = false;
+  xr.trigLock = true;
+  sfx.play('clic', { pan: -0.2 });
+  const id = WATCH[hot][0];
+  if (id === 'tour') { if (tut.active) tut.stop(); else startTutorial(); }
+  else if (id === 'panel') handPanelToggle(headW);
+  else if (id === 'flower') xr.watchFlower = true;
+  else if (id === 'redo') redo();
+}
+
 // El índice de una mano cerca del panel: el rayo pasa a salir del dedo, recto contra el panel.
 // d = lo que le falta al dedo para tocarlo (negativo si lo atraviesa).
 function pokePanel(...handsIn) {
@@ -6358,21 +6427,30 @@ tut = new Tutorial([
 // corazón azul, anular amarillo). Los dedos del paso laten. Sale solo la primera vez que entras con manos.
 const padSteps = tut.steps;
 const TI = ['thumb', 'index-finger'], TM = ['thumb', 'middle-finger'], TR = ['thumb', 'ring-finger'], TP = ['thumb', 'pinky-finger'];
+// Cada paso se completa al juntar los dos dedos que laten (y suena «bien hecho»).
+const pinchOf = (hand, finger, secs = 0.25) => () => {
+  const rig = (hand === 'left' ? xr.left : xr.right)?.userData.rig;
+  if (rig?.pinch === finger && !rig.blocked) tut.count += 1 / 72; else tut.count = 0;
+  return tut.count >= secs;
+};
 const handSteps = [
   { glow: { left: ['thumb'], right: ['thumb'] }, max: 7,
     text: 'Mírate las manos: cada dedo tiene un color. El pulgar es el VERDE.',
     check: () => (tut.time > 3.5 && xr.hands) },
-  { glow: { right: TI }, max: 10,
-    text: 'Mano derecha: junta VERDE y ROJO y pasa por la bola. Así dibujas.', setup: () => choose('add'), on: strokeOf('add') },
-  { glow: { left: TI }, max: 9,
-    text: 'Mano izquierda: junta VERDE y ROJO. Deshace lo último.', on: { undo: () => true } },
-  { glow: { left: TM, right: TM }, max: 10,
-    text: 'Junta VERDE y AZUL: agarras la bola. Con las dos manos a la vez, la haces grande o pequeña.', on: { turn: (dt, T) => (T.count += dt) >= 0.6 } },
-  { glow: { left: TR }, max: 10,
-    text: 'Mano izquierda: junta VERDE y AMARILLO: sale la flor. Deja la derecha sobre Mover.', check: () => state.tool === 'move' },
-  { glow: { left: TP }, max: 12,
-    text: 'Mano izquierda: junta VERDE y ROSA: sale el panel. Toca «+ Capa» con el dedo.',
-    setup: () => { choose('add'); tourMark.layers = layers.length; }, check: () => layers.length > tourMark.layers },
+  { glow: { right: TI }, max: 20,
+    text: 'Mano derecha: junta VERDE y ROJO. Así dibujas: pásalo por la bola.', setup: () => choose('add'), check: pinchOf('right', 'index', 0.4) },
+  { glow: { left: TI }, max: 20,
+    text: 'Mano izquierda: un toque de VERDE y ROJO deshace. Dos toques seguidos rehacen.', on: { undo: () => true } },
+  { glow: { left: TM, right: TM }, max: 20,
+    text: 'Junta VERDE y AZUL: agarras la bola. Con las dos manos a la vez, la haces grande o pequeña.', on: { turn: (dt, T) => (T.count += dt) >= 0.4 } },
+  { glow: { left: TR }, max: 20,
+    text: 'Mano izquierda: junta VERDE y AMARILLO: sale la flor de herramientas.', check: pinchOf('left', 'ring', 0.05) },
+  { glow: { left: TP }, max: 20,
+    text: 'Mano izquierda: junta VERDE y ROSA: sale el panel. Se toca con el dedo.',
+    setup: () => { if (xr.menuOpen) closeFlower(false); }, check: pinchOf('left', 'pinky', 0.05) },
+  { glow: { left: [] }, max: 12,
+    text: 'Mira tu muñeca izquierda como un reloj: ahí tienes botones para tocar con el otro dedo.',
+    check: () => watch.visible && tut.time > 2.5 },
 ];
 // El botón del paso brilla en amarillo y lleva su nombre encima, en el mando que tienes en la mano.
 const tourHalo = new THREE.Mesh(new THREE.SphereGeometry(0.015, 20, 14),
@@ -6537,5 +6615,5 @@ if (!SPECTATOR) {
 
 buildFavRow();
 updateHud();
-window.__miMedium = { paramDist, model, setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
+window.__miMedium = { watch, watchFrame, handPanelToggle, paramDist, model, setExtrude, buildPanel, uso, favorites, makeShape, shapeUI, startShapeDrag, moveShapeDrag, endShapeDrag, resetShape, duplicateHeld, bakeRemesh, text, openText, convertWriting, typeKey, textToQuads, toVoxel, mergeLayers, startMerge, mergeFrame, mergePlan, mergeBarPaint, barGroup, get merge() { return merge; }, get mergeAsk() { return mergeAsk; }, set mergeAsk(v) { mergeAsk = v; }, undoStack, pickForMerge, mergePick, scrollLayers, layerFirst, brushRes, call, setCall, setRes, toVoxel, tut, sfx, startTutorial, tutCard, applyAt, beginStroke, endStroke, brushOpts, bgDome, brushCall, pickLocal, mouse, xrPinPanel: pinPanel, panelGrips, panel3d, panelTab, bg, setBg, bgChanged, takeRefPhoto, toFBX, exportMeshes, shareModel, ref, duplicateHeld, beginMove, endMove, moveOp, setMoveMatrix, wheelPanel, wheelPointer, rigsReady: true, applyRemote, anim, addFrame, deleteFrame, stepFrame, setPlaying, undo, redo, packScene, applySnapshot, state, choose, get layers() { return layers; }, active: () => active, remeshLayer, live, panel, drawPanel,
   glb: () => buildGLB(exportObjects()), closeFlower, saveStamp, setPage: (p) => { panelPage = p; drawPanel(); }, stamps: STAMPS, camera, spin, spinner, importRef, ref, refRoot, updateLathe, webcam, changeLang, xrFrame, xr, ctrls, model, radial, flower, rigs, renderer, setSpecView: SPECTATOR ? setSpecView : null, setFormat: SPECTATOR ? setFormat : null, spectatorPose: SPECTATOR ? spectatorPose : null };
