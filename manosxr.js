@@ -27,7 +27,10 @@ const CLAY = new THREE.MeshStandardMaterial({ color: 0xe8b796, roughness: 0.85, 
 export const FINGER_COLORS = { thumb: 0x9ad8ae, 'index-finger': 0xf2958b, 'middle-finger': 0x93adf4, 'ring-finger': 0xffdf85, 'pinky-finger': 0xf7b3d2 };
 const FINGER_MAT = {};
 for (const f in FINGER_COLORS) FINGER_MAT[f] = new THREE.MeshStandardMaterial({ color: FINGER_COLORS[f], roughness: 0.78, emissive: FINGER_COLORS[f], emissiveIntensity: 0.3 });
-const OFF_MAT = new THREE.MeshStandardMaterial({ color: 0x6d6876, roughness: 0.9 });
+// Las puntas de los dedos se pintan siempre por delante de la escultura: nunca pierdes de vista con qué tocas.
+const TOP_MAT = {};
+for (const f in FINGER_COLORS) { TOP_MAT[f] = FINGER_MAT[f].clone(); TOP_MAT[f].depthTest = false; }
+const OFF_MAT = new THREE.MeshStandardMaterial({ color: 0x6d6876, roughness: 0.9, depthTest: false });
 const fingerOf = (name) => FINGERS.find((f) => name.startsWith(f) && !name.endsWith('metacarpal'));
 // El recorrido marca aquí los dedos que tocan en cada paso: { left: ['thumb', 'index-finger'], right: [...] }.
 export const handGlow = { left: null, right: null };
@@ -90,20 +93,44 @@ export class HandRig {
     const wrist = j['wrist'], thumb = j['thumb-tip'], index = j['index-finger-tip'];
     const kI = j['index-finger-phalanx-proximal'], kP = j['pinky-finger-phalanx-proximal'];
     if (!wrist?.visible || !thumb?.visible || !index?.visible || !kI?.visible || !kP?.visible) {
+      // Las gafas pierden la mano un instante al moverla rápido: se aguanta lo que estaba haciendo
+      // un cuarto de segundo antes de soltar.
+      this.lostT = (this.lostT || 0) + dt;
+      if (this.tracked && this.lostT < 0.25) return true;
       this.hide();
       return false;
     }
+    this.lostT = 0;
     this.tracked = true;
     this.proxy.visible = true;
 
     // Pellizcos: solo uno a la vez por mano (el dedo más cerca del pulgar gana) y con margen para soltar.
-    const d = {};
-    for (const k in TIPS) d[k] = j[TIPS[k]]?.visible ? thumb.position.distanceTo(j[TIPS[k]].position) : 1;
-    if (this.pinch && d[this.pinch] > OFF[this.pinch]) this.pinch = null;
+    // Contra los falsos toques: la distancia se suaviza (media móvil), el dedo que gana tiene que
+    // estar claramente más cerca del pulgar que los demás y aguantar unos fotogramas, y para soltar
+    // también tiene que separarse unos fotogramas seguidos (un salto suelto del tracking no suelta).
+    const d = this.dist || (this.dist = {}), rawD = this.rawD || (this.rawD = {});
+    for (const k in TIPS) {
+      const raw = j[TIPS[k]]?.visible ? thumb.position.distanceTo(j[TIPS[k]].position) : 1;
+      rawD[k] = raw;
+      d[k] = d[k] === undefined || raw > 0.5 || d[k] > 0.5 ? raw : d[k] + (raw - d[k]) * 0.5;
+    }
+    if (this.pinch) {
+      this.offN = d[this.pinch] > OFF[this.pinch] ? (this.offN || 0) + 1 : 0;
+      if (this.offN >= 4) { this.pinch = null; this.offN = 0; this.onN = 0; }
+    }
     if (!this.pinch) {
-      let best = null;
-      for (const k in TIPS) if (d[k] < ON[k] && (!best || d[k] < d[best])) best = k;
-      this.pinch = best;
+      let best = null, second = 1;
+      for (const k in TIPS) {
+        if (!best || d[k] < d[best]) { if (best) second = Math.min(second, d[best]); best = k; }
+        else second = Math.min(second, d[k]);
+      }
+      // También sin suavizar: ningún otro dedo puede estar casi igual de cerca en este mismo fotograma.
+      let rawSecond = 1;
+      for (const k in TIPS) if (k !== best) rawSecond = Math.min(rawSecond, rawD[k]);
+      const ok = d[best] < ON[best] && second - d[best] > 0.007 && rawD[best] < ON[best] && rawSecond - rawD[best] > 0.005;
+      if (ok && this.cand === best) this.onN = (this.onN || 0) + 1;
+      else { this.cand = ok ? best : null; this.onN = ok ? 1 : 0; }
+      if (this.onN >= 3) { this.pinch = best; this.onN = 0; this.offN = 0; }
     }
     const B = this.gp.buttons, left = src.handedness === 'left';
     // ¿Palma hacia la cara? Ahí el pellizco de índice es de las gafas (abre su menú): aquí no cuenta.
@@ -127,7 +154,10 @@ export class HandRig {
     wrist.getWorldQuaternion(this.proxy.quaternion);
     const other = this.pinch === 'ring' && !left && j['ring-finger-tip']?.visible ? j['ring-finger-tip'] : index;
     a.addVectors(thumb.position, other.position).multiplyScalar(0.5);
-    this.proxy.position.copy(a).sub(b.copy(this.tipOffset).applyQuaternion(this.proxy.quaternion));
+    b.copy(a).sub(n.copy(this.tipOffset).applyQuaternion(this.proxy.quaternion));
+    // Quieta, la punta no tiembla; al moverla rápido va pegada a la mano.
+    const jump = this.proxy.position.distanceTo(b);
+    this.proxy.position.lerp(b, jump > 0.2 ? 1 : THREE.MathUtils.clamp(jump / 0.012, 0.35, 1));
     this.proxy.updateMatrixWorld(true);
     this.proxy.userData.src = { handedness: src.handedness, hand: src.hand, gamepad: this.gp };
     this.proxy.userData.aim = c.visible ? c : this.proxy; // para apuntar de lejos, el rayo de la mano
@@ -148,7 +178,11 @@ export class HandRig {
         if (show === 'tips') r = Math.max(r, 0.0085) * 1.12; // dedal: tapa la yema de verdad
         if (tip && glow?.includes(fin)) r *= beat;
         m.scale.setScalar(r);
-        if (fin) m.material = this.guard && (fin === 'thumb' || fin === 'index-finger') ? OFF_MAT : FINGER_MAT[fin];
+        if (fin) {
+          const top = tip || distal, off = this.guard && (fin === 'thumb' || fin === 'index-finger');
+          m.renderOrder = top ? 998 : 0;
+          m.material = top ? (off ? OFF_MAT : TOP_MAT[fin]) : FINGER_MAT[fin];
+        }
       }
       for (const [from, to, s] of this.sticks) {
         const p0 = j[from], p1 = j[to];
@@ -164,7 +198,11 @@ export class HandRig {
         if (show === 'tips') r = Math.max(r, 0.0085) * 1.12;
         s.scale.set(r, len, r);
         const fin = fingerOf(from);
-        if (fin) s.material = this.guard && (fin === 'thumb' || fin === 'index-finger') ? OFF_MAT : FINGER_MAT[fin];
+        if (fin) {
+          const off = this.guard && (fin === 'thumb' || fin === 'index-finger');
+          s.renderOrder = last ? 998 : 0;
+          s.material = last ? (off ? OFF_MAT : TOP_MAT[fin]) : FINGER_MAT[fin];
+        }
       }
     }
     return true;

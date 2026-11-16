@@ -3629,7 +3629,10 @@ function openText() {
   panelTab[0] = 'text';
   panelPage = 'main';
   closeMergeAsk();
-  if (renderer.xr.isPresenting) panel3d.visible = true;
+  if (renderer.xr.isPresenting) {
+    if (!panel3d.visible) xr.textPanel = true; // lo abre el texto: se irá con él
+    panel3d.visible = true;
+  }
   if (!active.text) startWriting();
   else drawPanel();
   updateHud();
@@ -4879,6 +4882,14 @@ function closeFlower(pick) {
 }
 function pickFlower(h) {
   if (!h || h === 'shape:more') return;
+  // Al cambiar de herramienta, el menú de texto se quita solo (y el panel, si lo abrió el texto).
+  if (panelTab[0] === 'text' && h !== 'text' && !h.startsWith('text')) {
+    text.writing = false;
+    panelTab[0] = 'brush';
+    if (xr.textPanel) panel3d.visible = false;
+    xr.textPanel = false;
+    drawPanel();
+  }
   sfx.play(h === 'color:wheel' ? 'plip' : 'thock');
   if (h === 'color:wheel') {
     choose('paint');
@@ -4995,7 +5006,7 @@ function xrFrame(dt) {
     let seen = false;
     try { seen = !!localStorage.getItem('plastilinaTourManos'); localStorage.setItem('plastilinaTourManos', '1'); } catch {}
     if (!seen && !tut.active) startTutorial();
-    else toast('Manos: derecha, verde y rojo dibuja. Izquierda: rojo deshace, azul agarra, amarillo la flor, rosa el panel.', 9000);
+    else toast('Manos: derecha, verde y rojo dibuja. Izquierda: rojo deshace (dos toques rehace), azul agarra, amarillo la flor, rosa el panel.', 9000);
   }
   if (left && hud3d.parent !== left) left.add(hud3d);
   if (left && !handL && !xr.panelPinned && panel3d.parent !== left) panelToHand(left);
@@ -5027,7 +5038,8 @@ function xrFrame(dt) {
     toast('Con la palma hacia ti, ese gesto abre el menú de las gafas. Gira la mano, o dibuja con verde y amarillo.', 7000);
   }
   xr.blockedPrev = blocked;
-  hud3d.visible = !panel3d.visible || xr.panelPinned; // con el panel en la mano, el aviso de herramienta lo taparía
+  // Con manos no hay cartel de herramienta en la mano izquierda: solo sale mientras hay un aviso que leer.
+  hud3d.visible = handL ? performance.now() < hudMsgUntil : !panel3d.visible || xr.panelPinned;
   const rayHost = right?.userData.aim || right;
   if (rayHost && ray.parent !== rayHost) rayHost.add(ray);
   const gpL = left?.userData.src.gamepad, gpR = right?.userData.src.gamepad;
@@ -5040,7 +5052,10 @@ function xrFrame(dt) {
 
   // Grips: uno agarra y mueve el modelo (palanca adelante/atrás = más grande/más pequeño);
   // los dos a la vez lo escalan (separando las manos), lo giran y lo mueven.
-  const gL = !!gpL?.buttons[1]?.pressed, gR = !!gpR?.buttons[1]?.pressed;
+  // Manos: el agarre izquierdo mantenido mientras la derecha usa una herramienta la invierte
+  // (Añadir quita, Inflar desinfla…) y entonces no agarra el modelo.
+  const handInv = handL && !!gpL?.buttons[1]?.pressed && (gpR?.buttons[0]?.value || 0) > 0.08;
+  const gL = !!gpL?.buttons[1]?.pressed && !handInv, gR = !!gpR?.buttons[1]?.pressed;
   const mode = gL && gR ? 'scale' : gL ? 'grabL' : gR ? 'grabR' : 'none';
   if (mode !== 'none') {
     xr.follow = false;
@@ -5100,9 +5115,15 @@ function xrFrame(dt) {
     const soft = lTrigger && !moveOp.L && !handL; // con manos, el pellizco izquierdo abre la flor
     if (soft !== state.smoothHold) { state.smoothHold = soft; updateHud(); }
     // Manos: mantener el pellizco izquierdo invierte la herramienta (Añadir quita…), como el botón X.
-    const inv = !!gpL.buttons[4]?.pressed || (handL && lTrigger && !moveOp.L), Y = !!gpL.buttons[5]?.pressed;
+    const inv = !!gpL.buttons[4]?.pressed || handInv, Y = !!gpL.buttons[5]?.pressed;
     if (inv !== state.invert) { state.invert = inv; updateHud(); }
-    if (Y && !xr.yPrev && !xr.menuOpen) undo();
+    if (handL) {
+      // Manos: un toque deshace; dos toques seguidos rehacen. El deshacer espera un instante por si llega el segundo.
+      if (Y && !xr.yPrev && !xr.menuOpen) {
+        if (xr.undoWait > 0) { xr.undoWait = 0; redo(); }
+        else xr.undoWait = 0.38;
+      } else if (xr.undoWait > 0 && (xr.undoWait -= dt) <= 0) undo();
+    } else if (Y && !xr.yPrev && !xr.menuOpen) undo();
     xr.yPrev = Y;
     const lStick = !!gpL.buttons[3]?.pressed;
     if (lStick && !xr.lStickPrev) {
