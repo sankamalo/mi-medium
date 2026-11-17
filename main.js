@@ -2586,6 +2586,136 @@ async function exportModel() {
   exporting = false;
 }
 
+// ---------- Foto PNG (para el mapping: el bicho recortado, sin fondo) ----------
+// Saca lo modelado desde donde lo estás mirando (la cabeza en las gafas, la cámara en el Mac),
+// sin fondo, sin mandos ni menús, y recortado al borde. Va al Mac, a exports/fotos/; si no hay
+// Mac, se descarga. El mapping de la pared puede recogerla de ahí sola (/api/fotos).
+const FOTO_SIZE = 1536;
+let fotoBusy = false;
+function fotoCapture() {
+  const vis = layers.filter((L) => L.visible);
+  if (!vis.length) return null;
+  model.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  vis.forEach((L) => box.expandByObject(L.group));
+  if (box.isEmpty()) return null;
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  // El punto de vista: la cabeza en las gafas, la cámara en el Mac.
+  const inXR = renderer.xr.isPresenting;
+  const view = inXR ? renderer.xr.getCamera() : camera;
+  view.updateMatrixWorld(true);
+  const eye = new THREE.Vector3().setFromMatrixPosition(view.matrixWorld);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(view.getWorldQuaternion(new THREE.Quaternion()));
+  let dist = eye.distanceTo(sphere.center);
+  if (dist < sphere.radius * 1.05) { // demasiado cerca: se echa atrás en la misma dirección
+    const dir = eye.clone().sub(sphere.center).normalize();
+    if (!isFinite(dir.x)) dir.set(0, 0, 1);
+    eye.copy(sphere.center).addScaledVector(dir, sphere.radius * 1.6);
+    dist = sphere.radius * 1.6;
+  }
+  const fov = THREE.MathUtils.clamp(2 * Math.asin(Math.min(1, sphere.radius / dist)) * 1.08, 0.05, 2.2);
+  const cam = new THREE.PerspectiveCamera(THREE.MathUtils.radToDeg(fov), 1, Math.max(0.001, dist - sphere.radius * 1.5), dist + sphere.radius * 1.5);
+  cam.position.copy(eye);
+  cam.up.copy(up);
+  cam.lookAt(sphere.center);
+  cam.updateMatrixWorld(true);
+
+  // Solo el barro: fuera suelo, fondo, mandos, menús, cursor, referencia, malla y fotogramas fantasma.
+  const hidden = [];
+  const hide = (o) => { if (o.visible) { o.visible = false; hidden.push(o); } };
+  const keep = new Set([model, hemi, key, rim]);
+  scene.children.forEach((o) => { if (!keep.has(o) && !o.isLight) hide(o); });
+  model.children.forEach((o) => { if (o !== spinner) hide(o); });
+  const layerGroups = new Set(vis.map((L) => L.group));
+  spinner.children.forEach((o) => { if (!layerGroups.has(o)) hide(o); });
+  vis.forEach((L) => L.group.traverse((o) => {
+    if (o === L.group) return;
+    const m = o.material;
+    if (o.isLine || o.isLineSegments || o.isPoints || (m && !Array.isArray(m) && (m.transparent || m.wireframe))) hide(o);
+  }));
+  const oldBg = scene.background;
+  scene.background = null;
+  const oldClear = renderer.getClearColor(new THREE.Color()), oldAlpha = renderer.getClearAlpha();
+  const oldXR = renderer.xr.enabled, oldRT = renderer.getRenderTarget();
+  const rt = new THREE.WebGLRenderTarget(FOTO_SIZE, FOTO_SIZE, { samples: 4 });
+  rt.texture.colorSpace = THREE.SRGBColorSpace;
+  const px = new Uint8Array(FOTO_SIZE * FOTO_SIZE * 4);
+  try {
+    renderer.xr.enabled = false;
+    renderer.setRenderTarget(rt);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
+    renderer.render(scene, cam);
+    renderer.readRenderTargetPixels(rt, 0, 0, FOTO_SIZE, FOTO_SIZE, px);
+  } finally {
+    renderer.setRenderTarget(oldRT);
+    renderer.xr.enabled = oldXR;
+    renderer.setClearColor(oldClear, oldAlpha);
+    scene.background = oldBg;
+    hidden.forEach((o) => { o.visible = true; });
+    rt.dispose();
+  }
+
+  // Al derecho (WebGL lee de abajo arriba), sin premultiplicar, y recortado a lo que tiene barro.
+  const S = FOTO_SIZE;
+  let x0 = S, y0 = S, x1 = -1, y1 = -1;
+  const img = new ImageData(S, S);
+  for (let y = 0; y < S; y++) {
+    const src = (S - 1 - y) * S * 4, dst = y * S * 4;
+    for (let x = 0; x < S; x++) {
+      const i = src + x * 4, j = dst + x * 4, a = px[i + 3];
+      if (!a) continue;
+      const k = a < 255 ? 255 / a : 1;
+      img.data[j] = Math.min(255, px[i] * k);
+      img.data[j + 1] = Math.min(255, px[i + 1] * k);
+      img.data[j + 2] = Math.min(255, px[i + 2] * k);
+      img.data[j + 3] = a;
+      if (a > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+  }
+  if (x1 < 0) return null;
+  const pad = 12;
+  x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(S - 1, x1 + pad); y1 = Math.min(S - 1, y1 + pad);
+  const full = document.createElement('canvas');
+  full.width = full.height = S;
+  full.getContext('2d').putImageData(img, 0, 0);
+  const out = document.createElement('canvas');
+  out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+  out.getContext('2d').drawImage(full, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
+}
+async function fotoPNG() {
+  if (fotoBusy) return;
+  fotoBusy = true;
+  try {
+    const canvas = fotoCapture();
+    if (!canvas) return toast('No hay nada visible que fotografiar');
+    sfx.play('pop');
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const name = exportName().replace('plastilina_', 'bicho_') + '.png';
+    let sent = false;
+    if (await checkServer()) {
+      try {
+        const r = await fetch(API + '/api/foto?name=' + encodeURIComponent(name), { method: 'POST', body: blob });
+        sent = r.ok;
+      } catch {}
+    }
+    if (sent) return toast(t('Foto en el Mac: exports/fotos/{0}', name), 4000);
+    // Sin Mac: se descarga aquí.
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast(t('Foto descargada: {0}', name), 4000);
+  } catch (e) {
+    console.error(e);
+    toast(t('La foto falló: {0}', e.message));
+  } finally {
+    fotoBusy = false;
+  }
+}
+
 // ---------- Compartir (WhatsApp, correo…) ----------
 // Sin horneado: un OBJ (quads + color, una pieza por capa). Si alguna capa está horneada: un GLB
 // (lleva dentro las texturas). El navegador solo deja compartir ciertos tipos de archivo: si no
@@ -2673,6 +2803,7 @@ $('btnBase').onclick = () => setLayerBase(active, state.color);
 $('btnUndo').onclick = undo;
 $('btnExport').onclick = exportModel;
 $('btnShare').onclick = shareModel;
+$('btnFoto').onclick = fotoPNG;
 $('btnSym').onclick = () => choose('sym');
 $('btnWire').onclick = () => choose('wire');
 document.querySelectorAll('#bakeSizes [data-bake]').forEach((b) => (b.onclick = () => { state.bakeSize = +b.dataset.bake; updateHud(); }));
@@ -4756,7 +4887,7 @@ function buildBgPage() {
 function buildExportPage() {
   const W = [];
   const M = 32, IW = PW - 2 * M, fw = (IW - 20) / 3;
-  W.push(panelBlock(8, 490, CERA.red));
+  W.push(panelBlock(8, 576, CERA.red));
   pageHead(W, 'Exportar');
   EXPORT_FORMATS.forEach((f, i) => W.push({ type: 'button', x: M + i * (fw + 10), y: 120, w: fw, h: 70, size: 30, group: 'fmt', label: f.toUpperCase(),
     active: () => state.exportFmt === f, onClick: () => { state.exportFmt = f; exportUi(); drawPanel(); } }));
@@ -4765,6 +4896,7 @@ function buildExportPage() {
   const bw = (IW - 10) / 2;
   W.push({ type: 'button', x: M, y: 372, w: bw, h: 70, size: 26, group: 'to', label: 'Compartir', onClick: () => shareModel() });
   W.push({ type: 'button', x: M + bw + 10, y: 372, w: bw, h: 70, size: 26, group: 'to', label: 'A Blender', onClick: () => choose('export') });
+  W.push({ type: 'button', x: M, y: 456, w: IW, h: 70, size: 26, label: 'Foto PNG (sin fondo)', onClick: () => fotoPNG() });
   return W;
 }
 // Página de animación: la tira de fotogramas de la capa activa y los mandos para reproducir.
@@ -5933,6 +6065,13 @@ if (SPECTATOR) {
   controls.target.copy(model.position);
   setSpecView('gafas');
   setSpecBg('oscuro');
+  // Para el mapping de la pared (escena 6): ?ver&limpio → sin panel ni avisos y fondo negro
+  // (o el de ?fondo=oscuro|croma|blanco|negro). Lo demás del espejo no cambia.
+  if (params.has('limpio')) {
+    $('spec').classList.add('hidden');
+    document.body.classList.add('limpio');
+    setSpecBg(BGS[params.get('fondo')] !== undefined ? params.get('fondo') : 'negro');
+  }
   document.querySelectorAll('#spec [data-view]').forEach((b) => (b.onclick = () => setSpecView(b.dataset.view)));
   $('specBg').onclick = () => setSpecBg();
   $('specHide').onclick = () => $('spec').classList.add('hidden');

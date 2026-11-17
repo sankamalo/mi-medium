@@ -122,6 +122,12 @@ const D = {
   'Deshacer': ['Undo', 'เลิกทำ'], 'Rehacer': ['Redo', 'ทำซ้ำ'], 'Simetría X': ['Symmetry X', 'สมมาตร X'], 'Simetría': ['Symmetry', 'สมมาตร'],
   'Esfera': ['Sphere', 'ทรงกลม'], 'Cubo': ['Cube', 'ลูกบาศก์'], 'Pirámide': ['Pyramid', 'พีระมิด'],
   'Ver malla': ['Show mesh', 'แสดงตาข่าย'], 'Malla': ['Mesh', 'ตาข่าย'], 'Remesh quads': ['Remesh quads', 'Remesh ควอด'],
+  'Foto PNG': ['PNG photo', 'ภาพ PNG'], 'Foto PNG (sin fondo)': ['PNG photo (no background)', 'ภาพ PNG (ไม่มีพื้นหลัง)'],
+  'Foto del modelo desde donde lo miras, sin fondo y recortada (PNG)': ['Photo of the model from where you look at it, cropped, no background (PNG)', 'ภาพโมเดลจากมุมที่คุณมอง ตัดขอบ ไม่มีพื้นหลัง (PNG)'],
+  'No hay nada visible que fotografiar': ['Nothing visible to photograph', 'ไม่มีอะไรให้ถ่ายภาพ'],
+  'Foto en el Mac: exports/fotos/{0}': ['Photo on the Mac: exports/fotos/{0}', 'ภาพอยู่ใน Mac: exports/fotos/{0}'],
+  'Foto descargada: {0}': ['Photo downloaded: {0}', 'ดาวน์โหลดภาพแล้ว: {0}'],
+  'La foto falló: {0}': ['The photo failed: {0}', 'ถ่ายภาพไม่สำเร็จ: {0}'],
   'A Blender': ['To Blender', 'Blender'], 'Guardar': ['Save', 'บันทึก'], 'Compartir': ['Share', 'แชร์'],
   'Nueva capa': ['New layer', 'เลเยอร์ใหม่'], 'Capa siguiente': ['Next layer', 'เลเยอร์ถัดไป'],
   // Menú radial

@@ -88,6 +88,8 @@
     body.spectator.vertical { background: #000; }
     body.spectator #spec.hidden { display: none; }
     body.spectator #hud, body.spectator #help { display: none; }
+    body.limpio #toast, body.limpio #spec { display: none !important; }
+    body.limpio { cursor: none; background: #000; }
     .lang b { font: 600 13px/1 Kanit, 'Noto Sans Thai', sans-serif; }
     .lang .row button { font-size: 14px; padding: 7px 4px; text-transform: none; }
     #spec .hidden { display: none; }
@@ -297,6 +299,7 @@
     <label><span>Quads al exportar</span> <input type="range" id="exportQuads" min="0" max="1" step="0.01" value="0"> <span id="exportQuadsVal"></span></label>
     <div class="row">
       <button id="btnShare" title="Mandar el modelo por WhatsApp, correo…">Compartir (WhatsApp…)</button>
+      <button id="btnFoto" title="Foto del modelo desde donde lo miras, sin fondo y recortada (PNG)">Foto PNG</button>
     </div>
     <div class="sec">Fondo</div>
     <div class="row" id="bgRow"></div>
